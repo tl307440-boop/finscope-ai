@@ -4,6 +4,7 @@ import AssistantView from "../views/AssistantView.vue"
 import CompanyView from "../views/CompanyView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
 import FilingsView from "../views/FilingsView.vue"
+import IndustryView from "../views/IndustryView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
 import LibraryView from "../views/LibraryView.vue"
 import LoginView from "../views/LoginView.vue"
@@ -28,6 +29,7 @@ export const routes = [
   { path: "/filings", name: "filings", component: FilingsView },
   { path: "/metrics", name: "metrics", component: MetricsView },
   { path: "/company", name: "company", component: CompanyView },
+  { path: "/industries", name: "industries", component: IndustryView },
   {
     path: "/reports/:runId",
     name: "report",

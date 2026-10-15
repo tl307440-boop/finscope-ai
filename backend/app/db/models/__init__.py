@@ -4,6 +4,13 @@ from app.db.models.chat import ChatMessage, ChatSession
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
 from app.db.models.financial import FinancialMetric
+from app.db.models.industry import (
+    Industry,
+    IndustryAssessment,
+    IndustryMembership,
+    IndustryThesis,
+    ThesisEvidence,
+)
 from app.db.models.macro import MacroObservation, MacroSeries
 from app.db.models.market import Instrument, MarketBar, TradingCalendar
 from app.db.models.provider import DataProvider, SyncJob, SyncJobEvent
@@ -19,6 +26,10 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "Filing",
+    "Industry",
+    "IndustryAssessment",
+    "IndustryMembership",
+    "IndustryThesis",
     "FinancialMetric",
     "SecFact",
     "Instrument",
@@ -27,6 +38,7 @@ __all__ = [
     "MarketBar",
     "RefreshSession",
     "Report",
+    "ThesisEvidence",
     "SyncJob",
     "SyncJobEvent",
     "TradingCalendar",

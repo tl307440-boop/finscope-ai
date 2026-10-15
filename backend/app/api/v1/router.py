@@ -9,6 +9,7 @@ from app.api.v1.companies import router as company_router
 from app.api.v1.documents import router as document_router
 from app.api.v1.filings import router as filing_router
 from app.api.v1.health import router as health_router
+from app.api.v1.industries import router as industry_router
 from app.api.v1.instruments import router as instrument_router
 from app.api.v1.jobs import router as job_router
 from app.api.v1.macro import router as macro_router
@@ -19,6 +20,7 @@ from app.api.v1.watchlists import router as watchlist_router
 router = APIRouter()
 router.include_router(health_router)
 router.include_router(instrument_router)
+router.include_router(industry_router)
 router.include_router(macro_router)
 router.include_router(market_router)
 router.include_router(filing_router)

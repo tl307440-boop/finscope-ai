@@ -118,6 +118,10 @@
 
 `GET /api/v1/analysis/reports?q=` 按标题筛选当前用户的研究记录，按创建时间从新到旧排列。`DELETE /api/v1/analysis/reports/{reportId}` 只隐藏自己的记录。`GET/POST /api/v1/watchlists` 管理自选分组，加入和移出证券也只作用于自己的分组。其他用户看到的列表是空的，删除别人的记录或自选会得到 404。
 
+## 行业假设
+
+`GET /api/v1/industries` 返回目录分类。`GET /api/v1/industries/{industryId}/facts?as_of=` 只列出该行业成员在截止日之前已经入库的事实。`POST /api/v1/industries/{industryId}/theses` 保存可证伪假设，必须同时写下支持和反证条件。`POST /api/v1/theses/{thesisId}/evidence` 只能引用这些事实，引用文字由服务端按入库数字生成。同一条事实不能既当支持又当反证。`POST /api/v1/theses/{thesisId}/assessments` 在截止日同时看到支持和反证时，状态是 `contested`，说明这不是已证实的结论。别人看不到自己的假设。早于事实申报日的截止日不会把那条证据算进去。
+
 管理员 `POST /api/v1/admin/akshare-syncs`。同一交易日的重复行只保留第一条。上游失败时 `rows_written` 为 0，已有 K 线不改。自动测试使用脚本响应，不访问外网。
 
 ## 同步任务

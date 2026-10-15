@@ -19,6 +19,7 @@ const links = computed(() => {
     { href: "/filings", label: "SEC 样例" },
     { href: "/metrics", label: "财务试算" },
     { href: "/company", label: "公司研究" },
+    { href: "/industries", label: "行业假设" },
     { href: "/uploads", label: "上传 PDF" },
     { href: "/assistant", label: "问答" },
     { href: "/library", label: "资料库" },
