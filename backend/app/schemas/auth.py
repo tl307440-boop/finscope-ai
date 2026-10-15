@@ -57,34 +57,53 @@ class ProviderCredential(BaseModel):
     code: str
     credential_required: bool
     credential_present: bool
+    availability: Literal["unavailable", "configured", "not_required"]
 
 
 class ProviderList(BaseModel):
     providers: list[ProviderCredential]
 
 
+def fred_availability(settings: Settings) -> Literal["unavailable", "configured"]:
+    if settings.fred_api_key.strip():
+        return "configured"
+    return "unavailable"
+
+
 def list_provider_credentials(settings: Settings) -> ProviderList:
     return ProviderList(
         providers=[
-            ProviderCredential(
+            _provider(
                 code="fred",
-                credential_required=True,
-                credential_present=bool(settings.fred_api_key),
+                required=True,
+                present=bool(settings.fred_api_key.strip()),
             ),
-            ProviderCredential(
+            _provider(
                 code="sec_edgar",
-                credential_required=True,
-                credential_present=bool(settings.sec_user_agent),
+                required=True,
+                present=bool(settings.sec_user_agent.strip()),
             ),
-            ProviderCredential(
+            _provider(
                 code="tushare",
-                credential_required=True,
-                credential_present=bool(settings.tushare_token),
+                required=True,
+                present=bool(settings.tushare_token.strip()),
             ),
-            ProviderCredential(
-                code="akshare",
-                credential_required=False,
-                credential_present=False,
-            ),
+            _provider(code="akshare", required=False, present=False),
         ]
+    )
+
+
+def _provider(*, code: str, required: bool, present: bool) -> ProviderCredential:
+    availability: Literal["unavailable", "configured", "not_required"]
+    if not required:
+        availability = "not_required"
+    elif present:
+        availability = "configured"
+    else:
+        availability = "unavailable"
+    return ProviderCredential(
+        code=code,
+        credential_required=required,
+        credential_present=present,
+        availability=availability,
     )

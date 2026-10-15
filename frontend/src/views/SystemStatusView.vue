@@ -66,6 +66,7 @@ onMounted(() => {
         <span>金融投研辅助 · 不提供交易执行</span>
       </div>
       <div class="nav-links">
+        <a href="/macro">美国宏观</a>
         <a href="/login">登录</a>
         <a :href="docsUrl()" target="_blank" rel="noopener noreferrer">打开接口文档</a>
       </div>
@@ -125,7 +126,7 @@ onMounted(() => {
           <article class="card">
             <h2>业务数据</h2>
             <p class="state">尚未接入</p>
-            <p class="muted">行情、宏观和财报将在后续任务接入，当前不展示伪造数字。</p>
+            <p class="muted">行情和财报尚未接入。宏观页只展示序列定义，没有密钥时不填观测值。</p>
           </article>
         </section>
       </template>

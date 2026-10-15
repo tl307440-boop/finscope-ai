@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
 import { ApiError, authorizedFetch, errorFrom, readJson } from "../api/client"
+import { providerStatusLabel } from "../api/macro"
 import { describeProbeFailure } from "../api/providerProbe"
 import { restoreSession, session } from "../stores/auth"
 
@@ -8,6 +9,7 @@ interface ProviderRow {
   code: string
   credentialRequired: boolean
   credentialPresent: boolean
+  availability: string
 }
 
 const phase = ref<"loading" | "ready" | "denied" | "error">("loading")
@@ -16,6 +18,11 @@ const failure = ref("无法读取数据源状态")
 const scenario = ref("timeout")
 const probePhase = ref<"idle" | "loading" | "done" | "error">("idle")
 const probeText = ref("")
+const syncCode = ref("UNRATE")
+const syncStart = ref("")
+const syncEnd = ref("")
+const syncPhase = ref<"idle" | "loading" | "done" | "error">("idle")
+const syncText = ref("")
 
 async function load(): Promise<void> {
   phase.value = "loading"
@@ -50,6 +57,7 @@ async function load(): Promise<void> {
           code,
           credentialRequired: record?.credential_required === true,
           credentialPresent: record?.credential_present === true,
+          availability: asString(record?.availability) ?? "unavailable",
         },
       ]
     })
@@ -61,10 +69,42 @@ async function load(): Promise<void> {
 }
 
 function label(row: ProviderRow): string {
-  if (!row.credentialRequired) {
-    return "不需要密钥"
+  return providerStatusLabel(row)
+}
+
+async function syncFred(): Promise<void> {
+  syncPhase.value = "loading"
+  syncText.value = ""
+  try {
+    const response = await authorizedFetch(
+      "/api/v1/admin/fred-syncs",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          series_code: syncCode.value.trim(),
+          observation_start: syncStart.value,
+          observation_end: syncEnd.value,
+        }),
+      },
+      session.accessToken,
+      async () => {
+        const restored = await restoreSession()
+        return restored ? session.accessToken : null
+      },
+    )
+    const body = await readJson(response)
+    if (!response.ok) {
+      throw errorFrom(body, response.headers.get("X-Request-ID"))
+    }
+    const data = asRecord(asRecord(body)?.data)
+    const written = data?.rows_written
+    syncText.value = typeof written === "number" ? `已写入 ${written} 条修订` : "同步完成"
+    syncPhase.value = "done"
+  } catch (caught) {
+    syncText.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    syncPhase.value = "error"
   }
-  return row.credentialPresent ? "已提供密钥" : "未提供密钥"
 }
 
 async function runProbe(): Promise<void> {
@@ -143,6 +183,23 @@ function asString(value: unknown): string | null {
         <button class="retry" type="submit" :disabled="probePhase === 'loading'">探测</button>
         <p v-if="probePhase === 'loading'">正在探测</p>
         <p v-else-if="probeText" :role="probePhase === 'error' ? 'alert' : 'status'">{{ probeText }}</p>
+      </form>
+      <form class="form probe-form" @submit.prevent="syncFred">
+        <label>
+          同步 FRED 序列
+          <input v-model="syncCode" name="fred-series" />
+        </label>
+        <label>
+          起始观察日
+          <input v-model="syncStart" name="fred-start" type="date" required />
+        </label>
+        <label>
+          结束观察日
+          <input v-model="syncEnd" name="fred-end" type="date" required />
+        </label>
+        <button class="retry" type="submit" :disabled="syncPhase === 'loading'">同步</button>
+        <p v-if="syncPhase === 'loading'">正在同步</p>
+        <p v-else-if="syncText" :role="syncPhase === 'error' ? 'alert' : 'status'">{{ syncText }}</p>
       </form>
     </section>
   </main>

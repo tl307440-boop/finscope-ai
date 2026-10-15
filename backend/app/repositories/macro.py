@@ -1,0 +1,264 @@
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import Engine, select
+from sqlalchemy.orm import Session
+
+from app.catalog.macro_series import MacroSeriesSeed, fred_series_catalog
+from app.db.models.macro import MacroObservation, MacroSeries
+from app.db.models.provider import DataProvider
+from app.providers.fred import FredVintage
+from app.providers.vintage import VintagePoint, published_at_from_vintage
+
+FRED_PROVIDER_ID = uuid.uuid5(uuid.NAMESPACE_URL, "https://finscope.local/providers/fred")
+
+
+class MacroRepository:
+    def __init__(self, engine: Engine) -> None:
+        self.engine = engine
+
+    def ensure_catalog(self) -> int:
+        seeds = fred_series_catalog()
+        with Session(self.engine) as session:
+            provider = _provider(session)
+            for seed in seeds:
+                _upsert_series(session, provider_id=provider.id, seed=seed)
+            session.commit()
+        return len(seeds)
+
+    def upsert_vintages(
+        self,
+        series_code: str,
+        vintages: tuple[FredVintage, ...] | list[FredVintage],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        self.ensure_catalog()
+        written = 0
+        with Session(self.engine) as session:
+            series = session.scalars(
+                select(MacroSeries).where(MacroSeries.series_code == series_code)
+            ).one()
+            touched: set[date] = set()
+            temporary = -1
+            for vintage in vintages:
+                touched.add(vintage.observation_date)
+                existing = session.scalars(
+                    select(MacroObservation).where(
+                        MacroObservation.series_id == series.id,
+                        MacroObservation.observation_date == vintage.observation_date,
+                        MacroObservation.realtime_start == vintage.realtime_start,
+                    )
+                ).one_or_none()
+                if existing is None:
+                    session.add(
+                        _observation(
+                            series,
+                            vintage,
+                            fetched_at=fetched_at,
+                            revision_no=temporary,
+                        )
+                    )
+                    temporary -= 1
+                else:
+                    existing.value = vintage.value
+                    existing.unit = series.base_unit
+                    existing.realtime_end = vintage.realtime_end
+                    existing.published_at = published_at_from_vintage(vintage.realtime_start)
+                    existing.fetched_at = fetched_at
+                    existing.source_record_key = _record_key(series.series_code, vintage)
+                written += 1
+            session.flush()
+            for observed in touched:
+                _renumber(session, series_id=series.id, observation_date=observed)
+            session.commit()
+        return written
+
+    def list_series(self) -> list[MacroSeriesSeed]:
+        self.ensure_catalog()
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(MacroSeries)
+                .where(MacroSeries.enabled.is_(True))
+                .order_by(MacroSeries.series_code)
+            ).all()
+            return [_seed_from_row(row) for row in rows]
+
+    def list_vintages(
+        self,
+        series_code: str,
+        *,
+        start: date | None,
+        end: date | None,
+    ) -> list[VintagePoint] | None:
+        self.ensure_catalog()
+        with Session(self.engine) as session:
+            series = session.scalars(
+                select(MacroSeries).where(MacroSeries.series_code == series_code)
+            ).one_or_none()
+            if series is None:
+                return None
+            statement = select(MacroObservation).where(MacroObservation.series_id == series.id)
+            if start is not None:
+                statement = statement.where(MacroObservation.observation_date >= start)
+            if end is not None:
+                statement = statement.where(MacroObservation.observation_date <= end)
+            rows = session.scalars(statement.order_by(MacroObservation.observation_date)).all()
+            points: list[VintagePoint] = []
+            for row in rows:
+                if row.realtime_start is None or row.realtime_end is None:
+                    continue
+                points.append(
+                    VintagePoint(
+                        observation_date=row.observation_date,
+                        value=row.value,
+                        unit=row.unit,
+                        realtime_start=row.realtime_start,
+                        realtime_end=row.realtime_end,
+                        revision_no=row.revision_no,
+                    )
+                )
+            return points
+
+
+def _provider(session: Session) -> DataProvider:
+    found = session.scalars(select(DataProvider).where(DataProvider.code == "fred")).one_or_none()
+    if found is not None:
+        return found
+    provider = DataProvider(
+        id=FRED_PROVIDER_ID,
+        code="fred",
+        name="FRED",
+        enabled=True,
+        config_public={
+            "transport": "https://api.stlouisfed.org",
+            "credential": "environment",
+        },
+    )
+    session.add(provider)
+    session.flush()
+    return provider
+
+
+def _upsert_series(session: Session, *, provider_id: uuid.UUID, seed: MacroSeriesSeed) -> None:
+    existing = session.scalars(
+        select(MacroSeries).where(MacroSeries.series_code == seed.series_code)
+    ).one_or_none()
+    metadata = _metadata(seed)
+    if existing is None:
+        session.add(
+            MacroSeries(
+                id=uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"https://finscope.local/series/{seed.series_code}"
+                ),
+                provider_id=provider_id,
+                series_code=seed.series_code,
+                name_cn=seed.name_cn,
+                name_en=seed.name_en,
+                region="US",
+                category=seed.category,
+                frequency=seed.frequency,
+                base_unit=seed.base_unit,
+                seasonal_adjustment=seed.seasonal_adjustment,
+                transform_rule="level",
+                enabled=True,
+                metadata_json=metadata,
+            )
+        )
+        return
+    existing.name_cn = seed.name_cn
+    existing.name_en = seed.name_en
+    existing.category = seed.category
+    existing.frequency = seed.frequency
+    existing.base_unit = seed.base_unit
+    existing.seasonal_adjustment = seed.seasonal_adjustment
+    existing.transform_rule = "level"
+    existing.enabled = True
+    existing.metadata_json = metadata
+
+
+def _metadata(seed: MacroSeriesSeed) -> dict[str, object]:
+    return {
+        "official_title": seed.name_en,
+        "unit_label": seed.base_unit,
+        "seasonal_label": seed.seasonal_adjustment,
+        "time_precision": "date",
+        "source_url": f"https://fred.stlouisfed.org/series/{seed.series_code}",
+        "source_agency": seed.source_agency,
+        "vintage_calendar": "America/New_York",
+        "note": "频率和单位不同的序列不能直接相加",
+    }
+
+
+def _observation(
+    series: MacroSeries,
+    vintage: FredVintage,
+    *,
+    fetched_at: datetime,
+    revision_no: int,
+) -> MacroObservation:
+    return MacroObservation(
+        id=uuid.uuid4(),
+        series_id=series.id,
+        observation_date=vintage.observation_date,
+        value=vintage.value,
+        unit=series.base_unit,
+        realtime_start=vintage.realtime_start,
+        realtime_end=vintage.realtime_end,
+        published_at=published_at_from_vintage(vintage.realtime_start),
+        fetched_at=fetched_at,
+        source_record_key=_record_key(series.series_code, vintage),
+        revision_no=revision_no,
+    )
+
+
+def _record_key(series_code: str, vintage: FredVintage) -> str:
+    return (
+        f"{series_code}|{vintage.observation_date.isoformat()}|{vintage.realtime_start.isoformat()}"
+    )
+
+
+def _renumber(session: Session, *, series_id: uuid.UUID, observation_date: date) -> None:
+    rows = list(
+        session.scalars(
+            select(MacroObservation).where(
+                MacroObservation.series_id == series_id,
+                MacroObservation.observation_date == observation_date,
+            )
+        ).all()
+    )
+    rows.sort(key=_start_or_min)
+    for index, row in enumerate(rows, start=1):
+        row.revision_no = -index
+    session.flush()
+    for index, row in enumerate(rows, start=1):
+        row.revision_no = index
+    session.flush()
+
+
+def _start_or_min(row: MacroObservation) -> date:
+    if row.realtime_start is None:
+        return date.min
+    return row.realtime_start
+
+
+def _seed_from_row(row: MacroSeries) -> MacroSeriesSeed:
+    agency = row.metadata_json.get("source_agency")
+    return MacroSeriesSeed(
+        series_code=row.series_code,
+        name_cn=row.name_cn,
+        name_en=row.name_en,
+        category=row.category,
+        frequency=row.frequency,
+        base_unit=row.base_unit,
+        seasonal_adjustment=row.seasonal_adjustment,
+        source_agency=agency if isinstance(agency, str) else "",
+    )
+
+
+def decimal_text(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text

@@ -85,6 +85,10 @@ def main() -> int:
             instruments = repository.upsert_reference(reference_instruments())
             days = repository.upsert_calendar(reference_calendar())
             print(f"证券元数据写入 {instruments} 条，交易日历写入 {days} 条，不写入行情价格。")
+            from app.repositories.macro import MacroRepository
+
+            series = MacroRepository(engine).ensure_catalog()
+            print(f"宏观序列定义写入 {series} 条，不写入观测值。")
         return code
     finally:
         engine.dispose()

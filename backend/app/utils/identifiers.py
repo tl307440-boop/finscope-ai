@@ -56,9 +56,9 @@ def parse_listed_code(value: str) -> ListedCode | None:
         return None
     if "." in text:
         symbol, _, suffix = text.partition(".")
-        exchange = _SUFFIX_TO_EXCHANGE.get(suffix)
-        if exchange and symbol.isdigit() and len(symbol) == 6:
-            return _cn(exchange, symbol)
+        suffix_exchange = _SUFFIX_TO_EXCHANGE.get(suffix)
+        if suffix_exchange and symbol.isdigit() and len(symbol) == 6:
+            return _cn(suffix_exchange, symbol)
         return None
     if len(text) == 8 and text[:2] in _SUFFIX_TO_EXCHANGE and text[2:].isdigit():
         return _cn(_SUFFIX_TO_EXCHANGE[text[:2]], text[2:])
