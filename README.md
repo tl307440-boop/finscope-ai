@@ -83,6 +83,42 @@ uv run python -m app.scripts.seed
 
 密钥、`.env`、用户上传和数据库备份不要提交。
 
+## 文档
+
+- `docs/SPEC.md`：完整详细设计规格书。
+- `docs/TASKS.md`：T00 起的分阶段任务与验收清单。
+- `docs/API.md`：接口说明。
+- `docs/UI-设计规范.md`：界面规范。栅格尺寸、颜色 token、组件清单、图表规则，
+  以及十张效果图到路由的对照表。改页面前先看这一份。
+- `docs/IMPLEMENTATION_LOG.md`：每轮的变更、验证和已知局限。
+- `docs/thesis/`：论文与答辩材料（测试与图表、结构图、ER 图、架构图、业务流程图、
+  用例图、部署与演示）。
+- `docs/screenshots/`：24 张运行截图，由 `frontend/e2e/screenshots.spec.ts` 生成。
+
+## 数据来源
+
+A 股日线按顺序尝试两个免费上游，第一个通了就用：
+
+1. 东方财富 `push2his.eastmoney.com`（主源，带成交额）
+2. 腾讯行情 `web.ifzq.gtimg.cn`（备用，**不返回成交额**）
+
+腾讯不返回成交额时，`amount` 存 `NULL`、界面显示「—」，
+不用 量×价 之类的办法补一个看起来合理的数字。
+
+美国宏观走 FRED（需要 `FRED_API_KEY`），中国宏观只接受官方导出的 CSV 导入。
+没有配置时接口返回 `unavailable` 并说明原因，页面照实显示空态。
+
 ## 尚未实现
 
-T01 起的登录、权限、证券主数据、行情、宏观、财报和 AI 都还没有做。运行状态页里的“业务数据”会保持“尚未接入”。
+- 美国宏观：没有 `FRED_API_KEY`，`/macro/us` 的观测值拿不到。
+- 中国宏观：没有官方 CSV 入库，六个序列都是 `unavailable`。
+- AI 段落：没有配置 `LLM_*`，财报解读走规则分支，不会生成模型文字。
+- 热点与公告：`ENABLE_NEWS=false` 且未导入合规公告，`/hotspots` 是空态。
+- 调度器里的 `compute_financial_metrics`、`compute_macro_regime`、
+  `refresh_hotspot_events` 只登记了触发与幂等键，执行器未接，默认关闭。
+- 报告没有 PDF 导出接口。
+- 列表接口还没有分页参数。
+- 端到端测试只在 Chromium 上跑。
+
+这些在页面上一律显示为 `unavailable` / `insufficient` / 空态并写明原因，
+不会用假数据顶上去。

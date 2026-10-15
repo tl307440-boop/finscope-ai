@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from statistics import median, pstdev
 
 MIN_INDEX_BARS = 60
@@ -56,19 +56,27 @@ def market_temperature(
     breadth = _breadth(eligible)
     active = _activity(ordered)
     vol = _volatility(ordered)
-    if active is None or vol is None:
-        return _unable("成交额或波动样本不足，无法判断", notice)
-    factors = (trend, breadth, active, vol)
-    score = sum(
-        ((item.score or Decimal(0)) * item.weight for item in factors),
-        Decimal(0),
+    # 因子可以单个缺失：成交额要看数据源给不给（腾讯不给），波动要看样本长度。
+    # 缺一个就把剩下的权重归一化，并把缺哪个写进 coverage——比整页「无法判断」诚实，
+    # 也比拿别的字段凑一个活跃度诚实。
+    factors = tuple(item for item in (trend, breadth, active, vol) if item is not None)
+    missing = [label for label, item in (("活跃", active), ("波动", vol)) if item is None]
+    total_weight = sum((item.weight for item in factors), Decimal(0))
+    if not factors or total_weight <= 0:
+        return _unable("可用因子为零，无法判断", notice)
+    score = (
+        sum(((item.score or Decimal(0)) * item.weight for item in factors), Decimal(0))
+        / total_weight
     )
     label = "偏强" if score >= 60 else "偏弱" if score <= 40 else "中性"
+    coverage = f"指数 {len(ordered)} 日，成分 {len(eligible)} 只"
+    if missing:
+        coverage += f"；{'、'.join(missing)}因子无数据，已按剩余权重归一"
     return TemperatureResult(
         status="ok",
         label=label,
         score=score.quantize(Decimal("0.1")),
-        coverage=f"指数 {len(ordered)} 日，成分 {len(eligible)} 只",
+        coverage=coverage,
         factors=factors,
         notice=notice,
     )
@@ -228,7 +236,10 @@ def _ordered(bars: list[PriceBar]) -> list[PriceBar]:
 
 
 def _mean(values: list[Decimal]) -> Decimal:
-    return sum(values, Decimal(0)) / Decimal(len(values))
+    # 证据串里会直接写出 MA20 / MA60，所以先定刻度，别让 28 位除法尾巴进到文案里。
+    return (sum(values, Decimal(0)) / Decimal(len(values))).quantize(
+        Decimal("0.0001"), rounding=ROUND_HALF_UP
+    )
 
 
 def _unable(coverage: str, notice: str) -> TemperatureResult:

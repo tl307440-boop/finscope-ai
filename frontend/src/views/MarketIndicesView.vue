@@ -8,9 +8,20 @@
  * 没有入库的日期不会补价格，图上与表里只画真实返回的交易日。
  */
 import { computed, onMounted, ref } from "vue"
+import { Histogram } from "@element-plus/icons-vue"
 import { VChart } from "../charts"
+import DeltaValue from "../components/ui/DeltaValue.vue"
+import MetricTile from "../components/ui/MetricTile.vue"
+import MiniSpark from "../components/ui/MiniSpark.vue"
+import PageHeader from "../components/ui/PageHeader.vue"
+import PanelCard from "../components/ui/PanelCard.vue"
+import SectionTabs from "../components/ui/SectionTabs.vue"
+import SourceFooter from "../components/ui/SourceFooter.vue"
+import StatCard from "../components/ui/StatCard.vue"
+import StateBlock from "../components/ui/StateBlock.vue"
+import StatusPill from "../components/ui/StatusPill.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
-import { adjustmentLabel, summarizeBars } from "../api/bars"
+import { adjustmentLabel, summarizeBars, volumeUnitLabel } from "../api/bars"
 import type { DailyBar } from "../api/bars"
 import { asNumber, asRecord, asString, dataOf, formatMoment } from "../api/json"
 import type { EChartsOption } from "echarts"
@@ -34,6 +45,8 @@ interface SeriesState {
   bars: DailyBar[]
   emptyMessage: string | null
   truncated: boolean
+  /** 后端返回的复权口径（none / qfq / hfq），页面上要标出来 */
+  adjustment: string
   problem: string | null
 }
 
@@ -83,6 +96,25 @@ const emptyText = computed(() =>
   summarizeBars({ emptyMessage: active.value?.emptyMessage ?? null, bars: bars.value })[0] ?? "",
 )
 
+/** 最新一个交易日的原始读数，全部直接来自接口，不在前端二次计算比率。 */
+const latestBar = computed<DailyBar | null>(() => (bars.value.length ? bars.value[bars.value.length - 1] ?? null : null))
+
+/** 每个指数一张大卡用的迷你走势：取各自收盘价，缺失日期不补值。 */
+function sparkPoints(item: SeriesState): number[] {
+  return item.bars
+    .map((bar) => asNumber(bar.close))
+    .filter((value): value is number => value !== null)
+    .slice(-60)
+}
+
+/** 指数切换页签，名称取数据库返回的 name_cn。 */
+const indexTabs = computed(() =>
+  INDEXES.map((item) => ({
+    key: item.symbol,
+    label: seriesMap.value[item.symbol]?.name ?? item.fallbackName,
+  })),
+)
+
 /** 收盘价与相对上一交易日的涨跌：正数带 + 号，跌绿涨红，颜色不是唯一区分手段。 */
 const latest = computed(() => {
   const rows = bars.value
@@ -114,31 +146,6 @@ const latest = computed(() => {
     adjustment: last,
   }
 })
-
-function signed(value: number | null, digits: number, suffix: string): string {
-  if (value === null) {
-    return "—"
-  }
-  const sign = value > 0 ? "+" : ""
-  return `${sign}${value.toFixed(digits)}${suffix}`
-}
-
-function trendClass(value: number | null): string {
-  if (value === null) {
-    return "muted"
-  }
-  if (value > 0) {
-    return "rise"
-  }
-  if (value < 0) {
-    return "fall"
-  }
-  return "muted"
-}
-
-function percentText(value: number | null): string {
-  return value === null ? "—" : `${(value * 100).toFixed(2)}%`
-}
 
 function volumeText(value: string): string {
   const parsed = asNumber(value)
@@ -344,6 +351,7 @@ async function load(): Promise<void> {
             bars: [],
             emptyMessage: "该指数未入库",
             truncated: false,
+            adjustment: "none",
             problem: "该指数未入库",
           }
           continue
@@ -362,6 +370,7 @@ async function load(): Promise<void> {
           bars: rows,
           emptyMessage: asString(page.data?.empty_message),
           truncated: page.data?.truncated === true,
+          adjustment: asString(page.data?.adjustment) ?? "none",
           problem: null,
         }
       } catch (error) {
@@ -374,6 +383,7 @@ async function load(): Promise<void> {
           bars: [],
           emptyMessage: null,
           truncated: false,
+          adjustment: "none",
           problem: apiError.message,
         }
       }
@@ -412,287 +422,260 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page">
-    <header class="page-head">
-      <div>
-        <h1>指数行情</h1>
-        <p class="muted">
-          只展示已入库的四个中国指数日线（不复权）；未同步的日期不会用演示价格填补。
-        </p>
-      </div>
-      <div class="range-bar">
-        <el-date-picker
-          v-model="range"
-          type="daterange"
-          value-format="YYYY-MM-DD"
-          start-placeholder="开始日期"
-          end-placeholder="结束日期"
-          range-separator="至"
-          :clearable="false"
-        />
-        <el-button :loading="loading" @click="load">查询</el-button>
-        <el-button text :loading="loading" @click="resetRange">最近 90 天</el-button>
-      </div>
-    </header>
+  <div class="page">
+    <PageHeader title="市场行情" subtitle="指数行情 · 只展示已入库的真实交易日，缺失日期不补价格">
+      <template #actions>
+        <el-button :loading="loading" @click="load">刷新</el-button>
+      </template>
+      <template #filters>
+        <div class="filter-row">
+          <span class="filter-label">时间范围</span>
+          <el-date-picker
+            v-model="range"
+            type="daterange"
+            value-format="YYYY-MM-DD"
+            range-separator="~"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            @change="load"
+          />
+          <el-button text @click="resetRange">近 {{ DEFAULT_DAYS }} 天</el-button>
+        </div>
+      </template>
+    </PageHeader>
 
-    <p v-if="phase === 'ready'" class="meta-line muted">
-      数据时间 {{ asOfText }} · 来源 {{ meta.source ?? "—" }} · 请求号 {{ requestId || "—" }}
-    </p>
-
-    <div v-if="demoMode" class="banner" role="status">
-      当前返回的是{{ meta.dataMode }}数据，不是实时行情，请勿据此下单。
-    </div>
-    <div v-if="phase === 'ready' && meta.stale" class="banner" role="status">
-      数据已过期（stale），展示的是上次成功抓取的结果。
-    </div>
-
-    <section v-if="phase === 'loading'" class="skeleton" aria-busy="true">正在读取指数日线</section>
-
-    <section v-else-if="phase === 'error'" class="panel" role="alert">
-      <h1>无法加载指数行情</h1>
-      <p>{{ errorMessage }}</p>
-      <p v-if="errorCode" class="muted">错误码 {{ errorCode }} · 请求号 {{ requestId || "—" }}</p>
-      <button class="retry" type="button" @click="load">重试</button>
-    </section>
+    <StateBlock v-if="phase === 'error'" state="error" :message="errorMessage" @retry="load" />
 
     <template v-else>
-      <section class="panel">
-        <div class="panel-head">
-          <h2>指数列表</h2>
-          <span class="muted">点击切换下方图表与明细</span>
-        </div>
-        <div class="index-grid">
-          <button
-            v-for="item in INDEXES"
-            :key="item.symbol"
-            type="button"
-            class="index-card card"
-            :class="{ active: item.symbol === activeSymbol }"
-            :aria-pressed="item.symbol === activeSymbol"
-            @click="changedSymbol(item.symbol)"
-          >
-            <span class="index-name">
-              {{ seriesMap[item.symbol]?.name ?? item.fallbackName }}
-              <span class="muted">{{ item.symbol }}</span>
-            </span>
-            <span class="muted">
-              日线 {{ seriesMap[item.symbol]?.bars.length ?? 0 }} 条
-            </span>
-            <span
-              v-if="seriesMap[item.symbol]?.problem"
-              class="chip chip-warn"
-            >
-              {{ seriesMap[item.symbol]?.problem }}
-            </span>
-            <span
-              v-else-if="!(seriesMap[item.symbol]?.bars.length ?? 0)"
-              class="chip chip-warn"
-            >
-              暂无已同步的日线
-            </span>
-            <span v-else class="chip chip-ok">已有日线</span>
-          </button>
-        </div>
-      </section>
+      <!-- 四个指数各一张大卡 -->
+      <div class="grid-4">
+        <StatCard
+          v-for="item in INDEXES"
+          :key="item.symbol"
+          :title="item.symbol"
+          :value="seriesMap[item.symbol]?.bars.length ? (asNumber(seriesMap[item.symbol]!.bars[seriesMap[item.symbol]!.bars.length - 1]!.close)?.toFixed(2) ?? null) : null"
+          :caption="seriesMap[item.symbol]?.problem ?? seriesMap[item.symbol]?.name ?? item.fallbackName"
+          :info="seriesMap[item.symbol]?.name ?? item.fallbackName"
+        >
+          <template #icon><el-icon><Histogram /></el-icon></template>
+          <template #chart>
+            <MiniSpark
+              v-if="sparkPoints(seriesMap[item.symbol]!).length > 1"
+              :points="sparkPoints(seriesMap[item.symbol]!)"
+              kind="area"
+              tone="up"
+              :width="88"
+              :height="36"
+            />
+          </template>
+        </StatCard>
+      </div>
 
-      <section class="panel">
-        <div class="panel-head">
-          <h2>
-            {{ active?.name ?? "指数" }}
-            <span class="muted">{{ activeSymbol }}</span>
-          </h2>
-          <span v-if="bars.length" class="muted">
-            不复权 · 展示 {{ bars.length }} 个交易日
-          </span>
-        </div>
+      <div class="grid-2-1 section">
+        <PanelCard title="指数走势" info="K线与成交量全部来自 /market/bars，十字线对齐两个坐标轴">
+          <template #actions>
+            <SectionTabs :tabs="indexTabs" :model-value="activeSymbol" @update:model-value="changedSymbol" />
+          </template>
 
-        <div v-if="latest" class="latest-row">
-          <div>
-            <p class="muted">最新收盘（{{ latest.tradeDate }}）</p>
-            <p class="state" :class="trendClass(latest.change)">
-              {{ latest.close.toFixed(2) }} {{ latest.currency }}
-            </p>
-          </div>
-          <div>
-            <p class="muted">较上一交易日</p>
-            <p class="state" :class="trendClass(latest.change)">
-              {{ signed(latest.change, 2, "") }}
-              <span v-if="latest.changePercent !== null">
-                （{{ signed(latest.changePercent, 2, "%") }}）
+          <StateBlock v-if="loading" state="loading" :rows="6" />
+          <StateBlock v-else-if="bars.length === 0" state="empty" :message="emptyText || '该指数暂无已同步的日线'" @retry="load" />
+          <template v-else>
+            <div class="ohlc-row">
+              <span class="ohlc-item">
+                <em>交易日</em>
+                <strong>{{ latestBar?.trade_date ?? "—" }}</strong>
               </span>
-            </p>
-          </div>
+              <span class="ohlc-item"><em>开</em><strong>{{ latestBar?.open ?? "—" }}</strong></span>
+              <span class="ohlc-item"><em>高</em><strong>{{ latestBar?.high ?? "—" }}</strong></span>
+              <span class="ohlc-item"><em>低</em><strong>{{ latestBar?.low ?? "—" }}</strong></span>
+              <span class="ohlc-item">
+                <em>收</em>
+                <strong>{{ latestBar?.close ?? "—" }}</strong>
+                <DeltaValue :value="latest?.changePercent ?? null" suffix="%" size="sm" />
+              </span>
+              <span class="ohlc-item">
+                <em>成交量</em>
+                <strong>{{ volumeText(latestBar?.volume ?? "") }}</strong>
+              </span>
+              <span class="ohlc-item">
+                <em>复权</em>
+                <StatusPill :text="adjustmentLabel(active?.adjustment ?? 'none')" tone="muted" />
+              </span>
+            </div>
+            <VChart class="chart-main" :option="chartOption" autoresize />
+          </template>
+        </PanelCard>
+
+        <div class="stack">
+          <PanelCard title="最新交易日读数" info="数值直接来自接口返回的日线字段，前端不做二次计算">
+            <div class="tile-grid">
+              <MetricTile label="开盘" :value="latestBar?.open ?? null" />
+              <MetricTile label="最高" :value="latestBar?.high ?? null" />
+              <MetricTile label="最低" :value="latestBar?.low ?? null" />
+              <MetricTile label="收盘" :value="latestBar?.close ?? null" />
+              <MetricTile
+                label="成交量"
+                :value="volumeText(latestBar?.volume ?? '')"
+                :period="volumeUnitLabel(latestBar?.volume_unit)"
+              />
+              <MetricTile label="涨跌幅" :value="latest?.changePercent === null || latest?.changePercent === undefined ? null : latest.changePercent.toFixed(2)" unit="%" />
+            </div>
+          </PanelCard>
+
+          <PanelCard title="移动均线" info="MA5/10/20/60 由后端按已入库日线计算，样本不足时为空">
+            <div class="tile-grid">
+              <MetricTile label="MA5" :value="latestBar?.ma5 ?? null" />
+              <MetricTile label="MA10" :value="latestBar?.ma10 ?? null" />
+              <MetricTile label="MA20" :value="latestBar?.ma20 ?? null" />
+              <MetricTile label="MA60" :value="latestBar?.ma60 ?? null" />
+            </div>
+          </PanelCard>
+
+          <PanelCard title="区间完整性" info="区间内没有日线的交易日不会被补齐，这是规格书要求的缺数处理">
+            <ul class="plain-list">
+              <li>
+                <span>区间</span>
+                <strong>{{ range[0] ?? "—" }} ~ {{ range[1] ?? "—" }}</strong>
+              </li>
+              <li>
+                <span>返回条数</span>
+                <strong class="tabular">{{ bars.length }}</strong>
+              </li>
+              <li>
+                <span>是否截断</span>
+                <StatusPill :text="active?.truncated ? '已截断' : '未截断'" :tone="active?.truncated ? 'warn' : 'ok'" />
+              </li>
+              <li>
+                <span>数据模式</span>
+                <StatusPill :text="meta.dataMode ?? '—'" :tone="demoMode ? 'warn' : 'ok'" />
+              </li>
+            </ul>
+            <p v-if="emptyText" class="notice-text">{{ emptyText }}</p>
+          </PanelCard>
         </div>
+      </div>
 
-        <p v-if="active?.truncated" class="banner" role="status">
-          日线条数达到后端返回上限，图表只显示截取到的部分。
-        </p>
+      <PanelCard title="四个指数的入库情况" info="条数与最新交易日来自 /market/bars 的实际返回" class="section" flush>
+        <el-table :data="INDEXES" size="small">
+          <el-table-column prop="symbol" label="代码" width="120" />
+          <el-table-column label="名称" min-width="120">
+            <template #default="{ row }">{{ seriesMap[row.symbol]?.name ?? row.fallbackName }}</template>
+          </el-table-column>
+          <el-table-column label="最新交易日" width="140">
+            <template #default="{ row }">
+              {{ seriesMap[row.symbol]?.bars.length ? seriesMap[row.symbol]!.bars[seriesMap[row.symbol]!.bars.length - 1]!.trade_date : "—" }}
+            </template>
+          </el-table-column>
+          <el-table-column label="区间条数" width="120" align="right">
+            <template #default="{ row }">
+              <span class="tabular">{{ seriesMap[row.symbol]?.bars.length ?? 0 }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="150">
+            <template #default="{ row }">
+              <StatusPill
+                :text="seriesMap[row.symbol]?.problem ? '缺数据' : '已入库'"
+                :tone="seriesMap[row.symbol]?.problem ? 'warn' : 'ok'"
+                dot
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="说明" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">{{ seriesMap[row.symbol]?.problem ?? "—" }}</template>
+          </el-table-column>
+        </el-table>
+      </PanelCard>
 
-        <template v-if="bars.length">
-          <VChart class="chart" :option="chartOption" autoresize />
-          <el-table :data="bars" size="small" stripe max-height="360">
-            <el-table-column prop="trade_date" label="交易日" width="120" />
-            <el-table-column prop="open" label="开盘" width="100" />
-            <el-table-column prop="high" label="最高" width="100" />
-            <el-table-column prop="low" label="最低" width="100" />
-            <el-table-column prop="close" label="收盘" width="100" />
-            <el-table-column label="成交量" width="120">
-              <template #default="{ row }">
-                {{ volumeText(row.volume) }} {{ row.volume_unit === "hand" ? "手" : row.volume_unit }}
-              </template>
-            </el-table-column>
-            <el-table-column label="MA5" width="90">
-              <template #default="{ row }">{{ row.ma5 ?? "样本不足" }}</template>
-            </el-table-column>
-            <el-table-column label="MA10" width="90">
-              <template #default="{ row }">{{ row.ma10 ?? "样本不足" }}</template>
-            </el-table-column>
-            <el-table-column label="MA20" width="90">
-              <template #default="{ row }">{{ row.ma20 ?? "样本不足" }}</template>
-            </el-table-column>
-            <el-table-column label="MA60" width="90">
-              <template #default="{ row }">{{ row.ma60 ?? "样本不足" }}</template>
-            </el-table-column>
-            <el-table-column label="区间收益" width="110">
-              <template #default="{ row }">{{ percentText(asNumber(row.simple_return)) }}</template>
-            </el-table-column>
-          </el-table>
-        </template>
-
-        <template v-else>
-          <el-empty :description="emptyText" />
-          <p v-if="active?.problem" class="muted">{{ active.problem }}</p>
-          <p v-else class="muted">
-            {{ adjustmentLabel("none") }}口径的日线尚未同步；同步任务完成后这里会出现 K 线。
-          </p>
-        </template>
-      </section>
+      <SourceFooter
+        :as-of="asOfText"
+        :sources="meta.source ? [meta.source] : []"
+        :stale="meta.stale"
+        :note="demoMode ? `当前数据模式：${meta.dataMode}` : ''"
+      />
     </template>
-  </main>
+  </div>
 </template>
 
 <style scoped>
-.page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
+.section {
+  margin-top: var(--gap);
 }
 
-.page-head h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
-}
-
-.range-bar {
+.filter-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.meta-line {
-  margin: 0 0 16px;
-  word-break: break-all;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
 }
 
-.panel-head h2 {
-  margin: 0;
-  font-size: 17px;
-}
-
-.index-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  margin-top: 12px;
-}
-
-.index-card {
-  display: grid;
-  gap: 6px;
-  text-align: left;
-  cursor: pointer;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  min-height: 0;
-}
-
-.index-card.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset;
-}
-
-.index-name {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.latest-row {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  margin: 12px 0;
-}
-
-.state {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.chip {
-  display: inline-block;
-  padding: 2px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+.filter-label {
   font-size: 12px;
   color: var(--muted);
 }
 
-.chip-ok {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-}
-
-.chip-warn {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-}
-
-.chart {
+.chart-main {
   width: 100%;
-  height: 420px;
-  margin-bottom: 12px;
+  height: 380px;
+  margin-top: 12px;
 }
 
-@media (min-width: 768px) {
-  .index-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .latest-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+.ohlc-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
-@media (min-width: 1280px) {
-  .index-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+.ohlc-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.ohlc-item em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ohlc-item strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+
+.plain-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.plain-list strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.notice-text {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
 }
 </style>

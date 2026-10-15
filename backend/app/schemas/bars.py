@@ -18,7 +18,9 @@ class DailyBarItem(BaseModel):
     low: str
     close: str
     volume: str
-    amount: str
+    # 部分行情源不提供成交额（腾讯只给成交量）。缺的时候给 null，前端渲染「—」，
+    # 不用 量×价 之类的办法补一个看起来合理的数字。
+    amount: str | None
     currency: Literal["CNY"]
     volume_unit: Literal["hand"]
     adjustment: Literal["none", "qfq", "hfq"]
@@ -99,7 +101,7 @@ def _item(
         low=decimal_text(row.low),
         close=decimal_text(row.close),
         volume=decimal_text(row.volume),
-        amount=decimal_text(row.amount),
+        amount=decimal_text(row.amount) if row.amount is not None else None,
         currency="CNY",
         volume_unit="hand",
         adjustment=adjustment,

@@ -11,7 +11,7 @@ from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
-from app.services.akshare_sync import apply_kline_payload, fetch_klines
+from app.services.akshare_sync import apply_bars, fetch_bars
 from app.services.document_index import index_document_by_id
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.utils.time import utc_now
@@ -41,8 +41,8 @@ def _akshare(engine: Engine, scope: dict[str, object]) -> int:
             message=UNSUPPORTED_SYMBOL_MESSAGE,
             status_code=422,
         )
-    payload = asyncio.run(fetch_klines(symbol, start, end, adjustment))
-    outcome = apply_kline_payload(
+    payload = asyncio.run(fetch_bars(symbol, start, end, adjustment))
+    outcome = apply_bars(
         engine,
         payload,
         display_symbol=symbol,

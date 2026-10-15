@@ -64,7 +64,8 @@ class MarketBar(Base):
     low: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     close: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     volume: Mapped[Decimal] = mapped_column(Numeric(24, 6), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(Numeric(24, 6), nullable=False)
+    # 可空：腾讯行情只给成交量，不给成交额。缺就留空，界面显示「—」。
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(24, 6), nullable=True)
     turnover_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     provider_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

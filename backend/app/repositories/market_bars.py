@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -24,7 +24,7 @@ class StoredDailyBar:
     low: Decimal
     close: Decimal
     volume: Decimal
-    amount: Decimal
+    amount: Decimal | None
     adjustment: str
     quality_flag: str
 
@@ -73,6 +73,13 @@ class MarketBarRepository:
             return str(row.close), row.quality_flag
 
     def ensure_akshare_provider(self) -> UUID:
+        """A 股日线用的 provider 行。
+
+        provider 的 code 从 20261015_0005 起就是 `akshare`，它已经被 market_bars
+        的外键引用，所以这里不改 code，只把对外可见的名字和上游清单写实：
+        现在这一行底下同时存着东方财富和腾讯行情两个上游抓来的日线。
+        """
+
         with Session(self.engine) as session:
             found = session.scalars(
                 select(DataProvider).where(DataProvider.code == "akshare")
@@ -82,10 +89,13 @@ class MarketBarRepository:
             provider = DataProvider(
                 id=AKSHARE_PROVIDER_ID,
                 code="akshare",
-                name="AKShare",
+                name="A股日线（东方财富 / 腾讯行情）",
                 enabled=True,
                 config_public={
-                    "transport": "https://push2his.eastmoney.com",
+                    "upstreams": [
+                        "https://push2his.eastmoney.com",
+                        "https://web.ifzq.gtimg.cn",
+                    ],
                     "credential": "none",
                     "volume_unit": "hand",
                 },
@@ -173,7 +183,9 @@ def _upsert_one(
             "low": statement.excluded.low,
             "close": statement.excluded.close,
             "volume": statement.excluded.volume,
-            "amount": statement.excluded.amount,
+            # 新数据缺成交额时保留库里已有的：腾讯不给成交额，不能让它把
+            # 东方财富已经抓到的成交额覆盖成空。
+            "amount": func.coalesce(statement.excluded.amount, MarketBar.amount),
             "fetched_at": statement.excluded.fetched_at,
             "quality_flag": statement.excluded.quality_flag,
         },

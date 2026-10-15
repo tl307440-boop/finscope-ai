@@ -3,6 +3,21 @@ from decimal import Decimal
 from app.services.bar_indicators import moving_average, series_without_gaps, simple_return
 
 
+def test_ma_is_rounded_so_the_serialized_text_has_no_tail() -> None:
+    """60 日均线除以 60 是循环小数；对外文本不能出现 1295.7418333333333333333 这种尾巴。"""
+
+    closes = [Decimal("1295.7418333333333333333")] * 60
+    average = moving_average(closes, 60)
+    assert average == Decimal("1295.7418")
+    assert format(average, "f") == "1295.7418"
+
+
+def test_return_is_rounded_to_six_places() -> None:
+    ratio = simple_return(Decimal("3"), Decimal("7"))
+    assert ratio == Decimal("1.333333")
+    assert format(ratio, "f") == "1.333333"
+
+
 def test_ma20_is_null_until_twenty_closes_exist() -> None:
     closes = [Decimal(str(index)) for index in range(1, 20)]
     assert moving_average(closes, 20) is None

@@ -59,7 +59,8 @@ describe("账号设置入口", () => {
 
   it("研究者看不到数据源管理入口", async () => {
     await renderSettings("researcher")
-    await screen.findByRole("button", { name: "退出" })
+    // 等账号资料真正加载完（标题是静态的，不能拿它当加载完成的信号）。
+    await screen.findByText("researcher@example.com")
     expect(screen.queryByRole("link", { name: "打开数据源管理" })).toBeNull()
   })
 })

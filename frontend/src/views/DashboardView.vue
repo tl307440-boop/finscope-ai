@@ -7,6 +7,24 @@
  * 任何分数、条数、日期都用 asNumber/asString 收窄后再渲染，不写死演示数值。
  */
 import { computed, onMounted, ref } from "vue"
+import type { EChartsOption } from "echarts"
+import {
+  DataAnalysis,
+  Histogram,
+  MagicStick,
+  Monitor,
+  TrendCharts,
+  Trophy,
+} from "@element-plus/icons-vue"
+import { VChart } from "../charts"
+import DeltaValue from "../components/ui/DeltaValue.vue"
+import MiniSpark from "../components/ui/MiniSpark.vue"
+import PageHeader from "../components/ui/PageHeader.vue"
+import PanelCard from "../components/ui/PanelCard.vue"
+import SourceFooter from "../components/ui/SourceFooter.vue"
+import StatCard from "../components/ui/StatCard.vue"
+import StateBlock from "../components/ui/StateBlock.vue"
+import StatusPill from "../components/ui/StatusPill.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import {
   asList,
@@ -100,6 +118,10 @@ interface IndexRow {
   name: string
   barCount: number
   latestTradeDate: string | null
+  /** 最近 60 个交易日的收盘价，只有真实返回的日期，不补零 */
+  closes: number[]
+  latestClose: number | null
+  changePercent: number | null
   problem: string | null
 }
 
@@ -153,10 +175,15 @@ const indexLoading = ref(false)
 const indexLoaded = ref(false)
 
 const session = useSessionStore()
-const staleNotice = computed(() => meta.value.stale && meta.value.notice !== null)
 const demoMode = computed(() => meta.value.dataMode !== null && meta.value.dataMode !== "live")
 const asOfText = computed(() => formatMoment(meta.value.asOf))
-const missingIndexRows = computed(() => indexRows.value.filter((row) => row.problem !== null).length)
+
+/** 市场温度卡片的迷你柱：五个因子的真实得分，取不到就不画。 */
+const temperatureFactorPoints = computed<number[]>(() =>
+  (temperature.value?.factors ?? [])
+    .map((factor) => factor.score)
+    .filter((score): score is number => score !== null),
+)
 
 function toApiError(error: unknown): ApiError {
   if (error instanceof ApiError) {
@@ -416,17 +443,32 @@ async function loadIndexRows(): Promise<void> {
           name: "—",
           barCount: 0,
           latestTradeDate: null,
+          closes: [],
+          latestClose: null,
+          changePercent: null,
           problem: "该指数未入库",
         })
         continue
       }
       const bars = await getJson(`/api/v1/market/bars/${instrumentId}?limit=3000`, null)
       const items = listOf(bars.data?.bars)
+      const closes = items
+        .map((item) => asNumber(item.close))
+        .filter((value): value is number => value !== null)
+      const tail = closes.slice(-60)
+      const lastClose = closes.length ? closes[closes.length - 1] : null
+      const previousClose = closes.length > 1 ? closes[closes.length - 2] : null
       rows.push({
         symbol,
         name: asString(hit.name_cn) ?? asString(hit.name_en) ?? "—",
         barCount: items.length,
         latestTradeDate: asString(items[items.length - 1]?.trade_date),
+        closes: tail,
+        latestClose: lastClose,
+        changePercent:
+          lastClose !== null && previousClose !== null && previousClose !== 0
+            ? ((lastClose - previousClose) / previousClose) * 100
+            : null,
         problem: asString(bars.data?.empty_message),
       })
     } catch (error) {
@@ -435,6 +477,9 @@ async function loadIndexRows(): Promise<void> {
         name: "—",
         barCount: 0,
         latestTradeDate: null,
+        closes: [],
+        latestClose: null,
+        changePercent: null,
         problem: toApiError(error).message,
       })
     }
@@ -485,6 +530,7 @@ async function load(): Promise<void> {
       loadDigest(),
       loadJobs(),
       loadProviders(),
+      loadIndexRows(),
     ])
   } finally {
     busy.value = false
@@ -516,23 +562,106 @@ function statusText(value: string): string {
   return value
 }
 
-function statusClass(value: string): string {
-  if (value === "ok" || value === "ready" || value === "up" || value === "alive" || value === "configured" || value === "not_required") {
-    return "chip chip-ok"
-  }
-  if (value === "insufficient" || value === "unavailable" || value === "down") {
-    return "chip chip-warn"
-  }
-  return "chip"
-}
-
-function factorScoreText(value: number | null): string {
-  return value === null ? "样本不足" : value.toFixed(1)
-}
-
 function regionReason(value: string): string {
   return value === "insufficient_data" ? "样本不足" : value
 }
+
+/** 驾驶舱的四张大卡：数值全部来自上面几个接口，取不到就渲染「—」。 */
+const cardMacroValue = computed<string>(() => {
+  const code = macro.value?.regimeCode ?? ""
+  if (!code || code === "unknown" || code === "insufficient_data") {
+    return "—"
+  }
+  return code
+})
+
+const cardMacroCaption = computed<string>(() => {
+  if (!macro.value) {
+    return sectionErrors.value.macro ?? "读取中"
+  }
+  const regions = macro.value.regions
+  if (regions.length && regions.every((item) => item.reason === "insufficient_data")) {
+    return "增长/通胀/流动性样本均不足"
+  }
+  return macro.value.notice || `时点 ${macro.value.pitDate}`
+})
+
+const cardTemperatureCaption = computed<string>(() => {
+  if (!temperature.value) {
+    return sectionErrors.value.temperature ?? "读取中"
+  }
+  return [temperature.value.label, temperature.value.coverage].filter(Boolean).join(" · ")
+})
+
+const cardHotspotCaption = computed<string>(() => {
+  if (!hotspots.value) {
+    return sectionErrors.value.hotspots ?? "读取中"
+  }
+  return hotspots.value.label
+})
+
+const cardReadyValue = computed<string>(() => {
+  if (readyState.value === null) {
+    return "—"
+  }
+  if (readyState.value === "ready" || readyState.value === "ok" || readyState.value === "alive") {
+    return "正常"
+  }
+  return "异常"
+})
+
+const cardReadyCaption = computed<string>(() => {
+  if (readyChecks.value.length === 0) {
+    return sectionErrors.value.ready ?? "就绪检查读取中"
+  }
+  return readyChecks.value.map((item) => `${item.label} ${item.detail}`).join(" · ")
+})
+
+/** 四个指数近 60 个交易日的收盘价，缺失日期不补值。 */
+const indexChartOption = computed<EChartsOption>(() => {
+  const palette = ["#3b82f6", "#f87171", "#34d399", "#fbbf24"]
+  const usable = indexRows.value.filter((row) => row.closes.length > 1)
+  const longest = usable.reduce((max, row) => Math.max(max, row.closes.length), 0)
+  const axis = Array.from({ length: longest }, (_, index) => `T-${longest - 1 - index}`)
+  return {
+    animation: false,
+    tooltip: { trigger: "axis" },
+    legend: {
+      data: usable.map((row) => row.symbol),
+      textStyle: { color: "#95a6be", fontSize: 11 },
+      icon: "circle",
+      top: 0,
+    },
+    grid: { left: 8, right: 8, top: 34, bottom: 4, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: axis,
+      axisLabel: { color: "#95a6be", fontSize: 11 },
+      axisLine: { lineStyle: { color: "rgba(149,166,190,0.3)" } },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      axisLabel: { color: "#95a6be", fontSize: 11 },
+      splitLine: { lineStyle: { color: "rgba(149,166,190,0.12)" } },
+    },
+    series: usable.map((row, index) => ({
+      name: row.symbol,
+      type: "line" as const,
+      data: row.closes.map((value, offset) => [offset + (longest - row.closes.length), value]),
+      smooth: false,
+      symbol: "none",
+      lineStyle: { color: palette[index % palette.length], width: 1.6 },
+      itemStyle: { color: palette[index % palette.length] },
+    })),
+  }
+})
+
+/** 数据来源条用的数据源标识。 */
+const sourceList = computed<string[]>(() => {
+  const source = meta.value.source
+  return source ? [source] : []
+})
 
 onMounted(() => {
   void load()
@@ -540,390 +669,371 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page">
-    <header class="page-head">
-      <div>
-        <h1>总览驾驶舱</h1>
-        <p class="muted">
-          只展示已落库、可追溯的数据；没有数据的位置显示后端的空状态，不用演示数字顶替。
-        </p>
-      </div>
-      <el-button :loading="busy" @click="load">刷新</el-button>
-    </header>
+  <div class="page">
+    <PageHeader title="智能投研驾驶舱" subtitle="全球视野 · 数据驱动 · AI赋能 · 发现更好的投资机会">
+      <template #actions>
+        <el-button :loading="busy" @click="load">刷新数据</el-button>
+      </template>
+    </PageHeader>
 
-    <p v-if="phase === 'ready'" class="meta-line muted">
-      数据时间 {{ asOfText }} · 来源 {{ meta.source ?? "—" }} · 数据模式
-      {{ meta.dataMode ?? "—" }} · 请求号 {{ requestId || "—" }}
-    </p>
-
-    <div v-if="demoMode" class="banner" role="status">
-      当前返回的是{{ meta.dataMode }}数据，不是实时行情，请勿据此下单。
-    </div>
-    <div v-if="staleNotice" class="banner" role="status">
-      数据已过期（stale）：{{ meta.notice }}
-    </div>
-
-    <section v-if="phase === 'loading'" class="skeleton" aria-busy="true">正在汇总驾驶舱数据</section>
-
-    <section v-else-if="phase === 'error'" class="panel" role="alert">
-      <h1>无法加载驾驶舱</h1>
-      <p>{{ errorMessage }}</p>
-      <p v-if="errorCode" class="muted">错误码 {{ errorCode }} · 请求号 {{ requestId || "—" }}</p>
-      <button class="retry" type="button" @click="load">重试</button>
-    </section>
+    <StateBlock v-if="phase === 'error'" state="error" :message="errorMessage" @retry="load" />
 
     <template v-else>
-      <div class="dash-grid">
-        <div class="dash-main">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>全球经济状态</h2>
-              <span v-if="macro" class="chip" :class="macro.regimeCode === 'insufficient_data' ? 'chip-warn' : 'chip-ok'">
-                {{ macro.regimeCode }}
-              </span>
-            </div>
-            <el-skeleton v-if="!macro && !sectionErrors.macro" :rows="3" animated />
-            <div v-else-if="sectionErrors.macro" class="section-error">
-              <p>{{ sectionErrors.macro }}</p>
-              <button class="retry" type="button" @click="loadMacro">重试</button>
-            </div>
-            <template v-else-if="macro">
-              <el-descriptions :column="2" border size="small">
-                <el-descriptions-item label="PIT 日期">{{ macro.pitDate }}</el-descriptions-item>
-                <el-descriptions-item label="规则版本">{{ macro.version || "—" }}</el-descriptions-item>
-              </el-descriptions>
-              <el-table :data="macro.regions" size="small" stripe>
-                <el-table-column prop="label" label="维度" width="100" />
-                <el-table-column label="结论" min-width="160">
-                  <template #default="{ row }">{{ regionReason(row.reason) }}</template>
-                </el-table-column>
-                <el-table-column label="证据条数" width="110">
-                  <template #default="{ row }">{{ row.evidence }}</template>
-                </el-table-column>
-              </el-table>
-              <p class="muted">{{ macro.notice }}</p>
+      <!-- 顶部四张大卡 -->
+      <div class="grid-4">
+        <StatCard
+          title="全球经济状态"
+          :value="cardMacroValue"
+          :caption="cardMacroCaption"
+          info="来自 /macro/assessments 的历史时点打分；未接 FRED 凭证时增长/通胀/流动性均为样本不足"
+        >
+          <template #icon><el-icon><TrendCharts /></el-icon></template>
+        </StatCard>
 
-              <h3 class="sub-title">中国宏观序列落库状态</h3>
-              <el-skeleton v-if="!china && !sectionErrors.china" :rows="3" animated />
-              <div v-else-if="sectionErrors.china" class="section-error">
-                <p>{{ sectionErrors.china }}</p>
-                <button class="retry" type="button" @click="loadMacro">重试</button>
-              </div>
-              <template v-else-if="china">
-                <el-table :data="china.series" size="small" stripe>
-                  <el-table-column prop="name" label="序列" min-width="180" />
-                  <el-table-column label="状态" width="110">
-                    <template #default="{ row }">
-                      <span :class="statusClass(row.status)">{{ statusText(row.status) }}</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column label="条数" width="90">
-                    <template #default="{ row }">{{ row.observationCount ?? "—" }}</template>
-                  </el-table-column>
-                  <el-table-column label="最新值" min-width="110">
-                    <template #default="{ row }">{{ row.latestValue ?? "—" }}</template>
-                  </el-table-column>
-                  <el-table-column label="最新日期" width="120">
-                    <template #default="{ row }">{{ row.latestDate ?? "—" }}</template>
-                  </el-table-column>
-                </el-table>
-                <el-empty v-if="!china.series.length" description="后端没有返回任何中国宏观序列" />
-                <p class="muted">{{ china.notice }}</p>
-              </template>
-            </template>
-          </section>
+        <StatCard
+          title="A股市场温度"
+          :value="temperature?.score === null || temperature?.score === undefined ? null : temperature.score.toFixed(1)"
+          unit="/100"
+          :caption="cardTemperatureCaption"
+          info="趋势、广度、活跃度、波动、收益五个因子按权重合成；样本不足时后端返回 insufficient"
+        >
+          <template #icon><el-icon><Histogram /></el-icon></template>
+          <template #chart>
+            <MiniSpark
+              v-if="temperatureFactorPoints.length > 1"
+              :points="temperatureFactorPoints"
+              kind="bar"
+              tone="accent"
+              :width="92"
+              :height="38"
+            />
+          </template>
+        </StatCard>
 
-          <section class="panel">
-            <div class="panel-head">
-              <h2>A股市场温度</h2>
-              <span v-if="temperature" :class="statusClass(temperature.status)">
-                {{ statusText(temperature.status) }}
-              </span>
-            </div>
-            <el-skeleton v-if="!temperature && !sectionErrors.temperature" :rows="3" animated />
-            <div v-else-if="sectionErrors.temperature" class="section-error">
-              <p>{{ sectionErrors.temperature }}</p>
-              <button class="retry" type="button" @click="loadTemperature">重试</button>
-            </div>
-            <template v-else-if="temperature">
-              <p class="state">{{ temperature.label }}</p>
-              <p class="muted">分数 {{ temperature.score === null ? "—" : temperature.score.toFixed(1) }} · {{ temperature.coverage }}</p>
-              <el-table v-if="temperature.factors.length" :data="temperature.factors" size="small" stripe>
-                <el-table-column prop="label" label="因子" width="120" />
-                <el-table-column label="权重" width="90">
-                  <template #default="{ row }">{{ row.weight === null ? "—" : row.weight }}</template>
-                </el-table-column>
-                <el-table-column label="得分" width="110">
-                  <template #default="{ row }">{{ factorScoreText(row.score) }}</template>
-                </el-table-column>
-                <el-table-column prop="raw" label="依据" min-width="220" />
-              </el-table>
-              <el-empty v-else description="后端判定样本不足，没有可展示的因子得分" />
-              <p class="muted">{{ temperature.notice }}</p>
-            </template>
-          </section>
+        <StatCard
+          title="热点主题数"
+          :value="hotspots?.count === null || hotspots?.count === undefined ? null : hotspots.count"
+          unit="个"
+          :caption="cardHotspotCaption"
+          info="只统计通过来源白名单校验的公告事件，没有合规来源时不展示情绪分数"
+        >
+          <template #icon><el-icon><Trophy /></el-icon></template>
+        </StatCard>
 
-          <section class="panel">
-            <div class="panel-head">
-              <h2>热点（合规公告流）</h2>
-            </div>
-            <el-skeleton v-if="!hotspots && !sectionErrors.hotspots" :rows="2" animated />
-            <div v-else-if="sectionErrors.hotspots" class="section-error">
-              <p>{{ sectionErrors.hotspots }}</p>
-              <button class="retry" type="button" @click="loadHotspots">重试</button>
-            </div>
-            <template v-else-if="hotspots">
-              <p class="state">{{ hotspots.label }}</p>
-              <p class="muted">
-                近 14 天收录 {{ hotspots.count ?? 0 }} 条合规公告。完整主题、时间线与事件明细见
-                <RouterLink to="/hotspots">热点主题</RouterLink>。
-              </p>
-              <el-empty v-if="!hotspots.count" description="暂无可展示的数据：近 14 天没有收录合规公告" />
-            </template>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>重点公司</h2>
-            </div>
-            <el-empty description="暂无可展示的数据" />
-            <p class="muted">
-              后端没有「重点公司」接口，本页不编造推荐标的。请用检索定位具体公司后查看其自选与研判：
-              <RouterLink to="/company">公司分析</RouterLink>、
-              <RouterLink to="/watchlist">自选列表</RouterLink>、
-              <RouterLink to="/board">研究看板</RouterLink>。
-            </p>
-          </section>
-        </div>
-
-        <aside class="dash-side">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>数据更新状态</h2>
-              <el-button size="small" text :loading="busy" @click="load">刷新</el-button>
-            </div>
-
-            <h3 class="sub-title">接口就绪</h3>
-            <el-skeleton v-if="!readyState && !sectionErrors.ready" :rows="2" animated />
-            <div v-else-if="sectionErrors.ready" class="section-error">
-              <p>{{ sectionErrors.ready }}</p>
-              <button class="retry" type="button" @click="loadReady">重试</button>
-            </div>
-            <template v-else-if="readyState">
-              <p :class="statusClass(readyState)">{{ statusText(readyState) }}</p>
-              <el-table :data="readyChecks" size="small" stripe>
-                <el-table-column prop="label" label="组件" width="110" />
-                <el-table-column label="状态" width="100">
-                  <template #default="{ row }">
-                    <span :class="statusClass(row.status)">{{ statusText(row.status) }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column prop="detail" label="明细" min-width="130" />
-              </el-table>
-            </template>
-
-            <h3 class="sub-title">同步任务</h3>
-            <p v-if="!session.accessToken" class="muted">登录后可查看同步任务与数据源配置（需管理员）。</p>
-            <template v-else>
-              <div v-if="sectionErrors.jobs" class="section-error">
-                <p>{{ sectionErrors.jobs }}</p>
-                <button class="retry" type="button" @click="loadJobs">重试</button>
-              </div>
-              <p v-else-if="jobSummary" class="muted">
-                任务 {{ jobSummary.total }} 条：成功 {{ jobSummary.succeeded }}，失败
-                {{ jobSummary.failed }}，进行中 {{ jobSummary.running }}，其他 {{ jobSummary.other }}。
-              </p>
-              <el-empty v-if="jobSummary && !jobSummary.total" description="还没有同步任务记录" />
-            </template>
-
-            <h3 class="sub-title">数据源配置</h3>
-            <div v-if="sectionErrors.providers" class="section-error">
-              <p>{{ sectionErrors.providers }}</p>
-              <button class="retry" type="button" @click="loadProviders">重试</button>
-            </div>
-            <el-table v-else-if="providers.length" :data="providers" size="small" stripe>
-              <el-table-column prop="code" label="数据源" width="100" />
-              <el-table-column label="可用性" width="110">
-                <template #default="{ row }">
-                  <span :class="statusClass(row.availability)">{{ statusText(row.availability) }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="凭据" width="90">
-                <template #default="{ row }">
-                  {{ row.credentialRequired === false ? "不需要" : row.credentialPresent ? "已配置" : "缺失" }}
-                </template>
-              </el-table-column>
-              <el-table-column label="最近体检" min-width="130">
-                <template #default="{ row }">
-                  <span v-if="row.healthStatus" :class="statusClass(row.healthStatus)">
-                    {{ statusText(row.healthStatus) }}
-                  </span>
-                  <span v-else>—</span>
-                  <span v-if="row.healthStatus" class="muted"> {{ formatMoment(row.healthAt) }}</span>
-                </template>
-              </el-table-column>
-            </el-table>
-            <el-empty v-else-if="session.accessToken && !sectionErrors.providers" description="后端没有返回数据源配置" />
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>指数日线覆盖</h2>
-              <el-button size="small" text :loading="indexLoading" @click="loadIndexRows">
-                {{ indexLoaded ? "重新检查" : "检查" }}
-              </el-button>
-            </div>
-            <p v-if="!indexLoaded && !indexLoading" class="muted">
-              点击「检查」按 000001.SH、000300.SH、399001.SZ、399006.SZ 逐个查询入库条数与最新交易日。
-            </p>
-            <el-skeleton v-if="indexLoading" :rows="4" animated />
-            <template v-else-if="indexLoaded">
-              <p v-if="missingIndexRows" class="muted">
-                有 {{ missingIndexRows }} 个指数尚未入库，状态列给出后端返回的原因。
-              </p>
-              <el-table :data="indexRows" size="small" stripe>
-                <el-table-column prop="symbol" label="指数" width="110" />
-                <el-table-column prop="name" label="名称" min-width="110" />
-                <el-table-column label="日线条数" width="100">
-                  <template #default="{ row }">{{ row.barCount }}</template>
-                </el-table-column>
-                <el-table-column label="最新交易日" width="120">
-                  <template #default="{ row }">{{ row.latestTradeDate ?? "—" }}</template>
-                </el-table-column>
-                <el-table-column label="状态" min-width="200">
-                  <template #default="{ row }">
-                    <span v-if="row.problem" class="chip chip-warn">{{ row.problem }}</span>
-                    <span v-else class="chip chip-ok">已有日线</span>
-                  </template>
-                </el-table-column>
-              </el-table>
-            </template>
-          </section>
-
-          <section class="panel">
-            <div class="panel-head">
-              <h2>站内摘要</h2>
-            </div>
-            <el-skeleton v-if="!digest && !sectionErrors.digest" :rows="3" animated />
-            <div v-else-if="sectionErrors.digest" class="section-error">
-              <p>{{ sectionErrors.digest }}</p>
-              <button class="retry" type="button" @click="loadDigest">重试</button>
-            </div>
-            <template v-else-if="digest">
-              <p v-if="digest.signedOut" class="muted">未登录，摘要需要登录后查看。</p>
-              <template v-else>
-                <el-empty v-if="!digest.lines.length" description="后端没有返回摘要条目" />
-                <ul v-else class="digest-list">
-                  <li v-for="line in digest.lines" :key="line.title">
-                    <strong>{{ line.title }}</strong>
-                    <span class="muted">{{ line.summary }}</span>
-                  </li>
-                </ul>
-              </template>
-            </template>
-          </section>
-        </aside>
+        <StatCard
+          title="数据更新状态"
+          :value="cardReadyValue"
+          :caption="cardReadyCaption"
+          info="来自 /health/ready：数据库与后台 Worker 的就绪检查"
+        >
+          <template #icon><el-icon><Monitor /></el-icon></template>
+        </StatCard>
       </div>
+
+      <!-- 主区：左宽右窄 -->
+      <div class="grid-2-1 section">
+        <PanelCard title="A股主要指数走势" info="四个已入库指数的收盘价，缺失交易日不补值" more-text="指数行情" more-to="/market/indices">
+          <template #icon><el-icon><DataAnalysis /></el-icon></template>
+          <StateBlock
+            v-if="indexLoading"
+            state="loading"
+            :rows="5"
+          />
+          <StateBlock
+            v-else-if="indexRows.length && indexRows.every((row) => row.closes.length < 2)"
+            state="empty"
+            :message="indexRows.find((row) => row.problem)?.problem ?? '四个指数都还没有日线数据，请到数据管理里同步'"
+          />
+          <VChart v-else class="chart-main" :option="indexChartOption" autoresize />
+          <div class="index-strip">
+            <div v-for="row in indexRows" :key="row.symbol" class="index-cell">
+              <span class="cell-name">{{ row.name }}</span>
+              <DeltaValue :value="row.latestClose" :colored="false" size="lg" />
+              <DeltaValue :value="row.changePercent" suffix="%" size="sm" />
+              <span class="cell-date">{{ row.latestTradeDate ?? "—" }}</span>
+            </div>
+          </div>
+        </PanelCard>
+
+        <PanelCard title="全球宏观概览" info="增长、通胀、流动性三个维度的历史时点判定" more-text="全球宏观" more-to="/macro/us">
+          <template #icon><el-icon><MagicStick /></el-icon></template>
+          <StateBlock
+            v-if="!macro && sectionErrors.macro"
+            state="stale"
+            :message="sectionErrors.macro"
+            @retry="load"
+          />
+          <template v-else>
+            <div class="macro-tiles">
+              <MetricTile
+                v-for="region in macro?.regions ?? []"
+                :key="region.code"
+                :label="region.label"
+                :value="region.code"
+              >
+                <template #delta>
+                  <StatusPill
+                    :text="regionReason(region.reason)"
+                    :tone="region.reason === 'insufficient_data' ? 'muted' : 'ok'"
+                  />
+                </template>
+              </MetricTile>
+            </div>
+            <p v-if="macro?.notice" class="macro-notice">{{ macro.notice }}</p>
+            <p class="macro-version">规则版本 {{ macro?.version || "—" }} · 时点 {{ macro?.pitDate || "—" }}</p>
+
+            <h3 class="sub-title">中国宏观序列</h3>
+            <ul class="series-list">
+              <li v-for="item in china?.series ?? []" :key="item.code">
+                <span class="series-name">{{ item.name }}</span>
+                <StatusPill
+                  :text="item.status === 'available' ? (item.latestValue ?? '已入库') : statusText(item.status)"
+                  :tone="item.status === 'available' ? 'ok' : 'muted'"
+                />
+                <span class="series-date">{{ item.latestDate ?? "" }}</span>
+              </li>
+              <li v-if="!(china?.series ?? []).length" class="series-empty">
+                {{ china?.notice || sectionErrors.china || "读取中" }}
+              </li>
+            </ul>
+          </template>
+        </PanelCard>
+      </div>
+
+      <!-- 底部三栏 -->
+      <div class="grid-3 section">
+        <PanelCard title="重点指数与入库情况" info="条数来自 /market/bars 实际返回的行数" flush>
+          <template #icon><el-icon><DataAnalysis /></el-icon></template>
+          <el-table :data="indexRows" size="small" :show-header="true">
+            <el-table-column prop="symbol" label="代码" width="110" />
+            <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
+            <el-table-column label="收盘" width="100" align="right">
+              <template #default="{ row }">
+                <DeltaValue :value="row.latestClose" :colored="false" />
+              </template>
+            </el-table-column>
+            <el-table-column label="日涨跌" width="100" align="right">
+              <template #default="{ row }">
+                <DeltaValue :value="row.changePercent" suffix="%" />
+              </template>
+            </el-table-column>
+            <el-table-column label="K线条数" width="100" align="right">
+              <template #default="{ row }">
+                <span class="tabular">{{ row.barCount }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="120">
+              <template #default="{ row }">
+                <StatusPill
+                  :text="row.problem ? '缺数据' : '已入库'"
+                  :tone="row.problem ? 'warn' : 'ok'"
+                  dot
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+        </PanelCard>
+
+        <PanelCard title="市场热点与公告" info="只统计通过来源白名单校验的公告；没有合规来源时后端不展示情绪分数" more-text="市场热点" more-to="/hotspots">
+          <template #icon><el-icon><Trophy /></el-icon></template>
+          <StateBlock
+            v-if="hotspots && (hotspots.count === null || hotspots.count === 0)"
+            state="empty"
+            :message="hotspots.label"
+          />
+          <div v-else-if="hotspots" class="hotspot-body">
+            <p class="hotspot-count">
+              <strong>{{ hotspots.count ?? "—" }}</strong>
+              <small>条合规公告</small>
+            </p>
+            <p class="macro-notice">{{ hotspots.label }}</p>
+          </div>
+          <StateBlock v-else :state="sectionErrors.hotspots ? 'stale' : 'loading'" :message="sectionErrors.hotspots ?? ''" @retry="load" />
+
+          <h3 class="sub-title">数据源状态</h3>
+          <ul class="series-list">
+            <li v-for="item in providers" :key="item.code">
+              <span class="series-name">{{ item.code }}</span>
+              <StatusPill
+                :text="statusText(item.availability)"
+                :tone="item.availability === 'configured' || item.availability === 'not_required' ? 'ok' : 'warn'"
+              />
+              <span class="series-date">{{ item.healthAt ? formatMoment(item.healthAt) : "" }}</span>
+            </li>
+            <li v-if="!providers.length" class="series-empty">
+              {{ session.accessToken ? "暂未读取到数据源" : "登录管理员账号后可查看数据源状态" }}
+            </li>
+          </ul>
+        </PanelCard>
+
+        <PanelCard title="AI 每日研究摘要" info="来自 /me/digest，只汇总已生成的研究报告与合规公告" more-text="研究报告" more-to="/reports">
+          <template #icon><el-icon><MagicStick /></el-icon></template>
+          <StateBlock
+            v-if="digest?.signedOut"
+            state="denied"
+            message="登录后可以查看每日研究摘要"
+          />
+          <StateBlock
+            v-else-if="digest && digest.lines.length === 0"
+            state="empty"
+            message="今天还没有生成研究报告，摘要为空"
+          />
+          <ol v-else class="digest-list">
+            <li v-for="(line, index) in digest?.lines ?? []" :key="index">
+              <span class="cite">{{ index + 1 }}</span>
+              <strong>{{ line.title }}</strong>
+              <p>{{ line.summary }}</p>
+            </li>
+          </ol>
+        </PanelCard>
+      </div>
+
+      <SourceFooter
+        :as-of="asOfText"
+        :sources="sourceList"
+        :stale="meta.stale"
+        :note="demoMode ? `当前数据模式：${meta.dataMode}` : meta.notice ?? ''"
+      />
     </template>
-  </main>
+  </div>
 </template>
 
 <style scoped>
-.page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 8px;
+.section {
+  margin-top: var(--gap);
 }
 
-.page-head h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
+.chart-main {
+  width: 100%;
+  height: 320px;
 }
 
-.meta-line {
-  margin: 0 0 16px;
-  word-break: break-all;
-}
-
-.dash-grid {
+.index-strip {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
 }
 
-.panel-head h2 {
-  margin: 0;
-  font-size: 17px;
+.index-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cell-name {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cell-date {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.macro-tiles {
+  display: grid;
+  gap: 10px;
+}
+
+.macro-notice {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.macro-version {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .sub-title {
   margin: 18px 0 8px;
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.series-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.series-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.series-name {
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.state {
-  margin: 4px 0;
-  font-size: 22px;
+.series-date {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.series-empty {
+  display: block !important;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hotspot-body {
+  display: grid;
+  gap: 4px;
+}
+
+.hotspot-count {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.hotspot-count strong {
+  font-size: 26px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
-.chip {
-  display: inline-block;
-  padding: 2px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
+.hotspot-count small {
   font-size: 12px;
   color: var(--muted);
 }
 
-.chip-ok {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-}
-
-.chip-warn {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
-}
-
-.section-error {
-  margin: 8px 0;
-  padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-  border-radius: 12px;
-  background: rgb(248 113 113 / 10%);
-  color: var(--danger);
-}
-
-.section-error p {
-  margin: 0 0 8px;
-}
-
 .digest-list {
-  display: grid;
-  gap: 10px;
   margin: 0;
-  padding-left: 18px;
+  padding-left: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
 }
 
-.digest-list span {
-  display: block;
+.digest-list strong {
+  font-size: 13px;
 }
 
-@media (min-width: 1100px) {
-  .dash-grid {
-    grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
-  }
+.digest-list p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
 }
 </style>

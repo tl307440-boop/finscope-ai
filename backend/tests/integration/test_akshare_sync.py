@@ -8,7 +8,9 @@ from app.core.config import get_settings
 from app.core.security import PasswordService
 from app.db.session import create_db_engine
 from app.main import create_app
+from app.providers.akshare_bars import parse_klines
 from app.providers.errors import ProviderError
+from app.providers.quality import RawBar
 from app.repositories.accounts import AccountRepository
 from app.repositories.instruments import InstrumentRepository
 from fastapi.testclient import TestClient
@@ -27,6 +29,15 @@ PAYLOAD = json.dumps(
     }
 ).encode()
 SYMBOLS = ("600519.SH", "601318.SH", "000858.SZ")
+
+
+def _bars_for(display_symbol: str) -> tuple[RawBar, ...]:
+    """把固定报文解析成日线，供测试注入的抓取函数返回。
+
+    注入点在 app.state.akshare_fetch，签名与真实 fetch_bars 一致：拿到的是
+    已解析的原始日线，不再是自己去解析报文。
+    """
+    return parse_klines(PAYLOAD, display_symbol=display_symbol.upper(), adjustment="none")
 
 
 def _ready() -> bool:
@@ -109,10 +120,10 @@ def test_three_shares_can_be_queried_without_network() -> None:
         start: date,
         end: date,
         adjustment: str,
-    ) -> bytes:
+    ) -> tuple[RawBar, ...]:
         del start, end, adjustment
         calls.append(display_symbol)
-        return PAYLOAD
+        return _bars_for(display_symbol)
 
     try:
         _cleanup(username)
@@ -177,11 +188,11 @@ def test_upstream_failure_keeps_existing_bars() -> None:
         start: date,
         end: date,
         adjustment: str,
-    ) -> bytes:
+    ) -> tuple[RawBar, ...]:
         del display_symbol, start, end, adjustment
         if mode["fail"]:
             raise ProviderError(code="UPSTREAM_TIMEOUT", message="上游超时", status_code=504)
-        return PAYLOAD
+        return _bars_for("600519.SH")
 
     try:
         _cleanup(username)

@@ -32,47 +32,47 @@ test.describe("关键流程", () => {
     await option.click()
 
     await expect(page).toHaveURL(/\/market\/stocks\/600519\.SH/)
-    await expect(page.locator("h2").first()).toContainText("600519", { timeout: 20_000 })
+    await expect(page.locator("h1").first()).toContainText("600519", { timeout: 20_000 })
   })
 
   test("03 查看 K 线：日线页画出 ECharts 画布并给出均线读数", async ({ page }) => {
     await login(page)
     await page.goto("/market/stocks/600519.SH")
 
-    await expect(page.locator("h1")).toContainText("市场行情")
+    // 重塑版式后页头由 PageHeader 渲染，标题就是标的代码 + 名称，不再有 .stock-header。
+    await expect(page.locator("h1")).toContainText("600519", { timeout: 20_000 })
     const canvas = page.locator("canvas").first()
     await expect(canvas).toBeVisible({ timeout: 30_000 })
-    await expect(page.locator(".stock-header h2")).toContainText("600519")
     await expect(page.getByText(/MA5/).first()).toBeVisible()
   })
 
-  test("04 宏观换指标：切换序列会重新请求观测值", async ({ page }) => {
+  test("04 宏观换观察日：改观察日会按新时点重新请求观测值", async ({ page }) => {
     await login(page)
     await page.goto("/macro/us")
 
-    const select = page.locator("select").first()
-    await expect(select).toBeVisible({ timeout: 20_000 })
-    const options = await select.locator("option").count()
-    expect(options).toBeGreaterThan(1)
+    await expect(page.locator("h1")).toContainText("全球宏观分析", { timeout: 20_000 })
 
-    // 规格书 §1.3 的 /macro/us 是按「观察日」时点回看的：先选一个观察日查询一次，
-    // 之后切换序列，页面会按新序列重新请求观测值。
-    await page.locator('input[name="as-of"]').fill("2024-06-01")
-    const [first] = await Promise.all([
-      page.waitForResponse((reply) => reply.url().includes("/api/v1/macro/series/"), {
-        timeout: 30_000,
-      }),
-      page.locator('button[type="submit"]').first().click(),
-    ])
-    expect(first.status()).toBeLessThan(500)
+    // 规格书 §1.3 的 /macro/us 是按「观察日」时点回看的：
+    // 选一个观察日，页面会带着新的 as_of 重新请求序列观测值。
+    const picker = page.locator(".asof-select input").first()
+    await expect(picker).toBeVisible({ timeout: 20_000 })
 
-    const [second] = await Promise.all([
-      page.waitForResponse((reply) => reply.url().includes("/api/v1/macro/series/"), {
-        timeout: 30_000,
-      }),
-      select.selectOption({ index: 1 }),
+    // el-date-picker 要先展开面板，输入才会在 Enter 时提交成 v-model。
+    await picker.click()
+
+    const [reloaded] = await Promise.all([
+      page.waitForResponse(
+        (reply) =>
+          reply.url().includes("/api/v1/macro/series/") && reply.url().includes("as_of=2024-06-01"),
+        { timeout: 30_000 },
+      ),
+      (async () => {
+        await picker.fill("2024-06-01")
+        await picker.press("Enter")
+      })(),
     ])
-    expect(second.status()).toBeLessThan(500)
+    expect(reloaded.status()).toBeLessThan(500)
+    expect(reloaded.url()).toContain("as_of=2024-06-01")
   })
 
   test("05 上传 PDF：合规 PDF 被接收，非 PDF 被明确拒绝", async ({ page }) => {
@@ -87,21 +87,27 @@ test.describe("关键流程", () => {
       { timeout: 60_000 },
     )
     await input.setInputFiles("e2e/fixtures/sample-filing.pdf")
-    // 表单是 @submit.prevent 提交的：选完文件还要真正点一次「上传」。
-    await page.getByRole("button", { name: "上传" }).first().click()
+    // 表单是 @submit.prevent 提交的：选完文件还要真正点一次提交按钮。
+    await page.getByRole("button", { name: "上传并解析" }).first().click()
     const uploaded = await accepted
     expect(uploaded.status()).toBeLessThan(500)
   })
 
-  test("06 生成报告：保存研究记录后跳到报告页", async ({ page }) => {
+  test("06 生成报告：就地生成研究记录后进入报告页", async ({ page }) => {
     await login(page)
     await page.goto("/company/AAPL")
 
-    const save = page.getByRole("button", { name: "保存研究记录" })
-    await expect(save).toBeVisible({ timeout: 20_000 })
-    await save.click()
+    const generate = page.getByRole("button", { name: /生成 AI 财报解读|重新生成/ })
+    await expect(generate).toBeVisible({ timeout: 20_000 })
+    await generate.click()
 
-    await expect(page).toHaveURL(/\/reports\/[0-9a-f-]{36}/, { timeout: 40_000 })
+    // 重塑版式后公司页就地渲染结果，再由「打开完整报告页」进入
+    // 规格书 §1.3 的 /company/:symbol/analysis/:runId。
+    const open = page.getByRole("button", { name: "打开完整报告页" })
+    await expect(open).toBeVisible({ timeout: 60_000 })
+    await open.click()
+
+    await expect(page).toHaveURL(/\/company\/AAPL\/analysis\/[0-9a-f-]{36}/, { timeout: 40_000 })
     await expect(page.locator("h1")).toBeVisible()
   })
 
@@ -109,9 +115,12 @@ test.describe("关键流程", () => {
     await login(page)
     await page.goto("/company/AAPL")
 
-    const save = page.getByRole("button", { name: "保存研究记录" })
-    await save.click()
-    await expect(page).toHaveURL(/\/reports\/[0-9a-f-]{36}/, { timeout: 40_000 })
+    const generate = page.getByRole("button", { name: /生成 AI 财报解读|重新生成/ })
+    await generate.click()
+    const open = page.getByRole("button", { name: "打开完整报告页" })
+    await expect(open).toBeVisible({ timeout: 60_000 })
+    await open.click()
+    await expect(page).toHaveURL(/\/company\/AAPL\/analysis\/[0-9a-f-]{36}/, { timeout: 40_000 })
 
     const links = page.locator("a[href^='http']")
     await expect(links.first()).toBeVisible({ timeout: 20_000 })
@@ -122,7 +131,8 @@ test.describe("关键流程", () => {
   test("08 退出：账号菜单退出后回到登录页且受保护页不可见", async ({ page }) => {
     await login(page)
     await page.locator(".account").click()
-    await page.getByText("退出登录").click()
+    // 页面上还有其它「退出登录」文案，这里只点账号菜单里的那一项。
+    await page.getByRole("menuitem", { name: "退出登录" }).click()
 
     await expect(page).toHaveURL(/\/login/, { timeout: 20_000 })
     await page.goto("/settings")

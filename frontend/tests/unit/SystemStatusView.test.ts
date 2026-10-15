@@ -61,9 +61,10 @@ describe("运行状态页", () => {
     expect(screen.getByText("正在检查运行状态")).toBeTruthy()
     resolveReady(jsonResponse(ready))
     expect(await screen.findByRole("heading", { name: "运行正常" })).toBeTruthy()
-    expect(screen.getByText("尚未接入")).toBeTruthy()
+    // 业务覆盖只做定性说明（后端没有覆盖率汇总接口），这里核对它确实写明了边界。
+    expect(screen.getByText("未配置数据源密钥时不填观测值，页面显示「不可用」而不是旧值。")).toBeTruthy()
     expect(screen.getByText("数据模式：live，未使用演示数据")).toBeTruthy()
-    expect(screen.getByText("延迟 4 毫秒")).toBeTruthy()
+    expect(screen.getByText("延迟 4 毫秒（就绪检查实测）")).toBeTruthy()
   })
 
   it("Worker 没有心跳时展示缺失，不显示运行正常", async () => {
@@ -119,7 +120,7 @@ describe("运行状态页", () => {
 
     render(SystemStatusView)
     const retry = await screen.findByRole("button", { name: "重试" })
-    expect(screen.getByRole("heading", { name: "无法连接接口" })).toBeTruthy()
+    expect(screen.getByText("无法连接接口")).toBeTruthy()
     online = true
     await fireEvent.click(retry)
     expect(await screen.findByRole("heading", { name: "运行正常" })).toBeTruthy()

@@ -11,8 +11,17 @@
  *
  * 未登录时不报错：显示「登录后可以使用自选」并给出带 redirect 的登录链接。
  * 指标变化只在真实取到 K 线时显示；取不到就标注不可用，不做任何推算或占位数字。
+ *
+ * 布局：页首 PageHeader + 四张概览小卡 + 「加入自选」+ 每个分组一张表 + 「关注事件」说明。
  */
 import { computed, onMounted, ref } from "vue"
+import { Bell, Plus, Search, Star, TrendCharts } from "@element-plus/icons-vue"
+import DeltaValue from "../components/ui/DeltaValue.vue"
+import PageHeader from "../components/ui/PageHeader.vue"
+import PanelCard from "../components/ui/PanelCard.vue"
+import StatCard from "../components/ui/StatCard.vue"
+import StateBlock from "../components/ui/StateBlock.vue"
+import StatusPill from "../components/ui/StatusPill.vue"
 import { ApiError, apiUrl, authorizedFetch, readJson } from "../api/client"
 import { describeHit, routeForHit, searchInstruments, type InstrumentHit } from "../api/instruments"
 import { asString, dataOf, listOf } from "../api/json"
@@ -51,6 +60,8 @@ type Phase = "loading" | "ready" | "error"
 const phase = ref<Phase>("loading")
 const failure = ref("")
 const retryable = ref(true)
+/** 未登录（本地无 token 或接口回 401）时走「登录后可以使用自选」分支，而不是报错。 */
+const needsLogin = ref(false)
 const groups = ref<WatchGroup[]>([])
 const moves = ref<Record<string, MoveState>>({})
 const moveMeta = ref<MoveMeta | null>(null)
@@ -68,6 +79,65 @@ let searchTimer: ReturnType<typeof setTimeout> | null = null
 const signedIn = computed<boolean>(() => Boolean(session.accessToken))
 const loginHref = computed<string>(() => `/login?redirect=${encodeURIComponent("/watchlist")}`)
 const canCreate = computed<boolean>(() => newGroupName.value.trim().length > 0 && !busy.value)
+
+/* ---- 概览：只统计真实返回的结构，缺行情就计入「待入库」，不推算 ---- */
+const itemCount = computed<number>(() =>
+  groups.value.reduce((total, group) => total + group.items.length, 0),
+)
+
+const trackedIds = computed<string[]>(() =>
+  Array.from(new Set(groups.value.flatMap((group) => group.items.map((item) => item.instrumentId)))),
+)
+
+const quotedCount = computed<number>(() =>
+  trackedIds.value.filter((id) => {
+    const move = moves.value[id]
+    return Boolean(move && !move.unavailable && move.close)
+  }).length,
+)
+
+const missingCount = computed<number>(() => trackedIds.value.length - quotedCount.value)
+
+const latestTradeDate = computed<string>(() => {
+  const dates = Object.values(moves.value)
+    .map((move) => move.tradeDate)
+    .filter((date): date is string => Boolean(date))
+  if (!dates.length) {
+    return "—"
+  }
+  return dates.sort()[dates.length - 1]
+})
+
+const overviewCaption = computed<string>(() => {
+  if (!groups.value.length) {
+    return "还没有分组，先新建一个"
+  }
+  if (!trackedIds.value.length) {
+    return `${groups.value.length} 个分组里还没有自选`
+  }
+  return `共 ${groups.value.length} 个分组`
+})
+
+const missingCaption = computed<string>(() => {
+  if (!trackedIds.value.length) {
+    return "暂无自选，无可统计的行情"
+  }
+  return missingCount.value ? "已入库日线还没覆盖到" : "全部都有已入库日线"
+})
+
+const sourceCaption = computed<string>(() => {
+  if (!moveMeta.value) {
+    return "还没有取到任何 K 线"
+  }
+  const parts = [`来源 ${moveMeta.value.source || "未知"}`]
+  if (moveMeta.value.delay) {
+    parts.push(`延迟 ${moveMeta.value.delay}`)
+  }
+  if (moveMeta.value.pitDate) {
+    parts.push(`数据截止 ${moveMeta.value.pitDate}`)
+  }
+  return parts.join(" · ")
+})
 
 async function refreshToken(): Promise<string | null> {
   const restored = await restoreSession()
@@ -89,6 +159,7 @@ async function load(): Promise<void> {
   phase.value = "loading"
   failure.value = ""
   retryable.value = true
+  needsLogin.value = false
   actionError.value = ""
   moves.value = {}
   moveMeta.value = null
@@ -98,6 +169,7 @@ async function load(): Promise<void> {
     if (!restored) {
       phase.value = "error"
       failure.value = "登录后可以使用自选"
+      needsLogin.value = true
       retryable.value = true
       return
     }
@@ -108,6 +180,7 @@ async function load(): Promise<void> {
     if (result.status === 401) {
       phase.value = "error"
       failure.value = "登录后可以使用自选"
+      needsLogin.value = true
       return
     }
     if (!result.ok) {
@@ -369,23 +442,32 @@ function moveOf(instrumentId: string): MoveState | null {
   return moves.value[instrumentId] ?? null
 }
 
-function changeText(instrumentId: string): string {
-  const move = moveOf(instrumentId)
-  if (!move || move.changePercent === null) {
-    return "—"
+/** 只保留两位小数：后端 simple_return 是长浮点，直接渲染会带出 17 位尾数。 */
+function changePercentOf(instrumentId: string): number | null {
+  const raw = moveOf(instrumentId)?.changePercent
+  if (raw === null || raw === undefined || !Number.isFinite(raw)) {
+    return null
   }
-  const value = move.changePercent
-  const sign = value > 0 ? "+" : value < 0 ? "" : "±"
-  return `${sign}${value.toFixed(2)}%`
+  return Math.round(raw * 100) / 100
 }
 
-/** 涨红跌绿（A 股习惯）：--rise 红、--fall 绿，同时带 +/- 符号。 */
-function changeClass(instrumentId: string): string {
+function statusText(instrumentId: string): string {
   const move = moveOf(instrumentId)
-  if (!move || move.changePercent === null || move.changePercent === 0) {
+  if (!move) {
+    return "未加载"
+  }
+  if (move.unavailable) {
+    return `不可用：${move.unavailable}`
+  }
+  return "已加载"
+}
+
+function statusTone(instrumentId: string): "ok" | "warn" | "muted" {
+  const move = moveOf(instrumentId)
+  if (!move) {
     return "muted"
   }
-  return move.changePercent > 0 ? "rise" : "fall"
+  return move.unavailable ? "warn" : "ok"
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -402,195 +484,262 @@ onMounted(() => {
 
 <template>
   <main class="page">
-    <section v-if="phase === 'loading'" class="skeleton" aria-busy="true">正在读取自选</section>
+    <PageHeader
+      :title="signedIn ? '自选研究' : '我的收藏'"
+      subtitle="把关注的标的收进分组，用已入库日线跟踪当日变化"
+      :dense="phase !== 'ready'"
+    />
 
-    <section v-else-if="phase === 'error' && !signedIn" class="panel">
-      <h1>自选研究</h1>
-      <el-alert type="info" :closable="false" show-icon>
-        <template #title>
-          登录后可以使用自选，<a :href="loginHref">前往登录</a>。
-        </template>
-      </el-alert>
-      <p class="muted">未登录时不会加载任何分组，也不显示任何行情数字。</p>
-    </section>
+    <div v-if="phase === 'loading'" class="stack">
+      <PanelCard title="我的自选">
+        <StateBlock state="loading" :rows="4" />
+      </PanelCard>
+    </div>
 
-    <section v-else-if="phase === 'error'" class="panel" role="alert">
-      <h1>无法读取自选</h1>
-      <p>{{ failure }}</p>
-      <button v-if="retryable" class="retry" type="button" @click="load">重试</button>
-    </section>
+    <div v-else-if="needsLogin" class="stack">
+      <PanelCard title="我的自选" info="未登录时不发任何分组请求，也不显示任何行情数字">
+        <StateBlock state="denied" message="登录后可以使用自选">
+          <p class="login-line">
+            登录后可以使用自选，<a :href="loginHref">前往登录</a>。
+          </p>
+        </StateBlock>
+        <p class="card-note">这里刻意不渲染任何占位行情：登录前接口不会返回分组与日线。</p>
+      </PanelCard>
+    </div>
 
-    <template v-else>
-      <header class="panel">
-        <h1>自选研究</h1>
-        <p class="muted">
-          {{ groups.length }} 个分组 ·
-          {{ groups.reduce((total, group) => total + group.items.length, 0) }} 只自选
+    <div v-else-if="phase === 'error'" class="stack">
+      <PanelCard title="我的自选">
+        <StateBlock
+          state="error"
+          :message="failure"
+          @retry="load"
+        />
+        <p v-if="!retryable" class="card-note">
+          这次失败来自业务接口，可能是该分组已不存在；刷新页面或重新登录后再试。
         </p>
-        <p v-if="moveMeta" class="muted">
-          行情来源 {{ moveMeta.source || "未知" }}
-          <template v-if="moveMeta.delay"> · 延迟 {{ moveMeta.delay }}</template>
-          <template v-if="moveMeta.pitDate"> · 数据截止 {{ moveMeta.pitDate }}</template>
-        </p>
-        <form class="form" @submit.prevent="createGroup">
-          <label>
+      </PanelCard>
+    </div>
+
+    <div v-else class="stack">
+      <div class="grid-4">
+        <StatCard
+          title="自选分组"
+          :value="groups.length"
+          unit="个"
+          :caption="overviewCaption"
+          info="来自 /api/v1/watchlists 返回的 groups"
+          more-text=""
+        >
+          <template #icon><el-icon><Star /></el-icon></template>
+        </StatCard>
+        <StatCard
+          title="自选标的"
+          :value="itemCount"
+          unit="只"
+          caption="去重后的行情请求按标的逐档发起"
+          info="groups[].items 的条数合计，可能包含跨分组重复的标的"
+          more-text=""
+        >
+          <template #icon><el-icon><TrendCharts /></el-icon></template>
+        </StatCard>
+        <StatCard
+          title="已入库行情"
+          :value="quotedCount"
+          unit="只"
+          :caption="`${missingCaption}（${missingCount} 只）`"
+          info="GET /api/v1/market/bars/{instrument_id}?limit=2 真实返回 K 线的标的数量"
+          more-text=""
+        >
+          <template #icon><el-icon><Coin /></el-icon></template>
+        </StatCard>
+        <StatCard
+          title="行情数据截止"
+          :value="latestTradeDate"
+          :caption="sourceCaption"
+          info="所有已取到 K 线里最新的 trade_date，不是当前系统时间"
+          more-text=""
+        >
+          <template #icon><el-icon><Clock /></el-icon></template>
+        </StatCard>
+      </div>
+
+      <PanelCard title="新建分组" info="POST /api/v1/watchlists">
+        <template #icon><el-icon><Plus /></el-icon></template>
+        <form class="inline-form" @submit.prevent="createGroup">
+          <el-input
+            v-model="newGroupName"
+            name="group-name"
+            type="text"
+            maxlength="40"
+            placeholder="例如：白酒"
+            clearable
+          />
+          <el-button type="primary" native-type="submit" :disabled="!canCreate" :loading="busy">
             新建分组
-            <input v-model="newGroupName" name="group-name" type="text" maxlength="40" placeholder="例如：白酒" />
-          </label>
-          <button class="retry" type="submit" :disabled="!canCreate">新建分组</button>
+          </el-button>
         </form>
-        <p v-if="actionOk" role="status" class="muted">{{ actionOk }}</p>
-        <p v-if="actionError" role="alert">{{ actionError }}</p>
-      </header>
+        <p v-if="actionOk" class="inline-note" role="status">{{ actionOk }}</p>
+        <p v-if="actionError" class="inline-note danger" role="alert">{{ actionError }}</p>
+      </PanelCard>
 
-      <el-empty v-if="!groups.length" description="还没有自选分组，先新建一个分组再添加公司" />
-
-      <section v-else class="panel">
-        <h2>加入自选</h2>
-        <el-select v-model="activeGroup" placeholder="选择分组">
-          <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
-        </el-select>
-        <form class="form" @submit.prevent="addFirstHit">
-          <label>
-            代码或名称
-            <input
+      <PanelCard
+        title="加入自选"
+        info="POST /api/v1/watchlists/{group_id}/items，标的先经 /api/v1/instruments/search 换取 UUID"
+      >
+        <template #icon><el-icon><Search /></el-icon></template>
+        <StateBlock
+          v-if="!groups.length"
+          state="empty"
+          message="还没有自选分组，先在上面的卡片里新建一个分组再添加公司"
+        />
+        <template v-else>
+          <div class="search-row">
+            <el-select v-model="activeGroup" placeholder="选择分组" style="width: 220px">
+              <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+            </el-select>
+            <el-input
               v-model="query"
               name="instrument-query"
               type="text"
               placeholder="例如 600519.SH 或 贵州茅台"
+              clearable
+              style="max-width: 280px"
               @input="scheduleSearch"
             />
-          </label>
-          <button class="retry" type="submit" :disabled="busy || !hits.length">加入第一个结果</button>
-        </form>
-        <p v-if="searching" class="muted">正在检索证券</p>
-        <ul v-else-if="query.trim() && !hits.length" class="hit-list">
-          <li class="muted">没有匹配的证券</li>
-        </ul>
-        <ul v-else-if="hits.length" class="hit-list">
-          <li v-for="hit in hits" :key="hit.id">
-            <a :href="routeForHit(hit)">{{ describeHit(hit) }}</a>
-            <button class="retry" type="button" :disabled="busy" @click="addItem(hit)">加入自选</button>
-          </li>
-        </ul>
-      </section>
+            <el-button :disabled="busy || !hits.length" :loading="busy" @click="addFirstHit">
+              加入第一个结果
+            </el-button>
+          </div>
 
-      <section v-for="group in groups" :key="group.id" class="panel">
-        <h2>{{ group.name }}</h2>
-        <el-empty v-if="!group.items.length" description="这个分组还没有自选公司" />
-        <el-table v-else :data="group.items" stripe>
+          <p v-if="searching" class="inline-note">正在检索证券</p>
+          <ul v-else-if="hits.length" class="hit-list">
+            <li v-for="hit in hits" :key="hit.id">
+              <router-link :to="routeForHit(hit)">{{ describeHit(hit) }}</router-link>
+              <el-button size="small" :disabled="busy" @click="addItem(hit)">加入自选</el-button>
+            </li>
+          </ul>
+          <p v-else-if="query.trim() && searched" class="inline-note">没有匹配的证券</p>
+        </template>
+      </PanelCard>
+
+      <PanelCard
+        v-for="group in groups"
+        :key="group.id"
+        :title="group.name"
+        :info="`GET /api/v1/watchlists 分组 ${group.name} 的 items`"
+      >
+        <template #icon><el-icon><Star /></el-icon></template>
+        <template #actions>
+          <span class="group-count">{{ group.items.length }} 只 · 分组 ID {{ group.id.slice(0, 8) }}</span>
+        </template>
+
+        <StateBlock v-if="!group.items.length" state="empty" message="这个分组还没有自选公司" />
+        <el-table v-else :data="group.items" size="small" style="width: 100%">
           <el-table-column label="代码" width="140">
             <template #default="scope">
-              <a :href="`/company/${encodeURIComponent(scope.row.displaySymbol)}`">
+              <router-link
+                class="cell-link"
+                :to="`/company/${encodeURIComponent(scope.row.displaySymbol)}`"
+              >
                 {{ scope.row.displaySymbol }}
-              </a>
+              </router-link>
             </template>
           </el-table-column>
-          <el-table-column label="名称" min-width="140">
+          <el-table-column label="名称" min-width="120">
             <template #default="scope">{{ scope.row.nameCn || "—" }}</template>
           </el-table-column>
-          <el-table-column label="最近收盘" width="120">
+          <el-table-column label="最近收盘" width="120" align="right">
             <template #default="scope">
-              <span v-if="moveOf(scope.row.instrumentId)?.close">
-                {{ moveOf(scope.row.instrumentId)?.close }}
-              </span>
+              <DeltaValue
+                v-if="moveOf(scope.row.instrumentId)?.close"
+                :value="moveOf(scope.row.instrumentId)?.close ?? null"
+                :colored="false"
+              />
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="当日变化" width="120">
+          <el-table-column label="当日变化" width="120" align="right">
             <template #default="scope">
-              <span :class="changeClass(scope.row.instrumentId)">
-                {{ changeText(scope.row.instrumentId) }}
-              </span>
+              <DeltaValue
+                :value="changePercentOf(scope.row.instrumentId)"
+                suffix="%"
+                size="sm"
+                :signed="true"
+              />
             </template>
           </el-table-column>
           <el-table-column label="交易日" width="120">
             <template #default="scope">
-              {{ moveOf(scope.row.instrumentId)?.tradeDate || "—" }}
+              <span class="muted">{{ moveOf(scope.row.instrumentId)?.tradeDate || "—" }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="行情状态" min-width="150">
+          <el-table-column label="行情状态" min-width="180">
             <template #default="scope">
-              <span v-if="moveOf(scope.row.instrumentId)?.unavailable" class="muted">
-                不可用：{{ moveOf(scope.row.instrumentId)?.unavailable }}
-              </span>
-              <span v-else-if="moveOf(scope.row.instrumentId)" class="muted">已加载</span>
-              <span v-else class="muted">未加载</span>
+              <StatusPill
+                :text="statusText(scope.row.instrumentId)"
+                :tone="statusTone(scope.row.instrumentId)"
+                dot
+              />
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="110">
+          <el-table-column label="操作" width="96" fixed="right">
             <template #default="scope">
-              <button class="retry" type="button" :disabled="busy" @click="removeItem(group, scope.row)">
-                移出
-              </button>
+              <el-button size="small" :disabled="busy" @click="removeItem(group, scope.row)">移出</el-button>
             </template>
           </el-table-column>
         </el-table>
-      </section>
+      </PanelCard>
 
-      <section class="panel">
-        <h2>关注事件</h2>
-        <el-alert type="info" :closable="false" show-icon>
-          <template #title>后端还没有自选维度的关注事件接口，这里不生成事件条目。</template>
-        </el-alert>
-        <p class="muted">
+      <PanelCard title="关注事件" info="后端还没有自选维度的关注事件接口，这里不生成事件条目">
+        <template #icon><el-icon><Bell /></el-icon></template>
+        <StateBlock state="empty" message="后端还没有自选维度的关注事件接口，这里不生成事件条目。" />
+        <p class="card-note">
           可核对的只有上表的真实日线收盘与当日变化。事件线索请到公司页的财报资料与产业页的已入库事实上查。
         </p>
-        <p class="muted">页面不生成任何时间戳，行情数据截止日以上表「交易日」与页首的数据截止为准。</p>
-      </section>
-    </template>
+        <p class="card-note">
+          页面不生成任何时间戳，行情数据截止日以上表「交易日」与「行情数据截止」卡为准。
+        </p>
+      </PanelCard>
+    </div>
   </main>
 </template>
 
 <style scoped>
-h2 {
-  margin: 0 0 12px;
-  font-size: 15px;
+.stack {
+  display: grid;
+  gap: var(--gap);
 }
 
-.el-alert {
-  margin-bottom: 12px;
+.login-line {
+  margin: 0;
 }
 
-.el-select {
-  min-width: 220px;
-  margin-bottom: 12px;
+.login-line a {
+  color: var(--accent);
 }
 
-.el-table {
-  margin-top: 8px;
-  --el-table-border-color: var(--line);
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: color-mix(in srgb, var(--text) 6%, transparent);
-  --el-table-text-color: var(--text);
-  --el-table-header-text-color: var(--muted);
-  --el-table-row-hover-bg-color: color-mix(in srgb, var(--accent) 12%, transparent);
+.group-count {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
-.form {
+.inline-form,
+.search-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   gap: 12px;
-  margin-top: 8px;
 }
 
-.form label {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.form input {
-  min-width: 220px;
+.inline-form :deep(.el-input),
+.search-row :deep(.el-input) {
+  max-width: 240px;
 }
 
 .hit-list {
   list-style: none;
-  margin: 8px 0 0;
+  margin: 12px 0 0;
   padding: 0;
   display: grid;
   gap: 8px;
@@ -601,16 +750,34 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
 }
 
-.rise {
-  color: var(--rise);
+.cell-link {
+  color: var(--accent);
 }
 
-.fall {
-  color: var(--fall);
+.inline-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.inline-note.danger {
+  color: var(--danger);
+}
+
+.card-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.muted {
+  color: var(--muted);
 }
 </style>

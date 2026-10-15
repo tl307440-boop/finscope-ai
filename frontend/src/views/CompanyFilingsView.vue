@@ -1,24 +1,39 @@
 <script setup lang="ts">
 /**
- * 公司财报资料（/company/:symbol/filings）。
+ * 公司财报资料（/company/:symbol/filings）。视觉沿用设计规范（PageHeader + PanelCard + SectionTabs + StateBlock）。
  *
- * 数据全部来自后端已入库样例：
- *  - GET /api/v1/instruments/search  把路由参数 symbol 换成 instrument id 与 CIK
- *  - GET /api/v1/sec/filings?cik=    申报目录
+ * 数据全部来自后端已入库样例，一个调用都没有改动：
+ *  - GET /api/v1/instruments/search     把路由参数 symbol 换成 instrument id 与 CIK
+ *  - GET /api/v1/sec/filings?cik=       申报目录
  *  - GET /api/v1/sec/facts?cik=&as_of=  指定申报日的 XBRL 事实
- *  - GET /api/v1/documents           登录用户自己的上传文档（需 Bearer）
+ *  - GET /api/v1/documents              登录用户自己的上传文档（需 Bearer）
  *
- * 后端在 data.notice 与 meta.source / meta.data_mode 里如实标注了数据来源，
- * 本页原样转发，不自行推断，也不在缺数据时编造任何数字。
+ * 后端在 data.notice 与 meta.source / meta.data_mode / meta.as_of 里如实标注了来源，
+ * 本页原样转发；缺数据时按各自原因走 StateBlock 空态，不补数字。
  */
 import { computed, onMounted, ref } from "vue"
+import { useRouter } from "vue-router"
 import { ApiError, apiUrl, authorizedFetch, errorFrom, readJson } from "../api/client"
 import { searchInstruments, type InstrumentHit } from "../api/instruments"
-import { asNumber, asString, dataOf, formatNumber, formatMoment, listOf } from "../api/json"
+import {
+  asNumber,
+  asRecord,
+  asString,
+  dataOf,
+  formatMoment,
+  formatNumber,
+  listOf,
+} from "../api/json"
 import { restoreSession, useSessionStore } from "../stores/auth"
+import PageHeader from "../components/ui/PageHeader.vue"
+import PanelCard from "../components/ui/PanelCard.vue"
+import SectionTabs from "../components/ui/SectionTabs.vue"
+import SourceFooter from "../components/ui/SourceFooter.vue"
+import StateBlock from "../components/ui/StateBlock.vue"
 
 const props = defineProps<{ symbol: string }>()
 const session = useSessionStore()
+const router = useRouter()
 
 interface FilingRow {
   id: string
@@ -69,6 +84,7 @@ const factsLoaded = ref(false)
 const factsFailure = ref("")
 const documents = ref<DocumentRow[]>([])
 const documentsDenied = ref(false)
+const activeTab = ref("filings")
 
 /** SEC 样例事实的观察日；默认与仓库既有页面保持一致的可复现日期。 */
 const asOf = ref("2024-06-01")
@@ -79,18 +95,49 @@ const cik = computed<string>(() => instrument.value?.cik ?? "")
 /** 公司确实没有 CIK：SEC 申报本身不存在，不是接口故障。 */
 const nonSecCompany = computed<boolean>(() => instrument.value !== null && !instrument.value.cik)
 
-const sourceLine = computed<string>(() => {
-  const parts: string[] = []
-  if (metaSource.value) {
-    parts.push(`数据来源 ${metaSource.value}`)
+const heading = computed<string>(
+  () => `${instrument.value?.nameCn || instrument.value?.nameEn || symbol.value} 财报资料`,
+)
+
+const subtitle = computed<string>(() => {
+  const item = instrument.value
+  const parts = [item?.displaySymbol ?? symbol.value, item?.exchange, item?.market]
+    .filter((part): part is string => Boolean(part))
+  if (cik.value) {
+    parts.push(`CIK ${cik.value}`)
   }
   if (metaDataMode.value) {
     parts.push(`数据模式 ${metaDataMode.value}`)
   }
-  if (metaAsOf.value) {
-    parts.push(`服务端截止 ${formatMoment(metaAsOf.value)}`)
-  }
   return parts.join(" · ")
+})
+
+const sources = computed<string[]>(() => {
+  const list = ["/api/v1/instruments/search", "/api/v1/sec/filings", "/api/v1/sec/facts"]
+  if (session.accessToken) {
+    list.push("/api/v1/documents")
+  }
+  return list
+})
+
+const tabs = computed(() => [
+  { key: "filings", label: `申报目录（${filings.value.length}）` },
+  { key: "facts", label: `XBRL 事实（${facts.value.length}）` },
+  { key: "documents", label: `我的上传文档（${documents.value.length}）` },
+])
+
+const filingsEmptyReason = computed<string>(() => {
+  if (nonSecCompany.value) {
+    return "该公司没有 CIK，样例里没有对应的 SEC 申报。"
+  }
+  return "这批样例里没有该公司的申报记录。"
+})
+
+const factsEmptyReason = computed<string>(() => {
+  if (nonSecCompany.value) {
+    return "该公司没有 CIK，样例里没有对应的 SEC 事实。"
+  }
+  return `申报日 ${asOf.value} 之前没有可引用的事实。未申报的日期不会用演示数字填补。`
 })
 
 async function refreshToken(): Promise<string | null> {
@@ -296,11 +343,8 @@ function span(row: FactRow): string {
   return row.periodEnd
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>
-  }
-  return null
+function goCompany(): void {
+  void router.push(`/company/${encodeURIComponent(symbol.value)}`)
 }
 
 onMounted(() => {
@@ -309,131 +353,205 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page">
-    <section v-if="phase === 'loading'" class="skeleton" aria-busy="true">正在读取财报资料</section>
+  <main class="page stack">
+    <nav class="crumb" aria-label="面包屑">
+      <router-link :to="`/company/${encodeURIComponent(symbol)}`">公司研究</router-link>
+      <i aria-hidden="true">›</i>
+      <strong>原始财报</strong>
+    </nav>
 
-    <section v-else-if="phase === 'error'" class="panel" role="alert">
-      <h1>无法读取财报资料</h1>
-      <p>{{ failure }}</p>
-      <button v-if="retryable" class="retry" type="button" @click="load">重试</button>
-      <p class="muted">证券代码 {{ symbol }}</p>
-    </section>
+    <PageHeader :title="heading" :subtitle="subtitle">
+      <template #actions>
+        <el-button size="small" @click="goCompany">返回公司详情</el-button>
+      </template>
+      <template #tabs>
+        <SectionTabs :tabs="tabs" v-model="activeTab" />
+      </template>
+    </PageHeader>
+
+    <el-alert v-if="notice" type="warning" :closable="false" show-icon>
+      <template #title>{{ notice }}</template>
+    </el-alert>
+
+    <StateBlock v-if="phase === 'loading'" state="loading" :rows="4" />
+
+    <StateBlock
+      v-else-if="phase === 'error'"
+      state="error"
+      title="无法读取财报资料"
+      :message="`${failure}（证券代码 ${symbol}）`"
+      @retry="load"
+    />
 
     <template v-else>
-      <header class="panel">
-        <h1>{{ instrument?.nameCn || instrument?.nameEn || symbol }} 财报资料</h1>
-        <p class="muted">
-          {{ instrument?.displaySymbol }} · {{ instrument?.exchange }} · {{ instrument?.market }}
-          <template v-if="cik"> · CIK {{ cik }}</template>
-        </p>
-        <p v-if="sourceLine" class="muted">{{ sourceLine }}</p>
-        <el-alert v-if="notice" type="warning" :closable="false" show-icon>
-          <template #title>{{ notice }}</template>
-        </el-alert>
-      </header>
+      <PanelCard v-if="activeTab === 'filings'" title="申报目录" info="GET /api/v1/sec/filings?cik=">
+        <template #icon>▤</template>
+        <StateBlock
+          v-if="!filings.length"
+          state="empty"
+          :title="nonSecCompany ? '该公司没有 CIK' : '没有申报记录'"
+          :message="filingsEmptyReason"
+        />
+        <el-table v-else :data="filings" stripe>
+          <el-table-column prop="filingType" label="类型" width="110" />
+          <el-table-column prop="accessionNo" label="申报号" min-width="190" class-name="tabular" />
+          <el-table-column prop="filed" label="申报日" width="120" class-name="tabular" />
+          <el-table-column label="报告期" width="130">
+            <template #default="scope">
+              <span class="tabular">
+                {{ formatNumber(scope.row.fiscalYear, 0) }} {{ scope.row.fiscalPeriod }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="样例状态" width="120">
+            <template #default="scope">
+              <el-tag v-if="scope.row.status" type="info" size="small">{{ scope.row.status }}</el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="来源" min-width="140">
+            <template #default="scope">
+              <a v-if="scope.row.sourceUrl" :href="scope.row.sourceUrl" rel="noreferrer noopener" target="_blank">
+                原始链接
+              </a>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </PanelCard>
 
-      <el-tabs>
-        <el-tab-pane label="申报目录">
-          <div v-if="nonSecCompany" class="panel">
-            <el-empty description="该公司没有 CIK，样例里没有对应的 SEC 申报" />
-          </div>
-          <div v-else-if="!filings.length" class="panel">
-            <el-empty description="这批样例里没有该公司的申报记录" />
-          </div>
-          <div v-else class="panel">
-            <el-table :data="filings" stripe>
-              <el-table-column prop="filingType" label="类型" width="110" />
-              <el-table-column prop="accessionNo" label="申报号" min-width="190" />
-              <el-table-column prop="filed" label="申报日" width="120" />
-              <el-table-column label="报告期" width="130">
-                <template #default="scope">
-                  {{ formatNumber(scope.row.fiscalYear, 0) }} {{ scope.row.fiscalPeriod }}
-                </template>
-              </el-table-column>
-              <el-table-column label="样例状态" width="110">
-                <template #default="scope">
-                  <el-tag v-if="scope.row.status" type="info" size="small">
-                    {{ scope.row.status }}
-                  </el-tag>
-                  <span v-else>—</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="来源" min-width="140">
-                <template #default="scope">
-                  <a v-if="scope.row.sourceUrl" :href="scope.row.sourceUrl" rel="noreferrer noopener">
-                    原始链接
-                  </a>
-                  <span v-else class="muted">—</span>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </el-tab-pane>
+      <PanelCard v-else-if="activeTab === 'facts'" title="XBRL 事实" info="GET /api/v1/sec/facts?cik=&as_of=">
+        <template #icon>▦</template>
+        <template #actions>
+          <form class="asof" @submit.prevent="reloadFacts">
+            <label for="facts-as-of">申报日</label>
+            <el-input id="facts-as-of" v-model="asOf" type="date" size="small" style="width: 150px" />
+            <el-button size="small" type="primary" native-type="submit" :disabled="!cik">
+              查看该日可用事实
+            </el-button>
+          </form>
+        </template>
 
-        <el-tab-pane label="XBRL 事实">
-          <div class="panel">
-            <form class="form" @submit.prevent="reloadFacts">
-              <label>
-                申报日
-                <input v-model="asOf" name="facts-as-of" type="date" />
-              </label>
-              <button class="retry" type="submit" :disabled="!cik">查看该日可用事实</button>
-            </form>
-            <p v-if="nonSecCompany" class="muted">该公司没有 CIK，样例里没有对应的 SEC 事实。</p>
-            <p v-else-if="factsFailure" role="alert">{{ factsFailure }}</p>
-            <el-empty v-else-if="factsLoaded && !facts.length" description="该申报日没有可引用的事实" />
-            <el-table v-else-if="facts.length" :data="facts" stripe>
-              <el-table-column prop="concept" label="概念" min-width="180" />
-              <el-table-column prop="unit" label="单位" width="90" />
-              <el-table-column prop="value" label="数值" width="120" />
-              <el-table-column label="区间" min-width="190">
-                <template #default="scope">{{ span(scope.row) }}</template>
-              </el-table-column>
-              <el-table-column prop="form" label="表单" width="100" />
-              <el-table-column prop="filed" label="申报日" width="120" />
-              <el-table-column prop="accessionNo" label="申报号" min-width="190" />
-            </el-table>
-          </div>
-        </el-tab-pane>
+        <StateBlock
+          v-if="nonSecCompany"
+          state="empty"
+          title="该公司没有 CIK"
+          message="样例里没有对应的 SEC 事实，因此没有可展示的科目。"
+        />
+        <StateBlock
+          v-else-if="factsFailure"
+          state="error"
+          title="无法读取 XBRL 事实"
+          :message="factsFailure"
+          @retry="reloadFacts"
+        />
+        <StateBlock
+          v-else-if="factsLoaded && !facts.length"
+          state="empty"
+          title="该申报日没有可引用的事实"
+          :message="factsEmptyReason"
+        />
+        <StateBlock v-else-if="!factsLoaded" state="loading" :rows="3" />
+        <el-table v-else :data="facts" stripe>
+          <el-table-column prop="concept" label="概念" min-width="200" />
+          <el-table-column prop="unit" label="单位" width="90" />
+          <el-table-column prop="value" label="数值" width="130" class-name="tabular" />
+          <el-table-column label="区间" min-width="200">
+            <template #default="scope"><span class="tabular">{{ span(scope.row) }}</span></template>
+          </el-table-column>
+          <el-table-column prop="form" label="表单" width="100" />
+          <el-table-column prop="filed" label="申报日" width="120" class-name="tabular" />
+          <el-table-column prop="accessionNo" label="申报号" min-width="190" class-name="tabular" />
+          <el-table-column label="来源" width="110">
+            <template #default="scope">
+              <a v-if="scope.row.sourceUrl" :href="scope.row.sourceUrl" rel="noreferrer noopener" target="_blank">
+                原始链接
+              </a>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </PanelCard>
 
-        <el-tab-pane label="我的上传文档">
-          <div class="panel">
-            <el-alert v-if="documentsDenied && !session.accessToken" type="info" :closable="false">
-              <template #title>登录后可以查看自己的上传文档</template>
-            </el-alert>
-            <p v-else-if="documentsDenied" class="muted">无法读取上传文档，稍后可重试。</p>
-            <el-empty v-else-if="!documents.length" description="还没有上传过文档" />
-            <el-table v-else :data="documents" stripe>
-              <el-table-column prop="filename" label="文件" min-width="200" />
-              <el-table-column prop="status" label="状态" width="120" />
-              <el-table-column label="上传时间" min-width="160">
-                <template #default="scope">{{ formatMoment(scope.row.createdAt) }}</template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
+      <PanelCard v-else title="我的上传文档" info="GET /api/v1/documents（需登录，只返回当前用户的文档）">
+        <template #icon>▧</template>
+        <StateBlock
+          v-if="documentsDenied && !session.accessToken"
+          state="denied"
+          message="登录后可以查看自己的上传文档"
+        />
+        <StateBlock
+          v-else-if="documentsDenied"
+          state="error"
+          title="无法读取上传文档"
+          message="接口没有返回文档列表，稍后可重试。"
+          @retry="load"
+        />
+        <StateBlock
+          v-else-if="!documents.length"
+          state="empty"
+          title="还没有上传过文档"
+          message="在 /company/{symbol}/uploads 上传 PDF 后，AI 报告会逐页引用原文。"
+        />
+        <el-table v-else :data="documents" stripe>
+          <el-table-column prop="filename" label="文件" min-width="200" />
+          <el-table-column prop="status" label="状态" width="120">
+            <template #default="scope">
+              <el-tag v-if="scope.row.status" type="info" size="small">{{ scope.row.status }}</el-tag>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="上传时间" min-width="160" class-name="tabular">
+            <template #default="scope">{{ formatMoment(scope.row.createdAt) }}</template>
+          </el-table-column>
+        </el-table>
+      </PanelCard>
+
+      <SourceFooter
+        :as-of="metaAsOf"
+        :sources="sources"
+        :note="`数据来源 ${metaSource || '接口未标注'}；${notice || '接口未提供来源说明'}`"
+      />
     </template>
   </main>
 </template>
 
 <style scoped>
-.panel {
-  margin-bottom: 16px;
+.crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.crumb a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.crumb a:hover {
+  color: var(--accent);
+}
+
+.crumb strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .el-alert {
-  margin-top: 12px;
+  margin: 0;
 }
 
-.el-table {
-  margin-top: 12px;
-  --el-table-border-color: var(--line);
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: color-mix(in srgb, var(--text) 6%, transparent);
-  --el-table-text-color: var(--text);
-  --el-table-header-text-color: var(--muted);
-  --el-table-row-hover-bg-color: color-mix(in srgb, var(--accent) 12%, transparent);
+.asof {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.asof :deep(.el-input__wrapper) {
+  padding: 0 8px;
 }
 </style>

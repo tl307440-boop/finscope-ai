@@ -771,6 +771,88 @@ T22：多行业板块强弱、市场温度和可解释评分。没有足够样�
 
 T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据源许可后自动导入公告。
 
+## 2026-10-15 T36–T38 效果图对齐、第二条行情源、显示精度
 
+### 本轮范围
 
+用户放进来十张效果图（`系统设计\ChatGPT 图像 2026年10月15日 21_48_*.png`），要求界面按效果图做；
+同时发现行情页大面积空态，追下去是唯一的上游（东方财富 `push2his.eastmoney.com`）被限流到不可达。
 
+### 变更
+
+**一、把效果图固化成可执行的规范（先规范后改码）**
+
+- 新增 `docs/UI-设计规范.md`：十张图到路由的对照表、栅格尺寸（左栏 240px / 折叠 72px、顶栏 64px、
+  内容区 `max-width: 1680px` + `padding: 20px 24px`、卡片圆角 12px、间距 16px）、字号与字重、
+  状态色到 token 的映射、组件清单、图表规则，以及硬约束（不编造数据、前端不做金融计算、
+  空态必须写后端给的原因）。
+- 新增 `frontend/src/components/ui/` 共 11 个组件：`PageHeader`、`PanelCard`、`StatCard`、
+  `MetricTile`、`DeltaValue`、`StatusPill`、`SectionTabs`、`StateBlock`、`SourceFooter`、
+  `MiniSpark`、`MiniRing`。迷你走势和圆环是纯 SVG —— 一页几百个实例，用 ECharts 会卡。
+- `app-shell` 左栏改成与效果图一致的一行一个一级导航（当前组的子路由在下面展开），
+  顶栏加全局搜索、数据时间、任务状态、通知、账号菜单，底部加数据来源条。
+- 20 条路由对应的 20 个页面全部按效果图重排；没有效果图的次级页沿用同一套语言。
+
+**二、加第二条行情源（东财不可达时的备用）**
+
+- 新增 `app/providers/tencent_bars.py`：腾讯 `web.ifzq.gtimg.cn` 日线适配器，
+  字段顺序是 日期,开,收,高,低,量（不是 OHLC），`market_code()` 按交易所给 `sh`/`sz` 前缀。
+- `RawBar.amount` 与 `market_bars.amount` 改为可空：腾讯只给成交量、不给成交额。
+  缺成交额时存 `NULL`，页面渲染「—」，**不用 量×价 补一个看起来合理的数字**。
+- `app/services/akshare_sync.py` 的 `_SOURCES` 改成按顺序尝试的源列表，
+  每个源失败都记下来，全部失败时把每个源的失败原因一起报出来（`UPSTREAM_UNAVAILABLE`）。
+- 数据源行如实改名：`data_providers` 里 `code='akshare'` 那一行的 name 改成
+  「A股日线（东方财富 / 腾讯行情）」，`config_public.upstreams` 列出两个上游域名。
+  `code` 保持不变，因为它已经被 `market_bars.provider_id` 引用。
+- 修掉一个真实缺陷：`httpx_transport` 原来只捕获 `httpx.TimeoutException`，
+  上游断流（`RemoteProtocolError`）会冒泡成 500。现在转成 `ProviderDisconnected` 并可重试。
+- 顺带清掉集成测试在共享库上留下的 51 行 `probe-*` 僵尸数据源。
+
+**三、显示精度**
+
+- `bar_indicators.moving_average` / `simple_return` 四舍五入到 4 位与 6 位：
+  Decimal 除法精度是 28 位，60 日均线原来会输出 `1295.7418333333333333333`。
+- `market_temperature._mean` 同样定刻度，因为 MA20/MA60 会直接写进证据串。
+- `DeltaValue` 不再暴露浮点尾巴（涨跌幅固定两位），且**只有真的在表达变化时才补 `+`**：
+  收盘价读 `3,707.48`，涨跌幅读 `-1.59%`。负号永远保留，色盲也能读方向。
+- 后端用英文代码传单位，界面统一映射：`hand` → 手。
+
+### 验证
+
+在 `backend` 目录：
+
+- `ruff check .` 全部通过；`ruff format --check .` 213 个文件已格式化。
+- `mypy app` 通过，142 个源文件无问题。
+- `pytest -p no:randomly` **225 例全通过**（新增 `tests/unit/test_tencent_bars.py` 13 例、
+  `tests/unit/test_bar_indicators.py` 2 例）。
+
+在 `frontend` 目录：
+
+- `npm run typecheck` 退出码 0；`npm test` 18 个文件 48 例全通过；`npm run build` 成功。
+- `npm run e2e` 15 例全通过（8 条关键流程 + 7 组截图）。
+
+真数据验证（服务由 `windows-deploy\start.bat` 起）：
+
+- 24 个 A 股标的全量同步成功，`market_bars` 里是真实交易日，
+  例如 600519.SH 最新一根 2026-10-15 收盘 1312.97，`ma5=1355.534`、`ma60=1422.7618`、
+  `simple_return=-0.002283`，没有浮点尾巴。
+- 驾驶舱 A股市场温度从「—」变成 43.6/100；指数走势图上四条真实指数曲线；
+  `/market/indices` 四张指数卡、K 线、均线全部有值。
+- `docs/screenshots/` 重新生成 24 张，全部是真数据。
+
+### 已知局限
+
+- **成交额缺失**：腾讯不返回成交额，所以走备用源入库的日线 `amount` 是 `NULL`，
+  页面上显示「—」。没有用 量×价 之类的办法补。
+- **`source` 字段仍是 `akshare`**：`market_bars` 只存 `provider_id`，不存每根线的上游，
+  所以 `GET /market/bars/{id}` 的 `source` 还是那一行的 code。要按根区分上游得加字段和迁移。
+- **FRED / 中国宏观仍然是真实的空态**：`FRED_API_KEY` 与官方 CSV 都没有提供，
+  六个中国宏观序列在页面上就是 `unavailable`，这是真实状态。
+- **热点页是空态**：`ENABLE_NEWS=false` 且没有合规公告导入，`count=0` 会照实显示。
+- **效果图里没有数据支撑的字段一律留空**：相关性、置信度、报告字数、情景概率这些
+  后端没有的口径全部渲染成「未计算」/「—」，没有为了让图好看而编数。
+
+### 下一项
+
+拿到 `FRED_API_KEY` 后跑一次 `POST /admin/fred-syncs`，美国宏观那几张卡就会有值；
+拿到官方中国宏观 CSV 后走导入接口。两者都不需要改代码。
