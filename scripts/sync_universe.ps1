@@ -1,4 +1,4 @@
-# 为已入库的证券补齐 A 股日线（真实上游 AKShare，不造假数据）
+﻿# 为已入库的证券补齐 A 股日线（真实上游 AKShare，不造假数据）
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File sync_universe.ps1 [-Start 2026-01-01] [-End 2026-10-15]
 #
 # 上游（东方财富）经本机系统代理转发，偶尔会掐断连接，因此单只标的带重试。

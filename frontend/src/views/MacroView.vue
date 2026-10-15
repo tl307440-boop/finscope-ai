@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
+import { onMounted, ref, watch } from "vue"
 import {
   chartPolyline,
   describeObservations,
@@ -79,6 +79,14 @@ async function query(): Promise<void> {
     resultPhase.value = "error"
   }
 }
+
+// 规格书 §1.3 的 /macro/us 是按「观察日」时点回看的：已经选过观察日之后切换序列，
+// 直接按新序列重查一次，不必再点一次按钮（对应 §14.2 的「宏观换指标」）。
+watch(seriesCode, () => {
+  if (asOf.value) {
+    void query()
+  }
+})
 
 async function loadScores(asOfValue: string): Promise<string[]> {
   const response = await fetch(apiUrl(`/api/v1/macro/assessments?as_of=${encodeURIComponent(asOfValue)}`))

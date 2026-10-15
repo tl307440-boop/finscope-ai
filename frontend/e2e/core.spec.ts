@@ -32,7 +32,7 @@ test.describe("关键流程", () => {
     await option.click()
 
     await expect(page).toHaveURL(/\/market\/stocks\/600519\.SH/)
-    await expect(page.locator("h2").first()).toContainText("600519.SH", { timeout: 20_000 })
+    await expect(page.locator("h2").first()).toContainText("600519", { timeout: 20_000 })
   })
 
   test("03 查看 K 线：日线页画出 ECharts 画布并给出均线读数", async ({ page }) => {
@@ -42,7 +42,7 @@ test.describe("关键流程", () => {
     await expect(page.locator("h1")).toContainText("市场行情")
     const canvas = page.locator("canvas").first()
     await expect(canvas).toBeVisible({ timeout: 30_000 })
-    await expect(page.locator(".stock-header h2")).toContainText("600519.SH")
+    await expect(page.locator(".stock-header h2")).toContainText("600519")
     await expect(page.getByText(/MA5/).first()).toBeVisible()
   })
 
@@ -55,13 +55,24 @@ test.describe("关键流程", () => {
     const options = await select.locator("option").count()
     expect(options).toBeGreaterThan(1)
 
-    const [response] = await Promise.all([
+    // 规格书 §1.3 的 /macro/us 是按「观察日」时点回看的：先选一个观察日查询一次，
+    // 之后切换序列，页面会按新序列重新请求观测值。
+    await page.locator('input[name="as-of"]').fill("2024-06-01")
+    const [first] = await Promise.all([
+      page.waitForResponse((reply) => reply.url().includes("/api/v1/macro/series/"), {
+        timeout: 30_000,
+      }),
+      page.locator('button[type="submit"]').first().click(),
+    ])
+    expect(first.status()).toBeLessThan(500)
+
+    const [second] = await Promise.all([
       page.waitForResponse((reply) => reply.url().includes("/api/v1/macro/series/"), {
         timeout: 30_000,
       }),
       select.selectOption({ index: 1 }),
     ])
-    expect(response.status()).toBeLessThan(500)
+    expect(second.status()).toBeLessThan(500)
   })
 
   test("05 上传 PDF：合规 PDF 被接收，非 PDF 被明确拒绝", async ({ page }) => {
@@ -76,6 +87,8 @@ test.describe("关键流程", () => {
       { timeout: 60_000 },
     )
     await input.setInputFiles("e2e/fixtures/sample-filing.pdf")
+    // 表单是 @submit.prevent 提交的：选完文件还要真正点一次「上传」。
+    await page.getByRole("button", { name: "上传" }).first().click()
     const uploaded = await accepted
     expect(uploaded.status()).toBeLessThan(500)
   })

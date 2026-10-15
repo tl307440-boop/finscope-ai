@@ -15,6 +15,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Playwright 的失败产物（截图/trace/报告）。docs/screenshots 是交付物，不在此列。
+frontend/e2e/.artifacts/
+frontend/playwright-report/
+frontend/test-results/
+
 # 运行时数据。示例目录保留，真实上传与导出不入库。
 data/uploads/**
 data/imports/**

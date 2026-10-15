@@ -158,8 +158,19 @@ export function decideNavigation(
 }
 
 export function installGuard(router: Router, restore: () => Promise<boolean> = restoreSession): void {
+  let bootstrapped = false
   router.beforeEach(async (to) => {
     const session = useSessionStore()
+    // 刷新页面后内存里的 access token 必然为空，只能靠 HttpOnly 的 refresh cookie 恢复。
+    // 规格书 §1.3 里 /company/:symbol、/market/stocks/:symbol 这些页面并不要求登录，
+    // 但页内的「保存研究记录」等动作需要身份：所以启动后第一次导航无论去哪都先恢复一次，
+    // 否则刷新一个公开页面会误显示成未登录。
+    if (!bootstrapped) {
+      bootstrapped = true
+      if (!session.accessToken) {
+        await restore()
+      }
+    }
     if ((to.meta.requiresAuth || to.meta.requiresAdmin) && !session.accessToken) {
       const restored = await restore()
       if (!restored) {

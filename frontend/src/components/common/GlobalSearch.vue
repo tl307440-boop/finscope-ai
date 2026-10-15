@@ -82,7 +82,7 @@ function open(code: string): void {
         :value="hit.canonicalCode"
       >
         <span class="hit-exchange">{{ hit.exchange }}</span>
-        <span class="hit-code">{{ hit.canonicalCode }}</span>
+        <span class="hit-code">{{ hit.displaySymbol }}</span>
         <span class="hit-name">{{ hit.nameCn || hit.nameEn }}</span>
       </el-option>
     </el-select>

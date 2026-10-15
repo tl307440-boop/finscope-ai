@@ -164,6 +164,18 @@ erDiagram
 
 > `uq_sync_jobs_active_dedupe` 是**部分唯一索引**（`CREATE UNIQUE INDEX ... WHERE (status = ANY (ARRAY['queued'::sync_job_status, 'running'::sync_job_status]))`），它保证幂等入队：任务完成后同一 `dedupe_key` 可再次入队。
 
+### 图 1 溯源
+
+| 项 | 来源 |
+|---|---|
+| 8 张表名 | `select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE'`（36 张中属本组者） |
+| 每列名与类型 | `select table_name, column_name, data_type, character_maximum_length, is_nullable, column_default from information_schema.columns where table_schema='public' and table_name in ('users','refresh_sessions','user_preferences','watchlist_groups','watchlist_items','data_providers','sync_jobs','sync_job_events') order by table_name, ordinal_position` |
+| FK / PK / UK / CHECK | `information_schema.table_constraints` × `key_column_usage` × `constraint_column_usage`（同 §9.1 的 SQL） |
+| 索引名 | `select tablename, indexname, indexdef from pg_indexes where schemaname='public'` |
+| 迁移交叉核对 | `backend/alembic/versions/20261015_0002_auth_accounts.py`（users / refresh_sessions / user_preferences）、`20261015_0003_market_and_macro.py`（data_providers / sync_jobs / sync_job_events）、`20261015_0005_sync_job_lease.py`（`lease_expires_at` + 部分唯一索引）、`20261015_0012_watchlists.py`（watchlist_groups / watchlist_items） |
+
+> 完整命令行与逐条比对结论见 §9.1 与 §9.2，此处不重复贴全文。
+
 ---
 
 ## 2. 图 2：§4.2 证券与行情（**实际 3 张表**，规格书声明 6 张）
@@ -242,6 +254,17 @@ erDiagram
 | `market_bars` | `market_bars_pkey` / `uq_market_bars_identity` | PK(`id`)；UK(`instrument_id`, `trade_date`, `timeframe`, `adjustment`, `provider_id`) |
 
 > `uq_market_bars_identity` 把 `provider_id` 纳入唯一键，意味着**同一根 K 线允许存在多个数据源版本**，便于跨源比对与质量标记；写入端靠该键做 UPSERT 幂等。
+
+### 图 2 溯源
+
+| 项 | 来源 |
+|---|---|
+| 本组实际表名 | `information_schema.tables` 实测：只有 `instruments`、`trading_calendars`、`market_bars` **3 张**，规格书 §4.2 声明的另外 3 张（`market_snapshots`、`market_indicators`、`market_breadth_daily`）在库中**不存在**——查证 SQL：`select table_name from information_schema.tables where table_schema='public' and table_name in ('market_snapshots','market_indicators','market_breadth_daily')` → **0 行** |
+| 列与类型 | `information_schema.columns`（同上结构），其中 OHLC 为 `numeric(20,6)`、`volume`/`amount` 为 `numeric(24,6)`、`turnover_rate` 为 `numeric(12,6)`，由 `format_type(atttypid, atttypmod)` 对 `pg_attribute` 直接查询确认 |
+| 3 个枚举的取值 | `select t.typname, e.enumlabel from pg_type t join pg_enum e on e.enumtypid=t.oid order by t.typname, e.enumsortorder` → `market_code`(CN,US)、`instrument_type`(STOCK,INDEX,ETF)、`bar_timeframe`(1d,1w,1mo)、`bar_adjustment`(none,qfq,hfq) |
+| 迁移交叉核对 | `backend/alembic/versions/20261015_0003_market_and_macro.py`（建这三张表 + 四个枚举类型）、`20261015_0004_instrument_cik.py`（`instruments.cik` 与部分唯一索引 `uq_instruments_cik`） |
+
+> ⚠️ 本图**刻意不画**规格书里那 3 张未实现的表——这是"禁止凭想象画图"的直接体现。差异说明见 §0「与规格书 §4 的表数差异」。
 
 ---
 
@@ -355,6 +378,17 @@ erDiagram
 | `financial_metrics` | `financial_metrics_pkey` / `uq_financial_metrics_identity` | PK(`id`)；UK(`instrument_id`, `metric_code`, `period_type`, `period_end`, `metric_version`) |
 
 > 两条唯一约束使用 **`COALESCE(...)` 表达式索引**，把可空的 `realtime_start` / `period_start` 归一化成非空哨兵值 `0001-01-01`，从而让 NULL 也参与唯一性判定 —— 这是"时点值（point-in-time）不重复入库"的落地手段，普通 `UNIQUE` 做不到（NULL 互不相等）。
+
+### 图 3 溯源
+
+| 项 | 来源 |
+|---|---|
+| 本组实际表名 | `information_schema.tables` 实测：`macro_series`、`macro_observations`、`filings`、`financial_metrics`、`sec_facts` **5 张**；规格书 §4.3 声明的 `macro_assessments`、`financial_facts`、`valuation_snapshots` 在库中**不存在**（同法查证 → 0 行） |
+| 列与类型 | `information_schema.columns`；`filings.cik varchar(10)`、`sec_facts.concept varchar(160)`、`financial_metrics.value numeric(24,6)`、`macro_observations.value numeric(24,6)` 均逐列实测 |
+| 两个 `COALESCE` 唯一索引 | `select indexname, indexdef from pg_indexes where schemaname='public' and indexname in ('uq_macro_observations_identity','uq_sec_facts_identity')` → `indexdef` 里可见 `COALESCE(realtime_start, '0001-01-01'::date)`、`COALESCE(period_start, '0001-01-01'::date)` |
+| 迁移交叉核对 | `backend/alembic/versions/20261015_0003_market_and_macro.py`（macro_series / macro_observations）、`20261015_0006_sec_filings.py`（filings / sec_facts）、`20261015_0007_financial_metrics.py`（financial_metrics） |
+
+> `sec_facts` 是库里**多出来**的表（规格书 §4.3 未列），它与 `filings` 构成"申报事实"层，替代了规格书设想的 `financial_facts`。见 §0 差异表。
 
 ---
 
@@ -592,6 +626,21 @@ CREATE INDEX ix_document_chunks_tsv
 
 > **诚实标注**：`embedding_model` 列的实际取值是 `local-hashing-v1`，即由本地确定性哈希函数生成的 1536 维稀疏化稠密向量，**不是调用外部 Embedding API 得到的语义向量**。因此语义检索质量受限，系统以"向量召回 + 全文召回 + RRF 融合"三件套互补（见 `业务流程图.md` 时序图 1 与 `app/services/rrf.py`）。这一点不应在答辩中被说成"用了大模型 Embedding"。
 
+### 图 4 溯源
+
+| 项 | 来源 |
+|---|---|
+| 12 张表名 | `information_schema.tables`（public / BASE TABLE）实测，与规格书 §4.4 声明的 12 张**逐一对应，无缺无多** |
+| 列与类型 | `information_schema.columns` 逐列导出（见 §9.3 的 `columns.txt`）；`documents.sha256 varchar(64)`、`document_chunks.content_hash varchar(64)`、`document_chunks.section_title varchar(120)`、`document_chunks.token_count integer` 等均为实测 |
+| `embedding` / `tsv` 两列的真实类型 | `select a.attname, format_type(a.atttypid, a.atttypmod) from pg_attribute a where a.attrelid='public.document_chunks'::regclass and a.attnum>0 and not a.attisdropped` → `embedding = vector(1536)`、`tsv = tsvector` |
+| 已安装扩展 | `select extname, extversion from pg_extension` → `plpgsql 1.0`、**`vector 0.6.2`**；版本串 `select version()` → `PostgreSQL 16.2 on x86_64-pc-mingw64` |
+| HNSW / GIN 索引 | `select indexname, indexdef from pg_indexes where tablename='document_chunks'` → `ix_document_chunks_embedding`（`USING hnsw (embedding vector_cosine_ops)`）、`ix_document_chunks_tsv`（`USING gin (tsv)`） |
+| `tsv` 由谁写入 | 迁移源码 `20261015_0009_document_chunks.py` 中 `tsv` 仅为普通 `sa.Column(postgresql.TSVECTOR, nullable=True)`，**无生成列、无触发器**；写入位置 `app/services/text_embed.py:38 search_document()` |
+| `embedding_model` 的实际取值 | `app/services/text_embed.py:8` 常量 `LOCAL_EMBEDDING_MODEL = "local-hashing-v1"`；`app/repositories/document_chunks.py` 的 INSERT 与两条检索 SQL 都以该常量为过滤条件 |
+| 迁移交叉核对 | `20261015_0008_documents.py`（documents）、`20261015_0009_document_chunks.py`（document_chunks + HNSW/GIN 索引）、`20261015_0013_industry_theses.py`（industries / industry_memberships / industry_theses / thesis_evidence / industry_assessments）、`20261015_0010_analysis_reports.py`（analysis_runs / reports）、`20261015_0011_chat_sessions.py`（chat_sessions / chat_messages）、`20261015_0014_news_events.py`（news_events） |
+
+> 本组的向量列与两条索引是全文最容易被"想当然"的地方（容易被写成 `vector(3072)` 或"用了 OpenAI Embedding"）。图 4 与 §4.1 里的每个数字都有上面这条 `pg_attribute` / `pg_indexes` 查询兜底。
+
 ---
 
 ## 5. 图 5：增量表组 —— §20.5 智能体模拟 + Worker 心跳（7 张表）
@@ -708,6 +757,18 @@ erDiagram
 | `agent_simulation_runs.error_summary` | **不存在** | 同上（运行级错误摘要无处存） |
 | `agent_simulation_runs` 的 FK 只有 `user_id` | 实际 FK 数 = 1 | 与库一致：`agent_simulation_runs_user_id_fkey` |
 
+### 图 5 溯源
+
+| 项 | 来源 |
+|---|---|
+| 本组 7 张表 | 6 张 `agent_*` 由 `backend/alembic/versions/20261015_0015_agent_simulations.py` **一次性建出**（该迁移内 6 个 `op.create_table`）；`worker_heartbeats` 由 `20261015_0001_enable_pgvector.py` 建出（该迁移同时执行 `CREATE EXTENSION IF NOT EXISTS vector`） |
+| 列与类型 | `information_schema.columns` + `pg_attribute`；`agent_backtest_evaluations.actual_return` 为 `numeric(18,8)`、`quality_flag` 为 `varchar(32) NOT NULL DEFAULT 'insufficient'`——两者由 `20261015_0016_backtest_returns.py` 追加 |
+| FK 与 CASCADE | `information_schema` 三表联查 + `select conname, confdeltype from pg_constraint where contype='f'`；`confdeltype='c'` 表示 `ON DELETE CASCADE`（本组 5 条：node_traces / debate_rounds / risk_assessments / decisions 指向 runs，backtest 指向 decisions） |
+| 与规格书 §20.5 的字段级差异 | 逐列比对 §20.5 的 34~39 号表字段声明与 `information_schema.columns` 结果；**迁移源码里也确实没有** `instrument_id` / `total_tokens` / `total_duration_ms` / `report_id` / `error_summary` 这几列，可反证差异不是查询口径问题 |
+| CHECK 约束 | `select conname, pg_get_constraintdef(oid) from pg_constraint where contype='c' and connamespace='public'::regnamespace` → 全库仅 1 条 `ck_agent_decisions_rating` |
+
+> §5.1 的 12 行差异是本图最重要的信息量：**规格书比实现"更丰富"**。答辩时应主动说明这是实现尚未跟进，而不是图漏画。
+
 ---
 
 ## 6. 图 6：主干关系总览（不画字段）
@@ -760,6 +821,17 @@ erDiagram
 ```
 
 > 图中未出现的外键（共 39 条中的其余部分）为组内父子关系，已在图 1–图 5 逐一画出；`trading_calendars`、`worker_heartbeats` 两张表**无任何外键**，是独立表。（`news_events` 原先也无外键，迁移 `20261015_0017` 之后有了 `industry_id → industries.id`。）
+
+### 图 6 溯源
+
+| 项 | 来源 |
+|---|---|
+| 全部 39 条外键的源/目标 | 一条 SQL 出全量（**这是本图唯一数据源**）：`select tc.table_name as src, kcu.column_name as src_col, ccu.table_name as dst, ccu.column_name as dst_col, tc.constraint_name from information_schema.table_constraints tc join information_schema.key_column_usage kcu on tc.constraint_name = kcu.constraint_name join information_schema.constraint_column_usage ccu on tc.constraint_name = ccu.constraint_name where tc.constraint_type = 'FOREIGN KEY' and tc.table_schema = 'public' order by tc.table_name, kcu.ordinal_position;` → **39 行** |
+| 外键名的第二来源 | `select conname, conrelid::regclass as src, confrelid::regclass as dst, confdeltype from pg_constraint where contype = 'f' order by conname;`（与上一条交叉验证，避免 `information_schema` 在同名约束下串行） |
+| 基数（1:N / N:1）的判定 | 依据 `key_column_usage` 里 FK 列是否同时被该表的 PK/UK 覆盖（覆盖 → 1:1，未覆盖 → N:1）。例如 `agent_simulation_decisions.run_id` 带 UNIQUE，故 `runs ||--|| decisions` |
+| CASCADE 边 | `pg_constraint.confdeltype = 'c'` 的 15 条，逐条列在 §8.1 |
+
+> 本图**只画关系、不画字段**，所以它的可复核性最强：一条 SQL 的 39 行输出即可与图上每一条边一一对应。若只复核一张图，复核这张。
 
 ---
 

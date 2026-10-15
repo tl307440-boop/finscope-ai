@@ -366,7 +366,11 @@ def create_simulation(
     request: Request,
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> JSONResponse:
-    result = run_upstream(body.symbol, body.as_of, body.max_debate_rounds)
+    # 规格书 §14.2 要求集成测试用录制的 fixture、不依赖外网。TradingAgents 图会走
+    # 外部行情，因此这里留一个与 admin.py 的 akshare_fetch 同样的注入点：
+    # 测试用 app.state.simulation_runner 换成确定性桩，生产环境仍然是 run_upstream。
+    runner = getattr(request.app.state, "simulation_runner", None) or run_upstream
+    result = runner(body.symbol, body.as_of, body.max_debate_rounds)
     saved = SimulationRepository(_engine(request)).save(
         user_id=user.id,
         symbol=body.symbol,

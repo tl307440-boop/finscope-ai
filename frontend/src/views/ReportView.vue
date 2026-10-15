@@ -101,12 +101,26 @@ onMounted(() => {
       <ul v-else>
         <li v-for="link in links" :key="link.key">
           <button type="button" @click="selected = link">{{ link.label }}</button>
+          <a
+            class="source-link"
+            :href="link.sourceUrl"
+            target="_blank"
+            rel="noreferrer noopener"
+          >来源</a>
         </li>
       </ul>
       <aside v-if="selected" class="panel" role="dialog" aria-label="数字来源">
         <p>数值 {{ selected.value }}</p>
         <p>申报号 {{ selected.accession }}</p>
-        <p>来源 {{ selected.sourceUrl }}</p>
+        <p>
+          来源
+          <a
+            class="source-link"
+            :href="selected.sourceUrl"
+            target="_blank"
+            rel="noreferrer noopener"
+          >{{ selected.sourceUrl }}</a>
+        </p>
         <button type="button" @click="selected = null">关闭</button>
       </aside>
       <pre class="report-body">{{ body }}</pre>
@@ -117,5 +131,12 @@ onMounted(() => {
 <style scoped>
 .report-body {
   white-space: pre-wrap;
+}
+
+/* 规格书 §1.4 的财报引用要给出可点的「来源 URL」，§1.3 的报告页要求 PDFDeepLink。 */
+.source-link {
+  margin-left: 8px;
+  color: var(--accent);
+  font-size: 13px;
 }
 </style>

@@ -96,15 +96,21 @@ export async function searchInstruments(
   return parseSearch(body)
 }
 
-/** 把搜索结果映射成路由目标（规格书 §1.3 的 /company/:symbol 与 /market/stocks/:symbol）。 */
+/**
+ * 把搜索结果映射成路由目标（规格书 §1.3 的 /company/:symbol 与 /market/stocks/:symbol）。
+ *
+ * 用 display_symbol（600519.SH / AAPL）而不是 canonical_code（SSE:600519）：
+ * 规格书 §1.2 就是以 600519.SH 这种写法描述 A 股代码的，URL 里也照这个写法，
+ * canonical_code 只作为请求与列表的唯一键。
+ */
 export function routeForHit(hit: InstrumentHit): string {
-  const code = encodeURIComponent(hit.canonicalCode)
+  const code = encodeURIComponent(hit.displaySymbol || hit.canonicalCode)
   return hit.market === "CN" ? `/market/stocks/${code}` : `/company/${code}`
 }
 
 export function describeHit(hit: InstrumentHit): string {
-  const name = hit.nameCn || hit.nameEn || hit.canonicalCode
-  return `${hit.exchange} · ${hit.canonicalCode} · ${name}`
+  const name = hit.nameCn || hit.nameEn || hit.displaySymbol
+  return `${hit.exchange} · ${hit.displaySymbol} · ${name}`
 }
 
 export { ApiError }

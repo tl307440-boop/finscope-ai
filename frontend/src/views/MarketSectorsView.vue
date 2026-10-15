@@ -20,9 +20,6 @@ interface SectorRow {
   score: number | null
   coverage: string | null
   notice: string | null
-  factorCode: string | null
-  factorRaw: string | null
-  factorWeight: string | null
 }
 
 interface MetaInfo {
@@ -114,8 +111,6 @@ function readMeta(body: unknown): MetaInfo {
 }
 
 function toSectorRow(record: Record<string, unknown>): SectorRow {
-  const factors = Array.isArray(record.factors) ? record.factors : []
-  const factor = asRecord(factors[0])
   return {
     name: asString(record.name) ?? "未命名板块",
     status: asString(record.status) ?? "unknown",
@@ -123,9 +118,6 @@ function toSectorRow(record: Record<string, unknown>): SectorRow {
     score: asNumber(record.score),
     coverage: asString(record.coverage),
     notice: asString(record.notice),
-    factorCode: asString(factor?.code),
-    factorRaw: asString(factor?.raw),
-    factorWeight: asString(factor?.weight),
   }
 }
 
@@ -282,15 +274,6 @@ onMounted(() => {
               <span :class="row.coverage ? '' : 'muted'">{{ row.coverage ?? "—" }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="因子" width="180">
-            <template #default="{ row }">
-              <span v-if="row.factorCode" class="muted">
-                {{ row.factorCode }} {{ row.factorRaw ?? "—" }}（权重
-                {{ row.factorWeight ?? "—" }}）
-              </span>
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
         </el-table>
 
         <template v-else>
@@ -299,10 +282,14 @@ onMounted(() => {
         </template>
       </section>
 
-      <section v-if="sectors.some((row) => row.notice)" class="panel">
+      <section v-if="sectors.some((row) => row.notice && row.notice !== row.coverage)" class="panel">
         <h2>后端说明</h2>
         <ul class="notice-list">
-          <li v-for="row in sectors.filter((item) => item.notice)" :key="row.name" class="muted">
+          <li
+            v-for="row in sectors.filter((item) => item.notice && item.notice !== item.coverage)"
+            :key="row.name"
+            class="muted"
+          >
             <strong>{{ row.name }}</strong>：{{ row.notice }}
           </li>
         </ul>

@@ -45,9 +45,12 @@ cd backend
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 uv run python -m app.workers.main
+uv run python -m app.workers.scheduler
 cd ../frontend
 npm run dev
 ```
+
+`app.workers.scheduler` 是任务调度器（规格书 §11）：它只按幂等标识往 `sync_jobs` 写 `queued` 记录，不执行任务；真正跑任务的是 `app.workers.main`，两个进程可以各自单独重启、Ctrl+C 都能干净退出。触发时刻与 `SCHEDULER_ENABLE_*` 开关在 `backend/.env` 里配置。
 
 前端开发服务器是 <http://localhost:5173>，`/api` 会代理到 8000 端口。
 
