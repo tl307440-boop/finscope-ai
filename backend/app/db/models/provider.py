@@ -41,7 +41,8 @@ class SyncJob(Base):
         ForeignKey("data_providers.id"),
     )
     scope: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
-    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(SYNC_STATUS, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_by: Mapped[uuid.UUID | None] = mapped_column(

@@ -1,7 +1,7 @@
 import threading
 from datetime import UTC, datetime
 
-from app.workers.main import serve
+from app.workers.main import serve, serve_with_jobs
 
 NOW = datetime(2026, 10, 15, tzinfo=UTC)
 
@@ -62,3 +62,18 @@ def test_serve_keeps_running_after_a_failed_write() -> None:
     _serve(writer, stop)
     assert writer.rows == ["alive", "stopped"]
     assert "super-secret" not in " ".join(writer.rows)
+
+
+def test_job_pump_runs_inside_the_heartbeat_loop() -> None:
+    writer = MemoryWriter()
+    stop = threading.Event()
+    pumped = {"count": 0}
+
+    def pump(now: datetime) -> None:
+        assert now == NOW
+        pumped["count"] += 1
+        stop.set()
+
+    serve_with_jobs(writer, pump, stop, 0.01, lambda: NOW, 7)
+    assert pumped["count"] == 1
+    assert writer.rows == ["alive", "stopped"]

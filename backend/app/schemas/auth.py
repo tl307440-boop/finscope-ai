@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -58,6 +59,8 @@ class ProviderCredential(BaseModel):
     credential_required: bool
     credential_present: bool
     availability: Literal["unavailable", "configured", "not_required"]
+    last_health_status: str | None = None
+    last_health_at: datetime | None = None
 
 
 class ProviderList(BaseModel):

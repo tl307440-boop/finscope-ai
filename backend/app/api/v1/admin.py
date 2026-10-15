@@ -13,6 +13,7 @@ from app.providers.akshare_bars import AdjustmentCode
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
+from app.repositories.sync_jobs import SyncJobRepository
 from app.schemas.auth import list_provider_credentials
 from app.schemas.bars import AkshareSyncRequest, AkshareSyncResult
 from app.schemas.macro import FredSyncRequest, FredSyncResult
@@ -32,6 +33,19 @@ def read_providers(
     _: Annotated[UserRecord, Depends(require_admin)],
 ) -> JSONResponse:
     payload = list_provider_credentials(get_settings())
+    health = SyncJobRepository(cast(Engine, request.app.state.engine)).provider_health()
+    providers = []
+    for item in payload.providers:
+        record = health.get(item.code)
+        providers.append(
+            item.model_copy(
+                update={
+                    "last_health_status": None if record is None else record.status,
+                    "last_health_at": None if record is None else record.checked_at,
+                }
+            )
+        )
+    payload = payload.model_copy(update={"providers": providers})
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 

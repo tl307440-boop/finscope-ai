@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
 import { ApiError, authorizedFetch, errorFrom, readJson } from "../api/client"
+import { enqueueMessage, healthLabel, jobStatusLabel } from "../api/jobs"
 import { providerStatusLabel } from "../api/macro"
 import { describeProbeFailure } from "../api/providerProbe"
 import { restoreSession, session } from "../stores/auth"
@@ -10,10 +11,19 @@ interface ProviderRow {
   credentialRequired: boolean
   credentialPresent: boolean
   availability: string
+  lastHealthStatus: string | null
+}
+
+interface SyncJobRow {
+  id: string
+  status: string
+  label: string
+  summary: string
 }
 
 const phase = ref<"loading" | "ready" | "denied" | "error">("loading")
 const rows = ref<ProviderRow[]>([])
+const jobs = ref<SyncJobRow[]>([])
 const failure = ref("无法读取数据源状态")
 const scenario = ref("timeout")
 const probePhase = ref<"idle" | "loading" | "done" | "error">("idle")
@@ -63,10 +73,12 @@ async function load(): Promise<void> {
           credentialRequired: record?.credential_required === true,
           credentialPresent: record?.credential_present === true,
           availability: asString(record?.availability) ?? "unavailable",
+          lastHealthStatus: asString(record?.last_health_status),
         },
       ]
     })
     phase.value = "ready"
+    await loadJobs()
   } catch (caught) {
     failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
     phase.value = "error"
@@ -112,20 +124,51 @@ async function syncFred(): Promise<void> {
   }
 }
 
+async function loadJobs(): Promise<void> {
+  const response = await authorizedFetch(
+    "/api/v1/admin/sync-jobs",
+    { method: "GET" },
+    session.accessToken,
+    async () => {
+      const restored = await restoreSession()
+      return restored ? session.accessToken : null
+    },
+  )
+  const body = await readJson(response)
+  if (!response.ok) {
+    return
+  }
+  const data = asRecord(asRecord(body)?.data)
+  const listed = Array.isArray(data?.jobs) ? data.jobs : []
+  jobs.value = listed.flatMap((item) => {
+    const record = asRecord(item)
+    const id = asString(record?.id)
+    const status = asString(record?.status)
+    if (!id || !status) {
+      return []
+    }
+    const summary = asString(record?.error_summary) ?? jobStatusLabel(status)
+    return [{ id, status, label: jobStatusLabel(status), summary }]
+  })
+}
+
 async function syncBars(): Promise<void> {
   barPhase.value = "loading"
   barText.value = ""
   try {
     const response = await authorizedFetch(
-      "/api/v1/admin/akshare-syncs",
+      "/api/v1/admin/sync-jobs",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          display_symbol: barSymbol.value,
-          observation_start: barStart.value,
-          observation_end: barEnd.value,
-          adjustment: "none",
+          job_type: "akshare_daily",
+          scope: {
+            display_symbol: barSymbol.value,
+            observation_start: barStart.value,
+            observation_end: barEnd.value,
+            adjustment: "none",
+          },
         }),
       },
       session.accessToken,
@@ -139,9 +182,9 @@ async function syncBars(): Promise<void> {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
     const data = asRecord(asRecord(body)?.data)
-    const written = data?.rows_written
-    barText.value = typeof written === "number" ? `已写入 ${written} 根日线` : "同步完成"
+    barText.value = enqueueMessage(data?.created === true)
     barPhase.value = "done"
+    await loadJobs()
   } catch (caught) {
     barText.value = caught instanceof ApiError ? caught.message : "无法连接接口"
     barPhase.value = "error"
@@ -209,7 +252,9 @@ function asString(value: unknown): string | null {
       <h1>数据源配置</h1>
       <p class="muted">这里只显示密钥是否已经配置，不展示密钥，也不表示行情已经同步。</p>
       <ul v-if="rows.length" class="provider-list">
-        <li v-for="row in rows" :key="row.code">{{ row.code }} · {{ label(row) }}</li>
+        <li v-for="row in rows" :key="row.code">
+          {{ row.code }} · {{ label(row) }} · {{ healthLabel(row.lastHealthStatus) }}
+        </li>
       </ul>
       <p v-else>尚未接入</p>
       <form class="form probe-form" @submit.prevent="runProbe">
@@ -259,10 +304,17 @@ function asString(value: unknown): string | null {
           结束日期
           <input v-model="barEnd" name="bar-sync-end" type="date" required />
         </label>
-        <button class="retry" type="submit" :disabled="barPhase === 'loading'">同步日线</button>
-        <p v-if="barPhase === 'loading'">正在同步</p>
+        <button class="retry" type="submit" :disabled="barPhase === 'loading'">加入队列</button>
+        <p v-if="barPhase === 'loading'">正在排队</p>
         <p v-else-if="barText" :role="barPhase === 'error' ? 'alert' : 'status'">{{ barText }}</p>
       </form>
+      <h2>同步任务</h2>
+      <ul v-if="jobs.length" class="provider-list">
+        <li v-for="job in jobs" :key="job.id">
+          {{ job.label }}<template v-if="job.summary !== job.label"> · {{ job.summary }}</template>
+        </li>
+      </ul>
+      <p v-else class="muted">还没有同步任务</p>
     </section>
   </main>
 </template>
