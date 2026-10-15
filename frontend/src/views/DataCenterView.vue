@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
 import { ApiError, authorizedFetch, errorFrom, readJson } from "../api/client"
+import { describeProbeFailure } from "../api/providerProbe"
 import { restoreSession, session } from "../stores/auth"
 
 interface ProviderRow {
@@ -12,6 +13,9 @@ interface ProviderRow {
 const phase = ref<"loading" | "ready" | "denied" | "error">("loading")
 const rows = ref<ProviderRow[]>([])
 const failure = ref("无法读取数据源状态")
+const scenario = ref("timeout")
+const probePhase = ref<"idle" | "loading" | "done" | "error">("idle")
+const probeText = ref("")
 
 async function load(): Promise<void> {
   phase.value = "loading"
@@ -63,6 +67,32 @@ function label(row: ProviderRow): string {
   return row.credentialPresent ? "已提供密钥" : "未提供密钥"
 }
 
+async function runProbe(): Promise<void> {
+  probePhase.value = "loading"
+  probeText.value = ""
+  try {
+    const response = await authorizedFetch(
+      "/api/v1/admin/provider-probes",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario: scenario.value }),
+      },
+      session.accessToken,
+      async () => {
+        const restored = await restoreSession()
+        return restored ? session.accessToken : null
+      },
+    )
+    const body = await readJson(response)
+    probeText.value = describeProbeFailure(body)
+    probePhase.value = response.ok ? "done" : "error"
+  } catch (caught) {
+    probeText.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    probePhase.value = "error"
+  }
+}
+
 onMounted(() => {
   void load()
 })
@@ -98,6 +128,19 @@ function asString(value: unknown): string | null {
         <li v-for="row in rows" :key="row.code">{{ row.code }} · {{ label(row) }}</li>
       </ul>
       <p v-else>尚未接入</p>
+      <form class="form probe-form" @submit.prevent="runProbe">
+        <label>
+          模拟上游故障
+          <select v-model="scenario" name="scenario">
+            <option value="status_429">限流</option>
+            <option value="status_503">服务不可用</option>
+            <option value="timeout">超时</option>
+          </select>
+        </label>
+        <button class="retry" type="submit" :disabled="probePhase === 'loading'">探测</button>
+        <p v-if="probePhase === 'loading'">正在探测</p>
+        <p v-else-if="probeText" :role="probePhase === 'error' ? 'alert' : 'status'">{{ probeText }}</p>
+      </form>
     </section>
   </main>
 </template>

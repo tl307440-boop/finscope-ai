@@ -182,7 +182,8 @@
   gap: 6px;
 }
 
-.form input {
+.form input,
+.form select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
