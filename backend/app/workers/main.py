@@ -76,13 +76,17 @@ def main() -> int:
         stop_event.set()
 
     def pump(now: datetime) -> None:
+        from pathlib import Path
+
         from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository, pump_once
+        from app.services.document_index import index_next_queued
         from app.workers.jobs import execute_job
 
         def run(job: JobSnapshot) -> int:
             return execute_job(engine, job)
 
         pump_once(SyncJobRepository(engine), now, run)
+        index_next_queued(engine, Path("data/uploads"))
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)

@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.6",
     "pyjwt>=2.15.1",
+    "pypdf>=6.20.1",
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
     "tzdata>=2026.5",
@@ -54,3 +55,7 @@ strict = true
 packages = ["app"]
 warn_unused_ignores = true
 disallow_any_generics = true
+
+[[tool.mypy.overrides]]
+module = ["pypdf", "pypdf.*"]
+ignore_missing_imports = true

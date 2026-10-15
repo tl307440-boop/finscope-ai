@@ -32,6 +32,8 @@ services:
       WORKER_HEARTBEAT_TTL_SECONDS: "30"
     ports:
       - "${FINSCOPE_API_PORT:-8000}:8000"
+    volumes:
+      - finscope_uploads:/app/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -62,6 +64,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    volumes:
+      - finscope_uploads:/app/data/uploads
     command: ["python", "-m", "app.workers.main"]
 
   frontend:
@@ -74,3 +78,4 @@ services:
 
 volumes:
   finscope_pg:
+  finscope_uploads:

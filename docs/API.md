@@ -102,6 +102,8 @@
 
 `POST /api/v1/documents` 需要登录。内容不是 `%PDF-` 时返回 422，`REJECTED_FORMAT`。超过 `UPLOAD_MAX_MB` 或 200 页分别是 `REJECTED_SIZE`、`REJECTED_PAGES`，文件不落盘。同一用户相同 SHA256 返回 `duplicate`，不另存一份。扫描件状态是 `ocr_required`。损坏文件记录 `failed`，不保存路径。文字 PDF 状态是 `queued`。保存路径是 `data/uploads/<用户>/<sha256>.pdf`，不用原始文件名。
 
+`POST /api/v1/documents/{documentId}/index` 只处理当前用户名下、状态为等待解析的文字版 PDF。扫描件返回 422，不会写入向量。解析完成后可用 `GET /api/v1/documents/search?q=` 检索。结果包含 `document_id`、`chunk_id`、`page_start` 和 `page_end`。向量维度固定为 1536，模型名是 `local-hashing-v1`。没有配置外部向量接口时不会假装调用远程模型。早于 `as_of` 上传的文件才会出现；别人的文件不会出现。
+
 管理员 `POST /api/v1/admin/akshare-syncs`。同一交易日的重复行只保留第一条。上游失败时 `rows_written` 为 0，已有 K 线不改。自动测试使用脚本响应，不访问外网。
 
 ## 同步任务

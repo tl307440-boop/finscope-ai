@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     data_mode: DataMode = "live"
     upload_max_mb: int = 30
     upload_max_pages: int = 200
+    chunk_target_tokens: int = 600
+    chunk_max_tokens: int = 800
+    chunk_overlap_tokens: int = 80
     log_level: str = "INFO"
     worker_heartbeat_interval_seconds: int = 5
     worker_heartbeat_ttl_seconds: int = 30
@@ -59,6 +62,8 @@ class Settings(BaseSettings):
             raise ValueError("WORKER_HEARTBEAT_TTL_SECONDS 必须大于心跳间隔")
         if self.login_max_failures < 1 or self.login_failure_window_seconds < 1:
             raise ValueError("登录失败限制必须为正数")
+        if not (0 <= self.chunk_overlap_tokens < self.chunk_target_tokens <= self.chunk_max_tokens):
+            raise ValueError("分块长度必须满足重叠小于目标，且目标不超过上限")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")
