@@ -26,6 +26,10 @@ DAILY_TARGETS: tuple[DailyTarget, ...] = (
     DailyTarget("600519.SH", "SSE", "600519", "贵州茅台"),
     DailyTarget("601318.SH", "SSE", "601318", "中国平安"),
     DailyTarget("000858.SZ", "SZSE", "000858", "五粮液"),
+    DailyTarget("000001.SH", "SSE", "000001", "上证指数"),
+    DailyTarget("399001.SZ", "SZSE", "399001", "深证成指"),
+    DailyTarget("399006.SZ", "SZSE", "399006", "创业板指"),
+    DailyTarget("000300.SH", "SSE", "000300", "沪深300"),
 )
 
 

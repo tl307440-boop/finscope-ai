@@ -294,6 +294,10 @@ function asString(value: unknown): string | null {
             <option value="600519.SH">600519.SH 贵州茅台</option>
             <option value="601318.SH">601318.SH 中国平安</option>
             <option value="000858.SZ">000858.SZ 五粮液</option>
+            <option value="000001.SH">000001.SH 上证指数</option>
+            <option value="399001.SZ">399001.SZ 深证成指</option>
+            <option value="399006.SZ">399006.SZ 创业板指</option>
+            <option value="000300.SH">000300.SH 沪深300</option>
           </select>
         </label>
         <label>

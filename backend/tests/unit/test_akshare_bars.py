@@ -30,6 +30,8 @@ def test_secid_uses_the_exchange_not_a_guess() -> None:
     assert secid_for("SSE", "600519") == "1.600519"
     assert secid_for("SZSE", "000858") == "0.000858"
     assert target_for("600519.sh") is not None
+    assert target_for("000001.SH") is not None
+    assert secid_for("SSE", "000001") == "1.000001"
     assert target_for("000001.SZ") is None
 
 

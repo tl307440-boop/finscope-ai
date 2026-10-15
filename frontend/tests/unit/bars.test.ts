@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { summarizeBars } from "../../src/api/bars"
+import { candleMarks, maLabel, returnLabel, summarizeBars } from "../../src/api/bars"
 
 describe("日线展示", () => {
   it("没有同步时不编造价格", () => {
@@ -25,9 +25,43 @@ describe("日线展示", () => {
             volume: "10",
             currency: "CNY",
             volume_unit: "hand",
+            ma5: null,
+            ma10: null,
+            ma20: null,
+            ma60: null,
+            simple_return: null,
           },
         ],
       }),
     ).toEqual(["1999-01-04 开1.1 高1.3 低1 收1.2 CNY 量10手"])
   })
+
+  it("不补缺失日，样本不足时均线和收益率留空", () => {
+    const friday = bar("2024-01-05", "10", "11")
+    const monday = bar("2024-01-08", "11", "12")
+    const marks = candleMarks([friday, monday])
+    expect(marks).toHaveLength(2)
+    expect(maLabel(20, null)).toBe("MA20 样本不足")
+    expect(returnLabel(null)).toBe("收益率：样本不足")
+    expect(returnLabel("0.1")).toBe("收益率 +10.00%")
+    expect(marks[1].rising).toBe(true)
+  })
 })
+
+function bar(date: string, open: string, close: string) {
+  return {
+    trade_date: date,
+    open,
+    high: close,
+    low: open,
+    close,
+    volume: "10",
+    currency: "CNY",
+    volume_unit: "hand",
+    ma5: null,
+    ma10: null,
+    ma20: null,
+    ma60: null,
+    simple_return: null,
+  }
+}
