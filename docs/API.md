@@ -114,6 +114,10 @@
 
 `POST /api/v1/assistant/sessions` 新建会话。`POST /api/v1/assistant/sessions/{sessionId}/messages` 用 `client_message_id` 保存回答，并以 SSE 分片返回。同一个 `client_message_id` 再次发送时直接重放已保存的文本，不再生成一次。未配置模型时回答固定说明不会编造财务数字。已经完成的回答在取消后仍然保留。其他用户不能读取会话。
 
+## 资料库
+
+`GET /api/v1/analysis/reports?q=` 按标题筛选当前用户的研究记录，按创建时间从新到旧排列。`DELETE /api/v1/analysis/reports/{reportId}` 只隐藏自己的记录。`GET/POST /api/v1/watchlists` 管理自选分组，加入和移出证券也只作用于自己的分组。其他用户看到的列表是空的，删除别人的记录或自选会得到 404。
+
 管理员 `POST /api/v1/admin/akshare-syncs`。同一交易日的重复行只保留第一条。上游失败时 `rows_written` 为 0，已有 K 线不改。自动测试使用脚本响应，不访问外网。
 
 ## 同步任务

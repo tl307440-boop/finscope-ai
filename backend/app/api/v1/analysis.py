@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import Engine
@@ -35,6 +35,18 @@ class FilingAnalysisRequest(BaseModel):
     as_of: date
     period_a: date
     period_b: date
+
+
+class ReportSummary(BaseModel):
+    report_id: UUID
+    run_id: UUID
+    title: str
+    status: str
+    as_of: date
+
+
+class ReportListData(BaseModel):
+    reports: list[ReportSummary]
 
 
 class AnalysisRunData(BaseModel):
@@ -117,6 +129,48 @@ def create_filing_analysis(
         draft=draft,
     )
     return JSONResponse(status_code=200, content=success_response(request, _run_data(saved)))
+
+
+@router.get("/reports", summary="我的研究记录")
+def list_reports(
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+    q: Annotated[str, Query(max_length=80)] = "",
+) -> JSONResponse:
+    rows = ReportRepository(cast(Engine, request.app.state.engine)).list_owned(user.id, q)
+    return JSONResponse(
+        status_code=200,
+        content=success_response(
+            request,
+            ReportListData(
+                reports=[
+                    ReportSummary(
+                        report_id=row.report_id,
+                        run_id=row.run_id,
+                        title=row.title,
+                        status=row.status,
+                        as_of=row.as_of,
+                    )
+                    for row in rows
+                ]
+            ),
+        ),
+    )
+
+
+@router.delete("/reports/{report_id}", summary="删除研究记录")
+def hide_report(
+    report_id: UUID,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    hidden = ReportRepository(cast(Engine, request.app.state.engine)).hide(user.id, report_id)
+    if hidden is None:
+        raise AppError(code="NOT_FOUND", message="找不到这份研究记录", status_code=404)
+    return JSONResponse(
+        status_code=200,
+        content=success_response(request, ReportListData(reports=[])),
+    )
 
 
 @router.get("/runs/{run_id}", summary="查看研究记录")

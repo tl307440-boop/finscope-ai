@@ -14,6 +14,7 @@ from app.api.v1.jobs import router as job_router
 from app.api.v1.macro import router as macro_router
 from app.api.v1.market import router as market_router
 from app.api.v1.metrics import router as metrics_router
+from app.api.v1.watchlists import router as watchlist_router
 
 router = APIRouter()
 router.include_router(health_router)
@@ -29,4 +30,5 @@ router.include_router(me_router)
 router.include_router(admin_router)
 router.include_router(analysis_router)
 router.include_router(assistant_router)
+router.include_router(watchlist_router)
 router.include_router(job_router)

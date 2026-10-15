@@ -5,6 +5,7 @@ import CompanyView from "../views/CompanyView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
 import FilingsView from "../views/FilingsView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
+import LibraryView from "../views/LibraryView.vue"
 import LoginView from "../views/LoginView.vue"
 import MetricsView from "../views/MetricsView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
@@ -35,6 +36,7 @@ export const routes = [
   },
   { path: "/uploads", name: "uploads", component: UploadView, meta: { requiresAuth: true } },
   { path: "/assistant", name: "assistant", component: AssistantView, meta: { requiresAuth: true } },
+  { path: "/library", name: "library", component: LibraryView, meta: { requiresAuth: true } },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
   {
