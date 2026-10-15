@@ -65,6 +65,10 @@ test("03 公司与产业", async ({ page }) => {
   await page.goto("/company/AAPL")
   await shoot(page, "10-公司研究")
 
+  // A 股公司单拍一张：它有真实入库日线，美股那张走的是 SEC 事实路径。
+  await page.goto("/company/600519.SH")
+  await shoot(page, "10b-公司研究-贵州茅台")
+
   await page.goto("/company/AAPL/filings")
   await shoot(page, "11-财报资料")
 

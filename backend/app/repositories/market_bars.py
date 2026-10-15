@@ -126,11 +126,14 @@ class MarketBarRepository:
             statement = statement.where(MarketBar.trade_date >= start)
         if end is not None:
             statement = statement.where(MarketBar.trade_date <= end)
-        statement = statement.order_by(MarketBar.trade_date).limit(limit + 1)
+        # limit 取「最近的 N 条」，不是「最早的 N 条」。
+        # 调用方要么在画走势图、要么在读最新收盘，被砍掉的都应该是更早的日线；
+        # 按正序取前 N 条会让 limit=60 返回两三年前的一段，页面上就成了「最新收盘」。
+        statement = statement.order_by(MarketBar.trade_date.desc()).limit(limit + 1)
         with Session(self.engine) as session:
-            rows = session.scalars(statement).all()
+            rows = list(session.scalars(statement).all())
         truncated = len(rows) > limit
-        visible = rows[:limit]
+        visible = list(reversed(rows[:limit]))
         return (
             [
                 StoredDailyBar(

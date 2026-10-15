@@ -20,7 +20,7 @@ import type { EChartsOption } from "echarts"
 import VChart from "vue-echarts"
 import { useRouter } from "vue-router"
 import { ApiError, apiUrl, authorizedFetch, errorFrom, readJson } from "../api/client"
-import { asNumber, asRecord, asString, dataOf, listOf } from "../api/json"
+import { asNumber, asRecord, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { searchInstruments, type InstrumentHit } from "../api/instruments"
 import { modelNotice } from "../api/modelStatus"
 import { restoreSession, useSessionStore } from "../stores/auth"
@@ -231,12 +231,48 @@ const metaLine = computed<string>(() => {
 
 const currency = computed<string>(() => instrument.value?.currency ?? "")
 
+/** 后端枚举与 XBRL 单位是英文的，界面上要落成中文词（规格书 §1.4 中文界面）。 */
+const TYPE_LABELS: Record<string, string> = {
+  STOCK: "股票",
+  INDEX: "指数",
+  ETF: "ETF",
+  FUND: "基金",
+  BOND: "债券",
+}
+
+const MARKET_LABELS: Record<string, string> = {
+  CN: "A股",
+  US: "美股",
+  HK: "港股",
+}
+
+const UNIT_LABELS: Record<string, string> = {
+  SHARES: "股",
+  USD: "美元",
+  CNY: "元",
+  HKD: "港元",
+  PURE: "倍",
+}
+
+function labelOf(table: Record<string, string>, raw: string): string {
+  const key = raw.trim().toUpperCase()
+  return table[key] ?? raw
+}
+
+function unitLabel(unit: string): string {
+  return labelOf(UNIT_LABELS, unit)
+}
+
 const tags = computed<string[]>(() => {
   const item = instrument.value
   if (!item) {
     return []
   }
-  return [item.instrumentType, item.exchange, item.market].filter(Boolean)
+  return [
+    labelOf(TYPE_LABELS, item.instrumentType),
+    item.exchange,
+    labelOf(MARKET_LABELS, item.market),
+  ].filter(Boolean)
 })
 
 const logoText = computed<string>(() => {
@@ -351,7 +387,7 @@ const trendGroups = computed<Map<string, SeriesPoint[]>>(() => {
 const trendTabs = computed(() =>
   [...trendGroups.value.keys()].map((key) => {
     const [concept = "", unit = ""] = key.split("|")
-    return { key, label: `${conceptLabel(concept)} · ${unit}` }
+    return { key, label: `${conceptLabel(concept)} · ${unitLabel(unit)}` }
   }),
 )
 
@@ -370,7 +406,7 @@ const trendAxisUnit = computed<string>(() => {
     return ""
   }
   const wanted = groups.has(activeConcept.value) ? activeConcept.value : [...groups.keys()][0] ?? ""
-  return wanted.split("|")[1] ?? ""
+  return unitLabel(wanted.split("|")[1] ?? "")
 })
 
 const trendNotice = computed<string>(() => {
@@ -447,7 +483,7 @@ const comparisonRows = computed<ComparisonRow[]>(() => {
         key,
         label: conceptLabel(row.concept),
         concept: row.concept,
-        unit: row.unit,
+        unit: unitLabel(row.unit),
         change: null,
         accessionNo: row.accessionNo,
         sourceUrl: row.sourceUrl,
@@ -524,13 +560,20 @@ const runTone = computed<"ok" | "warn" | "danger" | "muted">(() => {
   return "muted"
 })
 
-const sourceList = computed<string[]>(() => [
-  "/api/v1/instruments/search",
-  "/api/v1/companies/{id}/research",
-  "/api/v1/market/bars/{id}",
-  "/api/v1/sec/facts",
-  "/api/v1/analysis/model-status",
-])
+/**
+ * 底部来源条写的是「数据从哪个平台来的」，不是接口路径。
+ * 只列真的用到的：主数据一定有；有 CIK 才可能有 SEC 事实；有入库日线才谈行情源。
+ */
+const sourceList = computed<string[]>(() => {
+  const list = ["本站证券主数据"]
+  if (bars.value.length) {
+    list.push(barsSource.value ? `${barsSource.value} 日线` : "已入库日线")
+  }
+  if (instrument.value?.cik) {
+    list.push("SEC EDGAR")
+  }
+  return list
+})
 
 const watchLabel = computed<string>(() => (inWatchlist.value ? "已自选" : "加入自选"))
 
@@ -670,10 +713,10 @@ const metricTiles = computed<MetricTileView[]>(() =>
       key: `${metric.concept}|${metric.unit}`,
       label: conceptLabel(metric.concept),
       concept: metric.concept,
-      unit: metric.unit,
+      unit: unitLabel(metric.unit),
       value: side?.value ?? null,
       period: side?.filed ? `申报 ${side.filed}` : "",
-      info: `${metric.concept} · 单位 ${metric.unit}${side?.accessionNo ? ` · 申报号 ${side.accessionNo}` : ""}`,
+      info: `${metric.concept} · 单位 ${unitLabel(metric.unit)}${side?.accessionNo ? ` · 申报号 ${side.accessionNo}` : ""}`,
       delta: metric.change,
       changeReason: metric.changeReason ? changeReasonLabel(metric.changeReason) : "",
       earliest: points.length >= 2 ? `${points.length} 期已申报` : "不足 2 期，不画走势",
@@ -752,7 +795,8 @@ async function loadResearch(): Promise<void> {
     if (!response.ok) {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
-    researchAsOf.value = asString(asRecord(asRecord(body)?.meta)?.as_of) ?? ""
+    const metaAsOf = asString(asRecord(asRecord(body)?.meta)?.as_of)
+    researchAsOf.value = metaAsOf ? formatMoment(metaAsOf) : ""
     const data = asRecord(asRecord(body)?.data)
     const available = Array.isArray(data?.available_periods)
       ? data.available_periods.filter((entry): entry is string => typeof entry === "string")
@@ -794,7 +838,10 @@ async function loadBars(instrumentId: string): Promise<void> {
     const rows = listOf(data?.bars).flatMap(parseBar)
     barsSource.value = asString(data?.source) ?? ""
     barsDelay.value = asString(data?.delay) ?? ""
-    barsMessage.value = asString(data?.empty_message) ?? "暂无已同步的日线"
+    // 接口在有日线时把 empty_message 置为 null，这时候不该再套默认文案，
+    // 否则底部会写着「暂无已同步的日线」而上面正显示着收盘价。
+    const pageMessage = asString(data?.empty_message) ?? ""
+    barsMessage.value = pageMessage || (rows.length ? "" : "暂无已同步的日线")
     bars.value = rows
     barsPhase.value = rows.length ? "ready" : "empty"
   } catch (caught) {
@@ -1123,7 +1170,7 @@ watch(
             </div>
             <p class="full-name">
               {{ instrument?.nameEn || instrument?.nameCn || "—" }}
-              <span class="muted">（Interfaces 只提供证券元数据，不含行业归类与注册地）</span>
+              <span class="muted">（接口只提供证券元数据，不含行业归类与注册地）</span>
             </p>
             <p class="meta-line">
               <span>{{ instrument?.exchange || "—" }}</span>
@@ -1290,7 +1337,7 @@ watch(
         />
         <VChart v-else class="trend-chart" :option="trendOption" autoresize aria-label="财务趋势" />
         <p v-if="trendOption" class="footnote">
-          单位 {{ trendAxisUnit }} · 单季度/累计按接口给出的报告期跨度分类 · 数据源 /api/v1/sec/facts
+          单位 {{ trendAxisUnit }} · 单季度/累计按接口给出的报告期跨度分类 · 数据来源 SEC EDGAR
         </p>
       </PanelCard>
 
