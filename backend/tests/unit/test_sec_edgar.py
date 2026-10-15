@@ -29,7 +29,7 @@ def test_fixture_keeps_units_apart_and_hides_later_amendments() -> None:
     facts = parse_companyfacts(load_fixture())
     assert {fact.unit for fact in facts} == {"USD", "shares"}
     early = select_visible(facts, date(2024, 3, 1))
-    usd = [fact for fact in early if fact.unit == "USD"]
+    usd = [fact for fact in early if fact.unit == "USD" and fact.period_end == date(2023, 12, 31)]
     assert len(usd) == 1
     assert usd[0].value == Decimal("100")
     assert usd[0].accession_no == "0000320193-24-000001"
@@ -37,10 +37,12 @@ def test_fixture_keeps_units_apart_and_hides_later_amendments() -> None:
     assert usd[0].fiscal_year == 2023
     assert usd[0].fiscal_period == "FY"
     later = select_visible(facts, date(2024, 6, 1))
-    amended = [fact for fact in later if fact.unit == "USD"]
+    amended = [
+        fact for fact in later if fact.unit == "USD" and fact.period_end == date(2023, 12, 31)
+    ]
     assert amended[0].value == Decimal("120")
     assert amended[0].form == "10-K/A"
-    assert select_visible(facts, date(2024, 1, 31)) == []
+    assert select_visible(facts, date(2023, 1, 31)) == []
 
 
 def test_bad_payload_does_not_echo_the_body() -> None:

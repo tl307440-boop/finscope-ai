@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteLocationRaw, type Router } from "vue-router"
 import { restoreSession, session, type Role } from "../stores/auth"
+import CompanyView from "../views/CompanyView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
 import FilingsView from "../views/FilingsView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
@@ -22,6 +23,7 @@ export const routes = [
   { path: "/quotes", name: "quotes", component: QuotesView },
   { path: "/filings", name: "filings", component: FilingsView },
   { path: "/metrics", name: "metrics", component: MetricsView },
+  { path: "/company", name: "company", component: CompanyView },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
   {

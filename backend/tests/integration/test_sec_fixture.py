@@ -41,12 +41,12 @@ def _cleanup() -> None:
                 """
                 DELETE FROM sec_facts
                 WHERE filing_id IN (
-                    SELECT id FROM filings WHERE accession_no LIKE '0000320193-24-%'
+                    SELECT id FROM filings WHERE accession_no LIKE '0000320193-%'
                 )
                 """
             )
         )
-        connection.execute(text("DELETE FROM filings WHERE accession_no LIKE '0000320193-24-%'"))
+        connection.execute(text("DELETE FROM filings WHERE accession_no LIKE '0000320193-%'"))
     engine.dispose()
 
 
@@ -62,7 +62,7 @@ def test_fixture_is_idempotent_and_visible_with_its_source() -> None:
         _cleanup()
         first = repository.upsert_facts(facts, payload_sha256(payload))
         second = repository.upsert_facts(facts, payload_sha256(payload))
-        assert first == 3
+        assert first == 4
         assert second == 0
         with TestClient(create_app()) as client:
             early = client.get(
@@ -76,11 +76,19 @@ def test_fixture_is_idempotent_and_visible_with_its_source() -> None:
         assert early.status_code == 200
         early_body = early.json()["data"]
         assert early_body["notice"] == "本地样例，不是本次从 SEC 拉取。"
-        usd = [item for item in early_body["facts"] if item["unit"] == "USD"]
+        usd = [
+            item
+            for item in early_body["facts"]
+            if item["unit"] == "USD" and item["period_end"] == "2023-12-31"
+        ]
         assert usd[0]["value"] == "100"
         assert usd[0]["accession_no"] == "0000320193-24-000001"
         assert "data.sec.gov" in usd[0]["source_url"]
-        amended = [item for item in later.json()["data"]["facts"] if item["unit"] == "USD"]
+        amended = [
+            item
+            for item in later.json()["data"]["facts"]
+            if item["unit"] == "USD" and item["period_end"] == "2023-12-31"
+        ]
         assert amended[0]["value"] == "120"
         assert amended[0]["accession_no"] == "0000320193-24-000099"
     finally:

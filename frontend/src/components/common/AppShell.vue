@@ -18,6 +18,7 @@ const links = computed(() => {
     { href: "/quotes", label: "日线" },
     { href: "/filings", label: "SEC 样例" },
     { href: "/metrics", label: "财务试算" },
+    { href: "/company", label: "公司研究" },
   ]
   if (session.role === "admin") {
     items.push({ href: "/data-center", label: "数据源" })
