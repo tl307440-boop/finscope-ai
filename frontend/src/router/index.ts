@@ -5,6 +5,7 @@ import ForbiddenView from "../views/ForbiddenView.vue"
 import LoginView from "../views/LoginView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
 import MacroView from "../views/MacroView.vue"
+import QuotesView from "../views/QuotesView.vue"
 import SettingsView from "../views/SettingsView.vue"
 import SystemStatusView from "../views/SystemStatusView.vue"
 
@@ -16,6 +17,7 @@ export interface NavigationSession {
 export const routes = [
   { path: "/", name: "status", component: SystemStatusView },
   { path: "/macro", name: "macro", component: MacroView },
+  { path: "/quotes", name: "quotes", component: QuotesView },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
   {

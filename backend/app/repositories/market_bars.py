@@ -1,5 +1,7 @@
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import Engine, or_, select
@@ -7,8 +9,24 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.models.market import MarketBar
+from app.db.models.provider import DataProvider
 from app.providers.quality import CheckedBar
 from app.utils.time import utc_now
+
+AKSHARE_PROVIDER_ID = uuid.uuid5(uuid.NAMESPACE_URL, "https://finscope.local/providers/akshare")
+
+
+@dataclass(frozen=True)
+class StoredDailyBar:
+    trade_date: date
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
+    amount: Decimal
+    adjustment: str
+    quality_flag: str
 
 
 class MarketBarRepository:
@@ -53,6 +71,73 @@ class MarketBarRepository:
             if row is None:
                 return None
             return str(row.close), row.quality_flag
+
+    def ensure_akshare_provider(self) -> UUID:
+        with Session(self.engine) as session:
+            found = session.scalars(
+                select(DataProvider).where(DataProvider.code == "akshare")
+            ).one_or_none()
+            if found is not None:
+                return found.id
+            provider = DataProvider(
+                id=AKSHARE_PROVIDER_ID,
+                code="akshare",
+                name="AKShare",
+                enabled=True,
+                config_public={
+                    "transport": "https://push2his.eastmoney.com",
+                    "credential": "none",
+                    "volume_unit": "hand",
+                },
+            )
+            session.add(provider)
+            session.commit()
+            return provider.id
+
+    def list_daily(
+        self,
+        *,
+        instrument_id: UUID,
+        provider_id: UUID,
+        adjustment: str,
+        start: date | None,
+        end: date | None,
+        pit: date,
+        limit: int,
+    ) -> tuple[list[StoredDailyBar], bool]:
+        statement = select(MarketBar).where(
+            MarketBar.instrument_id == instrument_id,
+            MarketBar.provider_id == provider_id,
+            MarketBar.timeframe == "1d",
+            MarketBar.adjustment == adjustment,
+            MarketBar.trade_date <= pit,
+        )
+        if start is not None:
+            statement = statement.where(MarketBar.trade_date >= start)
+        if end is not None:
+            statement = statement.where(MarketBar.trade_date <= end)
+        statement = statement.order_by(MarketBar.trade_date).limit(limit + 1)
+        with Session(self.engine) as session:
+            rows = session.scalars(statement).all()
+        truncated = len(rows) > limit
+        visible = rows[:limit]
+        return (
+            [
+                StoredDailyBar(
+                    trade_date=row.trade_date,
+                    open=row.open,
+                    high=row.high,
+                    low=row.low,
+                    close=row.close,
+                    volume=row.volume,
+                    amount=row.amount,
+                    adjustment=row.adjustment,
+                    quality_flag=row.quality_flag,
+                )
+                for row in visible
+            ],
+            truncated,
+        )
 
 
 def _upsert_one(

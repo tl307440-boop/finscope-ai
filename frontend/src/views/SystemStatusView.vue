@@ -67,6 +67,7 @@ onMounted(() => {
       </div>
       <div class="nav-links">
         <a href="/macro">美国宏观</a>
+        <a href="/quotes">日线</a>
         <a href="/login">登录</a>
         <a :href="docsUrl()" target="_blank" rel="noopener noreferrer">打开接口文档</a>
       </div>
@@ -126,7 +127,7 @@ onMounted(() => {
           <article class="card">
             <h2>业务数据</h2>
             <p class="state">尚未接入</p>
-            <p class="muted">行情和财报尚未接入。宏观页只展示序列定义，没有密钥时不填观测值。</p>
+            <p class="muted">日线只覆盖三只已指定的 A 股，未同步时不展示价格。宏观页在没有密钥时不填观测值。</p>
           </article>
         </section>
       </template>

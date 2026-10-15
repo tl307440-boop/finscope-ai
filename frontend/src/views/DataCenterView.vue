@@ -23,6 +23,11 @@ const syncStart = ref("")
 const syncEnd = ref("")
 const syncPhase = ref<"idle" | "loading" | "done" | "error">("idle")
 const syncText = ref("")
+const barSymbol = ref("600519.SH")
+const barStart = ref("")
+const barEnd = ref("")
+const barPhase = ref<"idle" | "loading" | "done" | "error">("idle")
+const barText = ref("")
 
 async function load(): Promise<void> {
   phase.value = "loading"
@@ -104,6 +109,42 @@ async function syncFred(): Promise<void> {
   } catch (caught) {
     syncText.value = caught instanceof ApiError ? caught.message : "无法连接接口"
     syncPhase.value = "error"
+  }
+}
+
+async function syncBars(): Promise<void> {
+  barPhase.value = "loading"
+  barText.value = ""
+  try {
+    const response = await authorizedFetch(
+      "/api/v1/admin/akshare-syncs",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          display_symbol: barSymbol.value,
+          observation_start: barStart.value,
+          observation_end: barEnd.value,
+          adjustment: "none",
+        }),
+      },
+      session.accessToken,
+      async () => {
+        const restored = await restoreSession()
+        return restored ? session.accessToken : null
+      },
+    )
+    const body = await readJson(response)
+    if (!response.ok) {
+      throw errorFrom(body, response.headers.get("X-Request-ID"))
+    }
+    const data = asRecord(asRecord(body)?.data)
+    const written = data?.rows_written
+    barText.value = typeof written === "number" ? `已写入 ${written} 根日线` : "同步完成"
+    barPhase.value = "done"
+  } catch (caught) {
+    barText.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    barPhase.value = "error"
   }
 }
 
@@ -200,6 +241,27 @@ function asString(value: unknown): string | null {
         <button class="retry" type="submit" :disabled="syncPhase === 'loading'">同步</button>
         <p v-if="syncPhase === 'loading'">正在同步</p>
         <p v-else-if="syncText" :role="syncPhase === 'error' ? 'alert' : 'status'">{{ syncText }}</p>
+      </form>
+      <form class="form probe-form" @submit.prevent="syncBars">
+        <label>
+          同步 A 股日线
+          <select v-model="barSymbol" name="bar-symbol">
+            <option value="600519.SH">600519.SH 贵州茅台</option>
+            <option value="601318.SH">601318.SH 中国平安</option>
+            <option value="000858.SZ">000858.SZ 五粮液</option>
+          </select>
+        </label>
+        <label>
+          开始日期
+          <input v-model="barStart" name="bar-sync-start" type="date" required />
+        </label>
+        <label>
+          结束日期
+          <input v-model="barEnd" name="bar-sync-end" type="date" required />
+        </label>
+        <button class="retry" type="submit" :disabled="barPhase === 'loading'">同步日线</button>
+        <p v-if="barPhase === 'loading'">正在同步</p>
+        <p v-else-if="barText" :role="barPhase === 'error' ? 'alert' : 'status'">{{ barText }}</p>
       </form>
     </section>
   </main>

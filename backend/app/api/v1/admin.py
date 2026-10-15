@@ -9,12 +9,15 @@ from app.api.deps import require_admin
 from app.api.responses import success_response
 from app.core.config import get_settings
 from app.core.exceptions import AppError
+from app.providers.akshare_bars import AdjustmentCode
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
 from app.schemas.auth import list_provider_credentials
+from app.schemas.bars import AkshareSyncRequest, AkshareSyncResult
 from app.schemas.macro import FredSyncRequest, FredSyncResult
 from app.schemas.provider import ProbeRequest
+from app.services.akshare_sync import apply_kline_payload, fetch_klines, valid_window
 from app.services.auth_types import UserRecord
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.services.provider_probe import probe_details, probe_upstream
@@ -92,6 +95,64 @@ async def _load_vintages(
     if isinstance(fetched, tuple) and all(isinstance(item, FredVintage) for item in fetched):
         return cast(tuple[FredVintage, ...], fetched)
     raise ProviderError(code="UPSTREAM_PAYLOAD", message="无法解析 FRED 响应", status_code=502)
+
+
+@router.post("/akshare-syncs", summary="同步指定 A 股日线")
+async def sync_akshare(
+    body: AkshareSyncRequest,
+    request: Request,
+    _: Annotated[UserRecord, Depends(require_admin)],
+) -> JSONResponse:
+    if not valid_window(body.observation_start, body.observation_end):
+        raise AppError(
+            code="VALIDATION_ERROR",
+            message="观察区间无效或超过 10 年",
+            status_code=422,
+        )
+    try:
+        payload = await _load_klines(
+            request,
+            body.display_symbol,
+            body.observation_start,
+            body.observation_end,
+            body.adjustment,
+        )
+        outcome = apply_kline_payload(
+            cast(Engine, request.app.state.engine),
+            payload,
+            display_symbol=body.display_symbol,
+            adjustment=body.adjustment,
+        )
+    except ProviderError as error:
+        raise _sync_error(error) from error
+    result = AkshareSyncResult(
+        display_symbol=body.display_symbol.upper(),
+        rows_written=outcome.rows_written,
+        rows_rejected=outcome.rows_rejected,
+        duplicates_skipped=outcome.duplicates_skipped,
+        preserved_existing=True,
+    )
+    return JSONResponse(status_code=200, content=success_response(request, result))
+
+
+async def _load_klines(
+    request: Request,
+    display_symbol: str,
+    start: date,
+    end: date,
+    adjustment: AdjustmentCode,
+) -> bytes:
+    override = getattr(request.app.state, "akshare_fetch", None)
+    if override is None:
+        return await fetch_klines(display_symbol, start, end, adjustment)
+    fetched: object = await override(display_symbol, start, end, adjustment)
+    if isinstance(fetched, ProviderError):
+        raise fetched
+    if isinstance(fetched, bytes):
+        return fetched
+    raise ProviderError(
+        code="UPSTREAM_PAYLOAD", message="无法解析 AKShare 日线响应", status_code=502
+    )
 
 
 def _sync_error(error: ProviderError) -> AppError:
