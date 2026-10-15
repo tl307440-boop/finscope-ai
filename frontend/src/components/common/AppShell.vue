@@ -17,6 +17,7 @@ const links = computed(() => {
     { href: "/macro", label: "美国宏观" },
     { href: "/quotes", label: "日线" },
     { href: "/filings", label: "SEC 样例" },
+    { href: "/metrics", label: "财务试算" },
   ]
   if (session.role === "admin") {
     items.push({ href: "/data-center", label: "数据源" })

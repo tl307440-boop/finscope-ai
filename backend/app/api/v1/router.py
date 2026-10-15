@@ -9,6 +9,7 @@ from app.api.v1.instruments import router as instrument_router
 from app.api.v1.jobs import router as job_router
 from app.api.v1.macro import router as macro_router
 from app.api.v1.market import router as market_router
+from app.api.v1.metrics import router as metrics_router
 
 router = APIRouter()
 router.include_router(health_router)
@@ -16,6 +17,7 @@ router.include_router(instrument_router)
 router.include_router(macro_router)
 router.include_router(market_router)
 router.include_router(filing_router)
+router.include_router(metrics_router)
 router.include_router(auth_router)
 router.include_router(me_router)
 router.include_router(admin_router)

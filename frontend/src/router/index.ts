@@ -4,6 +4,7 @@ import DataCenterView from "../views/DataCenterView.vue"
 import FilingsView from "../views/FilingsView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
 import LoginView from "../views/LoginView.vue"
+import MetricsView from "../views/MetricsView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
 import MacroView from "../views/MacroView.vue"
 import QuotesView from "../views/QuotesView.vue"
@@ -20,6 +21,7 @@ export const routes = [
   { path: "/macro", name: "macro", component: MacroView },
   { path: "/quotes", name: "quotes", component: QuotesView },
   { path: "/filings", name: "filings", component: FilingsView },
+  { path: "/metrics", name: "metrics", component: MetricsView },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
   {
