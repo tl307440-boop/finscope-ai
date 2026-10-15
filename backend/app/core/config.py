@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     enable_news: bool = False
     data_mode: DataMode = "live"
     upload_max_mb: int = 30
+    upload_max_pages: int = 200
     log_level: str = "INFO"
     worker_heartbeat_interval_seconds: int = 5
     worker_heartbeat_ttl_seconds: int = 30

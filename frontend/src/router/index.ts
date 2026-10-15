@@ -11,6 +11,7 @@ import MacroView from "../views/MacroView.vue"
 import QuotesView from "../views/QuotesView.vue"
 import SettingsView from "../views/SettingsView.vue"
 import SystemStatusView from "../views/SystemStatusView.vue"
+import UploadView from "../views/UploadView.vue"
 
 export interface NavigationSession {
   authenticated: boolean
@@ -24,6 +25,7 @@ export const routes = [
   { path: "/filings", name: "filings", component: FilingsView },
   { path: "/metrics", name: "metrics", component: MetricsView },
   { path: "/company", name: "company", component: CompanyView },
+  { path: "/uploads", name: "uploads", component: UploadView, meta: { requiresAuth: true } },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
   {

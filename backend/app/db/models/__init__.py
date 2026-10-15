@@ -1,4 +1,5 @@
 from app.db.models.account import RefreshSession, User, UserPreference
+from app.db.models.document import Document
 from app.db.models.financial import FinancialMetric
 from app.db.models.macro import MacroObservation, MacroSeries
 from app.db.models.market import Instrument, MarketBar, TradingCalendar
@@ -8,6 +9,7 @@ from app.db.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
     "DataProvider",
+    "Document",
     "Filing",
     "FinancialMetric",
     "SecFact",
