@@ -11,6 +11,8 @@ from app.core.exceptions import AppError
 from app.repositories.instruments import InstrumentRepository
 from app.repositories.market_bars import MarketBarRepository
 from app.schemas.bars import build_bar_page
+from app.schemas.dashboard import SectorItem, SectorList, build_temperature
+from app.services.market_dashboard import sectors_for, temperature_for
 from app.utils.market_time import shanghai_pit
 from app.utils.time import utc_now
 
@@ -56,6 +58,39 @@ def read_daily_bars(
         pit=pit,
         rows=rows,
         truncated=truncated,
+    )
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.get("/market/temperature", summary="A股市场温度")
+def read_temperature(
+    request: Request,
+    as_of: Annotated[str | None, Query()] = None,
+) -> JSONResponse:
+    result = temperature_for(_engine(request), _parse_as_of(as_of))
+    return JSONResponse(
+        status_code=200, content=success_response(request, build_temperature(result))
+    )
+
+
+@router.get("/market/sectors", summary="板块强弱")
+def read_sectors(
+    request: Request,
+    as_of: Annotated[str | None, Query()] = None,
+) -> JSONResponse:
+    rows = sectors_for(_engine(request), _parse_as_of(as_of))
+    payload = SectorList(
+        sectors=[
+            SectorItem(
+                name=name,
+                status=result.status,
+                label=result.label,
+                score=None if result.score is None else str(result.score),
+                coverage=result.coverage,
+                notice=result.notice,
+            )
+            for name, result in rows
+        ]
     )
     return JSONResponse(status_code=200, content=success_response(request, payload))
 

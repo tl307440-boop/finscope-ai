@@ -63,6 +63,10 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null
 }
 
+function printReport(): void {
+  window.print()
+}
+
 function downloadMarkdown(): void {
   const file = new Blob([body.value], { type: "text/markdown;charset=utf-8" })
   const url = URL.createObjectURL(file)
@@ -89,6 +93,7 @@ onMounted(() => {
       <h1>{{ title }}</h1>
       <p class="muted">{{ notice }}</p>
       <button class="retry" type="button" @click="downloadMarkdown">下载 Markdown</button>
+      <button class="retry" type="button" @click="printReport">打印为 PDF</button>
       <h2>核对数字</h2>
       <p v-if="!links.length" class="muted">这份记录没有可核对的申报数字。</p>
       <ul v-else>

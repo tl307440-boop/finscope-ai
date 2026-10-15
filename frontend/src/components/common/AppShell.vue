@@ -23,6 +23,9 @@ const links = computed(() => {
     { href: "/uploads", label: "上传 PDF" },
     { href: "/assistant", label: "问答" },
     { href: "/library", label: "资料库" },
+    { href: "/temperature", label: "市场温度" },
+    { href: "/board", label: "研究板" },
+    { href: "/simulation/mvp", label: "研究推演" },
   ]
   if (session.role === "admin") {
     items.push({ href: "/data-center", label: "数据源" })

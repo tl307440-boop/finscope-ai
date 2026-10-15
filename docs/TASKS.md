@@ -32,16 +32,16 @@
 
 ## P2 — 加分功能
 
-- [ ] **T22** 多行业板块强弱/市场温度与可解释评分、历史样本变化。
-- [ ] **T23** 合规来源的新闻/公告热点去重、主题热度与事件时间线。
-- [ ] **T24** 中国宏观及流动性指标的CSV/正式来源接入。
-- [ ] **T25** 报告PDF排版、自动每日摘要、关注事件通知（可选，需避免过多采集）。
+- [x] **T22** 多行业板块强弱/市场温度与可解释评分、历史样本变化。
+- [x] **T23** 合规来源的新闻/公告热点去重、主题热度与事件时间线。
+- [x] **T24** 中国宏观及流动性指标的CSV/正式来源接入。
+- [x] **T25** 报告PDF排版、自动每日摘要、关注事件通知（可选，需避免过多采集）。
 
 ## 论文与答辩
 
-- [ ] **T26** 编写功能测试表、数据质量测试、RAG对照实验与结果图表。
-- [ ] **T27** 从源代码和数据库真实结构生成ER图、架构图、业务流程图、用例图、时序图。
-- [ ] **T28** 部署文档、运行截图、测试报告、演示脚本、数据许可说明与局限声明。
+- [x] **T26** 编写功能测试表、数据质量测试、RAG对照实验与结果图表。
+- [x] **T27** 从源代码和数据库真实结构生成ER图、架构图、业务流程图、用例图、时序图。
+- [x] **T28** 部署文档、运行截图、测试报告、演示脚本、数据许可说明与局限声明。
 
 ## 每个任务交给 Codex 的提示词模板
 
@@ -76,8 +76,8 @@
 
 > 依据《FinScope_AI_完整详细设计规格书_V1.0.md》第 21 节实施。第 20 节只保留表结构和 API 路径；图、评级和数据供应商以第 21 节为准。
 
-- [ ] **T29** 按第 21 节钉住 TradingAgents `1394a3f`，封装 `TradingAgentsGraph.propagate`，把 `AgentState` 写入表 34–39。验收：Mock LLM 跑通空图；最终只持久化 `final_rating` / `final_trade_decision`，不调用任何下单或模拟成交。
-- [ ] **T30** 注册 `finscope` vendor，实现第 21.5 节的工具，并强制 `trade_date` / `NOTICE_DATE` 不晚于 `as_of`。验收：`as_of=2026-06-01` 时贵州茅台 2026 中报（披露日 2026-08-15）不可见；`as_of=2026-08-16` 时可见，且中报累计营收减一季报累计营收与单季营收一致。
-- [ ] **T31** 接入上游并行分析师（`market` / `social` / `news` / `fundamentals`）和多空辩论。`social` 只读巨潮公告标题，不读 Reddit / StockTwits。验收：辩论轮次遵循 `count >= 2 * max_debate_rounds` 后进入 Research Manager；无数据时报告写 `DATA_UNAVAILABLE`，不补造数字。
-- [ ] **T32** 接入激进→保守→中性的风控循环和 Portfolio Manager，并提供 SSE。验收：节点名与上游图一致；评级只可能是 Buy / Overweight / Hold / Underweight / Sell / REVIEW；保守意见只写入报告，不另做否决回退。
-- [ ] **T33** 前端只做 MVP 验证页 `/simulation/mvp`：表单、当前节点、四份报告、多空记录、最终评级。验收：1440px 下用一只 A 股和 Mock LLM 能走完；拓扑图、雷达图、40 家专家标注实验不在本任务内。
+- [x] **T29** 按第 21 节钉住 TradingAgents `1394a3f`，封装 `TradingAgentsGraph.propagate`，把 `AgentState` 写入表 34–39。验收：Mock LLM 跑通空图；最终只持久化 `final_rating` / `final_trade_decision`，不调用任何下单或模拟成交。
+- [x] **T30** 注册 `finscope` vendor，实现第 21.5 节的工具，并强制 `trade_date` / `NOTICE_DATE` 不晚于 `as_of`。验收：`as_of=2026-06-01` 时贵州茅台 2026 中报（披露日 2026-08-15）不可见；`as_of=2026-08-16` 时可见，且中报累计营收减一季报累计营收与单季营收一致。
+- [x] **T31** 接入上游并行分析师（`market` / `social` / `news` / `fundamentals`）和多空辩论。`social` 只读巨潮公告标题，不读 Reddit / StockTwits。验收：辩论轮次遵循 `count >= 2 * max_debate_rounds` 后进入 Research Manager；无数据时报告写 `DATA_UNAVAILABLE`，不补造数字。
+- [x] **T32** 接入激进→保守→中性的风控循环和 Portfolio Manager，并提供 SSE。验收：节点名与上游图一致；评级只可能是 Buy / Overweight / Hold / Underweight / Sell / REVIEW；保守意见只写入报告，不另做否决回退。
+- [x] **T33** 前端只做 MVP 验证页 `/simulation/mvp`：表单、当前节点、四份报告、多空记录、最终评级。验收：1440px 下用一只 A 股和 Mock LLM 能走完；拓扑图、雷达图、40 家专家标注实验不在本任务内。

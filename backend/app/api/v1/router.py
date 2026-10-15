@@ -15,6 +15,7 @@ from app.api.v1.jobs import router as job_router
 from app.api.v1.macro import router as macro_router
 from app.api.v1.market import router as market_router
 from app.api.v1.metrics import router as metrics_router
+from app.api.v1.research_board import router as research_board_router
 from app.api.v1.watchlists import router as watchlist_router
 
 router = APIRouter()
@@ -23,6 +24,7 @@ router.include_router(instrument_router)
 router.include_router(industry_router)
 router.include_router(macro_router)
 router.include_router(market_router)
+router.include_router(research_board_router)
 router.include_router(filing_router)
 router.include_router(metrics_router)
 router.include_router(company_router)

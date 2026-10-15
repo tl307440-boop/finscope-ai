@@ -13,12 +13,25 @@ from app.db.models.industry import (
 )
 from app.db.models.macro import MacroObservation, MacroSeries
 from app.db.models.market import Instrument, MarketBar, TradingCalendar
+from app.db.models.news import NewsEvent
 from app.db.models.provider import DataProvider, SyncJob, SyncJobEvent
 from app.db.models.sec import Filing, SecFact
+from app.db.models.simulation import (
+    AgentDebateRound,
+    AgentNodeTrace,
+    AgentRiskAssessment,
+    AgentSimulationDecision,
+    AgentSimulationRun,
+)
 from app.db.models.watchlist import WatchlistGroup, WatchlistItem
 from app.db.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
+    "AgentDebateRound",
+    "AgentNodeTrace",
+    "AgentRiskAssessment",
+    "AgentSimulationDecision",
+    "AgentSimulationRun",
     "AnalysisRun",
     "ChatMessage",
     "ChatSession",
@@ -36,6 +49,7 @@ __all__ = [
     "MacroObservation",
     "MacroSeries",
     "MarketBar",
+    "NewsEvent",
     "RefreshSession",
     "Report",
     "ThesisEvidence",
