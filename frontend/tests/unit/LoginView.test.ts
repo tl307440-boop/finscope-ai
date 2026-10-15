@@ -81,7 +81,7 @@ describe("登录页", () => {
     expect(screen.queryByText("super-secret-pass")).toBeNull()
   })
 
-  it("登录成功后进入账号设置", async () => {
+  it("登录成功后进入总览驾驶舱", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -96,7 +96,7 @@ describe("登录页", () => {
     await fireEvent.update(screen.getByLabelText("密码"), "correct-password")
     await fireEvent.click(screen.getByRole("button", { name: "登录" }))
     await waitFor(() => {
-      expect(router.currentRoute.value.name).toBe("settings")
+      expect(router.currentRoute.value.name).toBe("dashboard")
     })
     expect(screen.queryByText("correct-password")).toBeNull()
   })

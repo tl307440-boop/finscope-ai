@@ -40,9 +40,11 @@ describe("路由守卫", () => {
     expect(decideNavigation({ fullPath: "/", meta: {} }, { authenticated: false, role: null })).toBe(true)
   })
 
-  it("只接受站内回跳地址", () => {
+  it("只接受站内回跳地址，非法地址落到总览驾驶舱", () => {
     expect(safeRedirect("/settings")).toBe("/settings")
-    expect(safeRedirect("https://evil.example")).toBe("/settings")
-    expect(safeRedirect("//evil.example")).toBe("/settings")
+    expect(safeRedirect("/company/600519.SH")).toBe("/company/600519.SH")
+    expect(safeRedirect("https://evil.example")).toBe("/dashboard")
+    expect(safeRedirect("//evil.example")).toBe("/dashboard")
+    expect(safeRedirect(undefined)).toBe("/dashboard")
   })
 })

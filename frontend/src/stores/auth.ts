@@ -44,7 +44,9 @@ export function safeRedirect(value: unknown): string {
   if (typeof value === "string" && value.startsWith("/") && !value.startsWith("//")) {
     return value
   }
-  return "/settings"
+  // 没有回跳地址时落到总览驾驶舱：直接打开 /login 登录的默认落点，
+  // 不该是系统设置页（规格书 §1.3 把 /dashboard 定为 P0 首页）。
+  return "/dashboard"
 }
 
 export function clearSession(): void {
