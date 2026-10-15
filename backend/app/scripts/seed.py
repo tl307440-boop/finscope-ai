@@ -76,7 +76,16 @@ def main() -> int:
     engine = create_db_engine(settings.database_url)
     try:
         outcome = _admin_from_env(engine, PasswordService(settings.app_env))
-        return run(DatabaseProbe(engine), outcome)
+        code = run(DatabaseProbe(engine), outcome)
+        if code == 0:
+            from app.catalog.reference_data import reference_calendar, reference_instruments
+            from app.repositories.instruments import InstrumentRepository
+
+            repository = InstrumentRepository(engine)
+            instruments = repository.upsert_reference(reference_instruments())
+            days = repository.upsert_calendar(reference_calendar())
+            print(f"证券元数据写入 {instruments} 条，交易日历写入 {days} 条，不写入行情价格。")
+        return code
     finally:
         engine.dispose()
 

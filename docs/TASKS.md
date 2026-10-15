@@ -8,7 +8,7 @@
 - [x] **T01** 用户登录/退出/刷新token、researcher/admin RBAC、前端路由守卫。验收：未登录跳转；研究者访问admin接口403；敏感信息不在日志。
 - [x] **T02** 首批数据库迁移：users、data_providers、sync_jobs、instruments、trading_calendars、market_bars、macro_series、macro_observations。验收：重建空DB可一键迁移。
 - [x] **T03** 统一 source adapter 协议、HTTP异常、重试限速、quality检查、演示数据状态。验收：模拟429/503/timeout都被明确处理，不污染已有数据。
-- [ ] **T04** 导入首批证券与交易日历元数据，标准化美股CIK和A股交易所标识。验收：按名称/代码搜索返回唯一交易所代码。
+- [x] **T04** 导入首批证券与交易日历元数据，标准化美股CIK和A股交易所标识。验收：按名称/代码搜索返回唯一交易所代码。
 - [ ] **T05** FRED adapter + observations/vintage和macro系列接口，支持历史as_of。验收：有Key能同步；没Key显示unavailable；时间旅行单测通过。
 - [ ] **T06** AKShare adapter + 日线标准化、幂等写库、重复过滤、行情API。验收：可查询3只指定A股历史K线；无外网自动测试仍通过。
 - [ ] **T07** 后台同步任务：单Worker队列、状态进度、失败重试、provider health。验收：同一逻辑任务不并发写重。

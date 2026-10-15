@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
+import InstrumentSearch from "../components/common/InstrumentSearch.vue"
 import { ApiError } from "../api/client"
 import {
   type SystemSnapshot,
@@ -98,6 +99,7 @@ onMounted(() => {
           </p>
           <button v-if="!snapshot.ready" class="retry" type="button" @click="load">重试</button>
         </section>
+        <InstrumentSearch />
         <section class="status-grid">
           <article class="card">
             <h2>接口进程</h2>

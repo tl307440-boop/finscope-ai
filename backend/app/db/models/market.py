@@ -26,6 +26,7 @@ class Instrument(Base):
     name_en: Mapped[str] = mapped_column(String(128), nullable=False)
     instrument_type: Mapped[str] = mapped_column("type", INSTRUMENT_TYPE, nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    cik: Mapped[str | None] = mapped_column(String(10))
     industry_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False)
     list_date: Mapped[date | None] = mapped_column(Date)
