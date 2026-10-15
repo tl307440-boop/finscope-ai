@@ -1,4 +1,5 @@
-:root {
+:root,
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #0b1220;
   --panel: #121e30;
@@ -8,7 +9,27 @@
   --ok: #34d399;
   --warn: #fbbf24;
   --danger: #f87171;
+  --rise: #f87171;
+  --fall: #34d399;
   --line: rgb(231 237 248 / 12%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f7fb;
+  --panel: #ffffff;
+  --text: #122033;
+  --muted: #5c6b80;
+  --accent: #1d4ed8;
+  --ok: #047857;
+  --warn: #a16207;
+  --danger: #b91c1c;
+  --rise: #dc2626;
+  --fall: #15803d;
+  --line: rgb(18 32 51 / 12%);
+}
+
+:root {
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   line-height: 1.5;
   background: var(--bg);

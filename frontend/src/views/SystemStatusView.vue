@@ -58,21 +58,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="shell">
-    <a class="skip-link" href="#main">跳到主要内容</a>
-    <header class="topbar">
-      <div class="brand">
-        <strong>FinScope AI</strong>
-        <span>金融投研辅助 · 不提供交易执行</span>
-      </div>
-      <div class="nav-links">
-        <a href="/macro">美国宏观</a>
-        <a href="/quotes">日线</a>
-        <a href="/login">登录</a>
-        <a :href="docsUrl()" target="_blank" rel="noopener noreferrer">打开接口文档</a>
-      </div>
-    </header>
-    <main id="main" class="page">
+  <main id="main" class="page">
       <section v-if="phase === 'loading'" class="skeleton" aria-busy="true">
         正在检查运行状态
       </section>
@@ -131,6 +117,8 @@ onMounted(() => {
           </article>
         </section>
       </template>
+      <p class="muted">
+        <a :href="docsUrl()" target="_blank" rel="noopener noreferrer">打开接口文档</a>
+      </p>
     </main>
-  </div>
 </template>

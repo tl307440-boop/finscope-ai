@@ -2,6 +2,70 @@
   min-height: 100vh;
 }
 
+.app-shell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.app-shell.collapsed {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.app-shell.collapsed .brand span,
+.app-shell.collapsed .legend,
+.app-shell.collapsed .side-links a {
+  font-size: 0;
+}
+
+.app-shell.collapsed .side-links a::first-letter {
+  font-size: 14px;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.side-links {
+  display: grid;
+  gap: 8px;
+}
+
+.side-links a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.side-links a[aria-current="page"] {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.legend {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.rise {
+  color: var(--rise);
+}
+
+.fall {
+  color: var(--fall);
+}
+
+.workspace {
+  min-width: 0;
+}
+
 .topbar {
   height: 56px;
   display: flex;
@@ -10,7 +74,15 @@
   gap: 16px;
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
-  background: rgb(11 18 32 / 92%);
+  background: var(--panel);
+}
+
+.text-button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  cursor: pointer;
 }
 
 .brand {
@@ -139,10 +211,45 @@
 }
 
 @media (max-width: 767px) {
+  .app-shell,
+  .app-shell.collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .side-nav {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .side-links {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+  }
+
+  .app-shell.collapsed .brand span,
+  .app-shell.collapsed .legend,
+  .app-shell.collapsed .side-links a {
+    font-size: inherit;
+  }
+
+  .rail-toggle {
+    display: none;
+  }
+
   .topbar,
   .page {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .topbar {
+    height: auto;
+    min-height: 56px;
+    align-items: flex-start;
+    flex-direction: column;
+    padding-top: 12px;
+    padding-bottom: 12px;
   }
 
   .page {
