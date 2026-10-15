@@ -2,7 +2,9 @@
 import { onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 import { ApiError, authorizedFetch, readJson } from "../api/client"
-import { logout, restoreSession, session } from "../stores/auth"
+import { logout, restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 interface Profile {
   username: string

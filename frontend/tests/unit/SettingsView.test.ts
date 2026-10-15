@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/vue"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { routes } from "../../src/router"
-import { clearSession, session } from "../../src/stores/auth"
+import { clearSession, useSessionStore } from "../../src/stores/auth"
 import SettingsView from "../../src/views/SettingsView.vue"
 
 function profile(role: "admin" | "researcher") {
@@ -32,6 +32,7 @@ afterEach(() => {
 })
 
 async function renderSettings(role: "admin" | "researcher"): Promise<void> {
+  const session = useSessionStore()
   session.accessToken = "token"
   session.role = role
   vi.stubGlobal(

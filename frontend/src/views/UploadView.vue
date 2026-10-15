@@ -3,7 +3,9 @@ import { ref } from "vue"
 import { authorizedFetch, readJson } from "../api/client"
 import { pageLabel } from "../api/documentSearch"
 import { uploadStatusText } from "../api/uploads"
-import { restoreSession, session } from "../stores/auth"
+import { restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 interface Hit {
   chunkId: string

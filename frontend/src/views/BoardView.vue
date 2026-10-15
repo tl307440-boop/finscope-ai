@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
-import { restoreSession, session } from "../stores/auth"
+import { restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 const hotspot = ref("")
 const china = ref<string[]>([])

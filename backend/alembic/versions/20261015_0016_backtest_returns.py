@@ -23,7 +23,9 @@ def upgrade() -> None:
     )
     op.add_column(
         "agent_backtest_evaluations",
-        sa.Column("quality_flag", sa.String(length=32), nullable=False, server_default="insufficient"),
+        sa.Column(
+            "quality_flag", sa.String(length=32), nullable=False, server_default="insufficient"
+        ),
     )
 
 

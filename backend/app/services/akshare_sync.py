@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy import Engine
 
 from app.providers.akshare_bars import (
+    UNSUPPORTED_SYMBOL_MESSAGE,
     AdjustmentCode,
     dedupe_bars,
     kline_url,
@@ -36,7 +37,7 @@ async def fetch_klines(
     if target is None:
         raise ProviderError(
             code="VALIDATION_ERROR",
-            message="这三只股票以外的日线尚未开放",
+            message=UNSUPPORTED_SYMBOL_MESSAGE,
             status_code=422,
         )
     url = kline_url(
@@ -81,7 +82,7 @@ def apply_kline_payload(
     if target is None:
         raise ProviderError(
             code="VALIDATION_ERROR",
-            message="这三只股票以外的日线尚未开放",
+            message=UNSUPPORTED_SYMBOL_MESSAGE,
             status_code=422,
         )
     parsed = parse_klines(payload, display_symbol=target.display_symbol, adjustment=adjustment)

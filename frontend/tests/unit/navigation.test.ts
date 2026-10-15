@@ -1,7 +1,7 @@
 import { createMemoryHistory, createRouter } from "vue-router"
 import { afterEach, describe, expect, it } from "vitest"
 import { installGuard, routes, decideNavigation } from "../../src/router"
-import { clearSession, safeRedirect, session } from "../../src/stores/auth"
+import { clearSession, safeRedirect, useSessionStore } from "../../src/stores/auth"
 
 afterEach(() => {
   clearSession()
@@ -19,6 +19,7 @@ describe("路由守卫", () => {
   it("研究者不能进入管理页", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes })
     installGuard(router, async () => false)
+    const session = useSessionStore()
     session.accessToken = "token"
     session.role = "researcher"
     await router.push("/data-center")
@@ -28,6 +29,7 @@ describe("路由守卫", () => {
   it("管理员可以进入管理页", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes })
     installGuard(router, async () => false)
+    const session = useSessionStore()
     session.accessToken = "token"
     session.role = "admin"
     await router.push("/data-center")

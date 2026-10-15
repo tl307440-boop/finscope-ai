@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,3 +22,8 @@ class NewsEvent(Base):
     dedupe_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     usage_rights: Mapped[str] = mapped_column(String(120), nullable=False)
     quality_flag: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 导入时可以标注行业：页面 /hotspots 的 industry_id 过滤靠它，
+    # 不再用标题里的关键词猜行业。为空表示这条公告没有标注行业。
+    industry_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("industries.id"), nullable=True, index=True
+    )

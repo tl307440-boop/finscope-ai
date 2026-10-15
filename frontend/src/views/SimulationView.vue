@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
 import { authorizedFetch, readJson } from "../api/client"
-import { restoreSession, session } from "../stores/auth"
+import { restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 const asOf = ref("2026-08-16")
 const phase = ref<"idle" | "loading" | "ready" | "error">("idle")

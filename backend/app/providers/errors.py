@@ -18,3 +18,11 @@ class ProviderError(Exception):
 
 class ProviderTimeout(Exception):
     """传输层超时，重试耗尽后转为 ProviderError。"""
+
+
+class ProviderDisconnected(Exception):
+    """传输层在拿到响应前断开（连接被重置、上游直接断流、代理抖动）。
+
+    与超时分开是为了能重试：代理或上游偶尔会不发响应就断开连接，
+    这类失败重试一次通常就好，不应该冒泡成一个 500。
+    """

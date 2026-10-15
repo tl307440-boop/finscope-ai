@@ -1,6 +1,7 @@
 from pathlib import Path
 from uuid import UUID
 
+import pymupdf
 from app.services.pdf_upload import display_name, inspect_pdf, stored_pdf_path
 
 TEXT_PDF = b"""%PDF-1.4
@@ -51,9 +52,15 @@ def test_oversized_pdf_is_rejected() -> None:
 
 
 def test_too_many_pages_are_rejected() -> None:
-    extra = b"/Type /Page\n" * 3
-    result = inspect_pdf(TEXT_PDF + extra, max_bytes=10_000, max_pages=2)
+    # 用 PyMuPDF 生成一份真正的 3 页 PDF：页数由解析器实际读取，
+    # 不再依赖 ``/Type /Page`` 文本出现次数这种会被正文误触发的启发式。
+    with pymupdf.open() as document:
+        for _ in range(3):
+            document.new_page()
+        data = document.tobytes()
+    result = inspect_pdf(data, max_bytes=100_000, max_pages=2)
     assert result.code == "REJECTED_PAGES"
+    assert result.page_count == 3
 
 
 def test_scanned_pdf_requires_ocr_and_text_pdf_is_queued() -> None:

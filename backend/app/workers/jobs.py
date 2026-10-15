@@ -1,17 +1,23 @@
 import asyncio
 from datetime import date
+from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import Engine
 
 from app.core.config import get_settings
-from app.providers.akshare_bars import AdjustmentCode, target_for
+from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, AdjustmentCode, target_for
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_kline_payload, fetch_klines
+from app.services.document_index import index_document_by_id
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.utils.time import utc_now
+
+# 与 app.api.v1.documents 的默认上传根目录保持一致（都在 backend 目录下起进程）。
+UPLOAD_ROOT = Path("data/uploads")
 
 
 def execute_job(engine: Engine, job: JobSnapshot) -> int:
@@ -19,6 +25,8 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return _akshare(engine, job.scope)
     if job.job_type == "fred_series":
         return _fred(engine, job.scope)
+    if job.job_type == "parse_document":
+        return _parse_document(engine, job.scope)
     raise ProviderError(code="VALIDATION_ERROR", message="不认识的任务类型", status_code=422)
 
 
@@ -30,7 +38,7 @@ def _akshare(engine: Engine, scope: dict[str, object]) -> int:
     if target_for(symbol) is None:
         raise ProviderError(
             code="VALIDATION_ERROR",
-            message="这三只股票以外的日线尚未开放",
+            message=UNSUPPORTED_SYMBOL_MESSAGE,
             status_code=422,
         )
     payload = asyncio.run(fetch_klines(symbol, start, end, adjustment))
@@ -73,6 +81,25 @@ def _fred(engine: Engine, scope: dict[str, object]) -> int:
             fetched_at=utc_now(),
         )
     )
+
+
+def _parse_document(engine: Engine, scope: dict[str, object]) -> int:
+    """parse_document：按 scope 里的 document_id 解析并建索引。
+
+    解析器名/版本写进最终写回的 message，便于和幂等键 sha256+parser_version 对上。
+    """
+
+    raw_id = _text(scope, "document_id")
+    try:
+        document_id = UUID(raw_id)
+    except ValueError as exc:
+        raise ProviderError(
+            code="VALIDATION_ERROR", message="任务范围里的文档标识不正确", status_code=422
+        ) from exc
+    outcome = index_document_by_id(engine, UPLOAD_ROOT, document_id)
+    if outcome is None:
+        raise ProviderError(code="NOT_FOUND", message="文档不存在", status_code=404)
+    return outcome.chunk_count
 
 
 def _text(scope: dict[str, object], key: str) -> str:

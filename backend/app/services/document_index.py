@@ -1,16 +1,26 @@
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from uuid import UUID
 
 from sqlalchemy import Engine
+from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError
+from app.db.models.document import Document
 from app.repositories.document_chunks import ChunkRepository, StoredChunk
 from app.repositories.documents import DocumentRepository, OwnedFile
 from app.services.pdf_chunks import TextChunk, chunk_pages
-from app.services.pdf_text import PdfTextError, extract_pages, has_extractable_text
+from app.services.pdf_text import (
+    DEFAULT_TIME_BUDGET_SECONDS,
+    PageText,
+    PdfTextError,
+    extract_document,
+    has_extractable_text,
+)
 from app.services.rrf import fuse_rankings
 from app.services.text_embed import (
     STORED_EMBEDDING_DIM,
@@ -34,6 +44,8 @@ class IndexOutcome:
     status: str
     chunk_count: int
     message: str
+    parser_name: str | None = None
+    parser_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,10 +99,7 @@ def index_owned_document(
 
 def index_next_queued(engine: Engine, root: Path) -> None:
     documents = DocumentRepository(engine)
-    resolved = str(root.resolve())
-    separator = "\\" if "\\" in resolved else "/"
-    prefix = resolved if resolved.endswith(("\\", "/")) else resolved + separator
-    claimed = documents.claim_next_queued(prefix)
+    claimed = documents.claim_next_queued(_path_prefix(root))
     if claimed is None:
         return
     try:
@@ -105,10 +114,84 @@ def index_next_queued(engine: Engine, root: Path) -> None:
             max_tokens=settings.chunk_max_tokens,
             overlap_tokens=settings.chunk_overlap_tokens,
             embedding_dim=settings.embedding_dim,
+            time_budget_seconds=settings.upload_parse_time_budget_seconds,
+            max_pages=settings.upload_max_pages,
         )
     except Exception:
         logger.warning("document index failed error_type=unexpected")
         ChunkRepository(engine).finish(claimed.id, "failed", "无法完成解析")
+
+
+def index_document_by_id(
+    engine: Engine,
+    root: Path,
+    document_id: UUID,
+    *,
+    clock: Callable[[], float] = monotonic,
+) -> IndexOutcome | None:
+    """解析指定文件，供 parse_document 任务使用；找不到返回 None。
+
+    返回的 ``message`` 里带解析器名称与版本，便于对照 parse_document 的
+    幂等标识 sha256+parser_version。
+    """
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    current = _document_state(engine, document_id)
+    if current is None:
+        return None
+    status, parser_hint = current
+    if status == "parsed":
+        return IndexOutcome(
+            "parsed", ChunkRepository(engine).count_for(document_id), "这份文件已经解析"
+        )
+    if status == "parsing":
+        return IndexOutcome("parsing", 0, "这份文件正在解析")
+    if status != "queued":
+        return IndexOutcome(status, 0, "这份文件不能建立索引")
+    claimed = DocumentRepository(engine).claim_next_queued(
+        _path_prefix(root), document_id=document_id
+    )
+    if claimed is None:
+        return IndexOutcome("parsing", 0, "这份文件正在解析")
+    outcome = _index_claimed(
+        ChunkRepository(engine),
+        claimed,
+        root=root,
+        target_tokens=settings.chunk_target_tokens,
+        max_tokens=settings.chunk_max_tokens,
+        overlap_tokens=settings.chunk_overlap_tokens,
+        embedding_dim=settings.embedding_dim,
+        time_budget_seconds=settings.upload_parse_time_budget_seconds,
+        max_pages=settings.upload_max_pages,
+        clock=clock,
+    )
+    logger.info(
+        "document parsed document_id=%s parser=%s parser_source=%s status=%s chunks=%s",
+        document_id,
+        outcome.parser_name or "none",
+        parser_hint or "none",
+        outcome.status,
+        outcome.chunk_count,
+    )
+    return outcome
+
+
+def _document_state(engine: Engine, document_id: UUID) -> tuple[str, str] | None:
+    with Session(engine) as session:
+        row = session.get(Document, document_id)
+        if row is None:
+            return None
+        return row.parse_status, row.parse_error or ""
+
+
+def _path_prefix(root: Path) -> str:
+    resolved = str(root.resolve())
+    if resolved.endswith(("\\", "/")):
+        return resolved
+    separator = "\\" if "\\" in resolved else "/"
+    return resolved + separator
 
 
 def search_owned_documents(
@@ -174,17 +257,32 @@ def _index_claimed(
     max_tokens: int,
     overlap_tokens: int,
     embedding_dim: int,
+    time_budget_seconds: float = DEFAULT_TIME_BUDGET_SECONDS,
+    max_pages: int | None = None,
+    clock: Callable[[], float] = monotonic,
 ) -> IndexOutcome:
     try:
         if embedding_dim != STORED_EMBEDDING_DIM:
             raise PdfTextError("向量维度与已固定的索引不一致")
         data = _read_stored(root, claimed.storage_path)
-        pages = extract_pages(data)
+        extracted = extract_document(
+            data,
+            time_budget_seconds=time_budget_seconds,
+            max_pages=max_pages,
+            clock=clock,
+        )
+        pages = extracted.pages
         if not has_extractable_text(pages):
             chunks.finish(claimed.id, "ocr_required", "没有可抽取的文字，不会建立索引")
-            return IndexOutcome("ocr_required", 0, "没有可抽取的文字，不会建立索引")
+            return IndexOutcome(
+                "ocr_required",
+                0,
+                "没有可抽取的文字，不会建立索引",
+                extracted.parser_name,
+                extracted.parser_version,
+            )
         prepared = chunk_pages(
-            pages,
+            _with_tables(pages),
             target_tokens=target_tokens,
             max_tokens=max_tokens,
             overlap_tokens=overlap_tokens,
@@ -192,7 +290,13 @@ def _index_claimed(
         stored, embeddings, search_texts = _vectors(prepared)
         if not stored:
             chunks.finish(claimed.id, "ocr_required", "没有可抽取的文字，不会建立索引")
-            return IndexOutcome("ocr_required", 0, "没有可抽取的文字，不会建立索引")
+            return IndexOutcome(
+                "ocr_required",
+                0,
+                "没有可抽取的文字，不会建立索引",
+                extracted.parser_name,
+                extracted.parser_version,
+            )
         count = chunks.replace(
             claimed.id,
             stored,
@@ -206,7 +310,32 @@ def _index_claimed(
     except OSError:
         chunks.finish(claimed.id, "failed", "文件不在当前环境，无法解析")
         return IndexOutcome("failed", 0, "文件不在当前环境，无法解析")
-    return IndexOutcome("parsed", count, "已按页建立索引，可以检索")
+    return IndexOutcome(
+        "parsed",
+        count,
+        f"已按页建立索引（解析器 {extracted.parser_name} {extracted.parser_version}），可以检索",
+        extracted.parser_name,
+        extracted.parser_version,
+    )
+
+
+def _with_tables(pages: list[PageText]) -> list[PageText]:
+    """把表格行拼进该页正文，让表格数值也能被检索到。"""
+
+    merged: list[PageText] = []
+    for page in pages:
+        body = page.text
+        if page.tables:
+            body = "\n\n".join([body, *page.tables]) if body.strip() else "\n\n".join(page.tables)
+        merged.append(
+            PageText(
+                page_number=page.page_number,
+                text=body,
+                extractor=page.extractor,
+                tables=page.tables,
+            )
+        )
+    return merged
 
 
 def _read_stored(root: Path, storage_path: str | None) -> bytes:

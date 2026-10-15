@@ -1,57 +1,143 @@
-import { createRouter, createWebHistory, type RouteLocationRaw, type Router } from "vue-router"
-import { restoreSession, session, type Role } from "../stores/auth"
+import {
+  createRouter,
+  createWebHistory,
+  type RouteLocationRaw,
+  type Router,
+} from "vue-router"
+import { restoreSession, useSessionStore, type Role } from "../stores/auth"
 import AssistantView from "../views/AssistantView.vue"
+import BoardView from "../views/BoardView.vue"
+import CompanyAnalysisView from "../views/CompanyAnalysisView.vue"
+import CompanyFilingsView from "../views/CompanyFilingsView.vue"
 import CompanyView from "../views/CompanyView.vue"
+import DashboardView from "../views/DashboardView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
-import FilingsView from "../views/FilingsView.vue"
+import IndustryDetailView from "../views/IndustryDetailView.vue"
 import IndustryView from "../views/IndustryView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
+import HotspotsView from "../views/HotspotsView.vue"
 import LibraryView from "../views/LibraryView.vue"
 import LoginView from "../views/LoginView.vue"
+import MacroChinaView from "../views/MacroChinaView.vue"
+import MacroLiquidityView from "../views/MacroLiquidityView.vue"
+import MacroScenariosView from "../views/MacroScenariosView.vue"
+import MacroView from "../views/MacroView.vue"
+import MarketIndicesView from "../views/MarketIndicesView.vue"
+import MarketSectorsView from "../views/MarketSectorsView.vue"
 import MetricsView from "../views/MetricsView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
-import MacroView from "../views/MacroView.vue"
 import QuotesView from "../views/QuotesView.vue"
 import ReportView from "../views/ReportView.vue"
 import SettingsView from "../views/SettingsView.vue"
 import SimulationView from "../views/SimulationView.vue"
-import TemperatureView from "../views/TemperatureView.vue"
-import BoardView from "../views/BoardView.vue"
 import SystemStatusView from "../views/SystemStatusView.vue"
+import TemperatureView from "../views/TemperatureView.vue"
 import UploadView from "../views/UploadView.vue"
+import WatchlistView from "../views/WatchlistView.vue"
 
 export interface NavigationSession {
   authenticated: boolean
   role: Role | null
 }
 
+/**
+ * 路由表对齐规格书 §1.3（20 条主路由）。
+ * 规格书未列、但已实现且有真实后端的页面挂在二级路径下，保持可访问，
+ * 不删除既有能力：/status、/market/temperature、/research/board、
+ * /simulation/mvp、/company/:symbol/metrics、/company/:symbol/uploads、
+ * /filings/sec。
+ */
 export const routes = [
-  { path: "/", name: "status", component: SystemStatusView },
-  { path: "/macro", name: "macro", component: MacroView },
-  { path: "/quotes", name: "quotes", component: QuotesView },
-  { path: "/filings", name: "filings", component: FilingsView },
-  { path: "/metrics", name: "metrics", component: MetricsView },
-  { path: "/company", name: "company", component: CompanyView },
-  { path: "/industries", name: "industries", component: IndustryView },
+  { path: "/", redirect: "/dashboard" },
+  { path: "/login", name: "login", component: LoginView },
+
+  // 总览驾驶舱（P0）
+  { path: "/dashboard", name: "dashboard", component: DashboardView },
+
+  // 全球宏观（P0/P1）
+  { path: "/macro/us", name: "macro-us", component: MacroView },
+  { path: "/macro/china", name: "macro-china", component: MacroChinaView },
+  { path: "/macro/liquidity", name: "macro-liquidity", component: MacroLiquidityView },
+  { path: "/macro/scenarios", name: "macro-scenarios", component: MacroScenariosView },
+
+  // 市场行情（P0/P1）
+  { path: "/market/indices", name: "market-indices", component: MarketIndicesView },
+  { path: "/market/sectors", name: "market-sectors", component: MarketSectorsView },
+  { path: "/market/stocks/:symbol", name: "market-stock", component: QuotesView, props: true },
+
+  // 公司研究（P0/P1）
+  { path: "/company/:symbol", name: "company", component: CompanyView, props: true },
+  {
+    path: "/company/:symbol/filings",
+    name: "company-filings",
+    component: CompanyFilingsView,
+    props: true,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: "/company/:symbol/analysis/:runId",
+    name: "company-analysis",
+    component: CompanyAnalysisView,
+    props: true,
+    meta: { requiresAuth: true },
+  },
+  // 规格书未列、既有能力保留
+  {
+    path: "/company/:symbol/metrics",
+    name: "company-metrics",
+    component: MetricsView,
+    props: true,
+  },
+  {
+    path: "/company/:symbol/uploads",
+    name: "company-uploads",
+    component: UploadView,
+    props: true,
+    meta: { requiresAuth: true },
+  },
+
+  // 产业研究（P1）
+  { path: "/industry", name: "industry", component: IndustryView },
+  { path: "/industry/:id", name: "industry-detail", component: IndustryDetailView, props: true },
+
+  // 热点（P2）
+  { path: "/hotspots", name: "hotspots", component: HotspotsView },
+
+  // AI 问答（P1）
+  { path: "/assistant", name: "assistant", component: AssistantView, meta: { requiresAuth: true } },
+
+  // 报告管理（P1）
+  { path: "/reports", name: "reports", component: LibraryView, meta: { requiresAuth: true } },
   {
     path: "/reports/:runId",
     name: "report",
     component: ReportView,
     meta: { requiresAuth: true },
   },
-  { path: "/uploads", name: "uploads", component: UploadView, meta: { requiresAuth: true } },
-  { path: "/assistant", name: "assistant", component: AssistantView, meta: { requiresAuth: true } },
-  { path: "/library", name: "library", component: LibraryView, meta: { requiresAuth: true } },
-  { path: "/temperature", name: "temperature", component: TemperatureView },
-  { path: "/board", name: "board", component: BoardView },
-  { path: "/simulation/mvp", name: "simulation", component: SimulationView, meta: { requiresAuth: true } },
-  { path: "/login", name: "login", component: LoginView },
-  { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
+
+  // 自选研究（P1）
+  { path: "/watchlist", name: "watchlist", component: WatchlistView, meta: { requiresAuth: true } },
+
+  // 数据管理（P0，仅 admin）
   {
     path: "/data-center",
     name: "data-center",
     component: DataCenterView,
     meta: { requiresAuth: true, requiresAdmin: true },
+  },
+
+  // 设置（P0）
+  { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
+
+  // 规格书未列、既有能力保留
+  { path: "/status", name: "status", component: SystemStatusView },
+  { path: "/market/temperature", name: "temperature", component: TemperatureView },
+  { path: "/research/board", name: "board", component: BoardView },
+  {
+    path: "/simulation/mvp",
+    name: "simulation",
+    component: SimulationView,
+    meta: { requiresAuth: true },
   },
   { path: "/forbidden", name: "forbidden", component: ForbiddenView, meta: { requiresAuth: true } },
   { path: "/:pathMatch(.*)*", name: "not-found", component: NotFoundView },
@@ -73,6 +159,7 @@ export function decideNavigation(
 
 export function installGuard(router: Router, restore: () => Promise<boolean> = restoreSession): void {
   router.beforeEach(async (to) => {
+    const session = useSessionStore()
     if ((to.meta.requiresAuth || to.meta.requiresAdmin) && !session.accessToken) {
       const restored = await restore()
       if (!restored) {

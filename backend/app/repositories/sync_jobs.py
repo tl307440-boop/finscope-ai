@@ -86,6 +86,30 @@ class SyncJobRepository:
                     raise
                 return _snapshot(existing), False
 
+    def provider_id(self, *, code: str, name: str, config_public: dict[str, object]) -> UUID:
+        """取数据源主键；缺失时登记一条 enabled=False 的记录。
+
+        调度器需要在 sync_jobs 上写 provider_id（外键），但数据源尚未配置时不能伪造
+        「健康可用」——所以只建一条停用记录并让调用方打日志，健康状态留给真实探测。
+        """
+
+        with Session(self.engine) as session, session.begin():
+            found = session.scalars(
+                select(DataProvider).where(DataProvider.code == code)
+            ).one_or_none()
+            if found is not None:
+                return found.id
+            provider = DataProvider(
+                id=uuid.uuid5(uuid.NAMESPACE_URL, f"https://finscope.local/provider/{code}"),
+                code=code,
+                name=name,
+                enabled=False,
+                config_public=config_public,
+            )
+            session.add(provider)
+            session.flush()
+            return provider.id
+
     def claim(self, now: datetime) -> JobSnapshot | None:
         with Session(self.engine) as session, session.begin():
             job = session.scalars(_claim_statement(now)).first()

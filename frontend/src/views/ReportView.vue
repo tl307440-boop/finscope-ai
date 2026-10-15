@@ -3,7 +3,9 @@ import { onMounted, ref } from "vue"
 import { useRoute } from "vue-router"
 import { authorizedFetch, readJson } from "../api/client"
 import { evidenceLinks, markdownFilename, type EvidenceLink } from "../api/reportEvidence"
-import { restoreSession, session } from "../stores/auth"
+import { restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 const route = useRoute()
 const phase = ref<"loading" | "ready" | "error">("loading")

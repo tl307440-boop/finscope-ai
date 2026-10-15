@@ -4,7 +4,9 @@ import { ApiError, authorizedFetch, errorFrom, readJson } from "../api/client"
 import { enqueueMessage, healthLabel, jobStatusLabel } from "../api/jobs"
 import { providerStatusLabel } from "../api/macro"
 import { describeProbeFailure } from "../api/providerProbe"
-import { restoreSession, session } from "../stores/auth"
+import { restoreSession, useSessionStore } from "../stores/auth"
+
+const session = useSessionStore()
 
 interface ProviderRow {
   code: string

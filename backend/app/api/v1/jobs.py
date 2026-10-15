@@ -11,7 +11,7 @@ from app.api.responses import success_response
 from app.catalog.macro_series import catalog_codes
 from app.core.config import get_settings
 from app.core.exceptions import AppError
-from app.providers.akshare_bars import target_for
+from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, target_for
 from app.repositories.macro import MacroRepository
 from app.repositories.market_bars import MarketBarRepository
 from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
@@ -95,7 +95,7 @@ def _validated_scope(engine: Engine, job_type: str, scope: dict[str, str]) -> di
         if target_for(symbol) is None:
             raise AppError(
                 code="VALIDATION_ERROR",
-                message="这三只股票以外的日线尚未开放",
+                message=UNSUPPORTED_SYMBOL_MESSAGE,
                 status_code=422,
             )
         start = _date(scope.get("observation_start"))

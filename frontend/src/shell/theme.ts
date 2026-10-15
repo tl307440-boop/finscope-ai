@@ -13,6 +13,8 @@ export function readTheme(stored: string | null): ThemeName {
 
 export function applyTheme(theme: ThemeName, storage: Storage | null = window.localStorage): ThemeName {
   document.documentElement.dataset.theme = theme
+  // Element Plus 用 .dark 类名切换暗色变量，和本站的 data-theme 保持同步。
+  document.documentElement.classList.toggle("dark", theme === "dark")
   storage?.setItem(STORAGE_KEY, theme)
   return theme
 }

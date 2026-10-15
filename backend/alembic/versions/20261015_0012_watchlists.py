@@ -36,7 +36,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["group_id"], ["watchlist_groups.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["instrument_id"], ["instruments.id"]),
-        sa.UniqueConstraint("group_id", "instrument_id", name="uq_watchlist_items_group_instrument"),
+        sa.UniqueConstraint(
+            "group_id", "instrument_id", name="uq_watchlist_items_group_instrument"
+        ),
     )
 
 
