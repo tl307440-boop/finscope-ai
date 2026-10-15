@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue"
 import { useRoute } from "vue-router"
 import { authorizedFetch, readJson } from "../api/client"
+import { evidenceLinks, markdownFilename, type EvidenceLink } from "../api/reportEvidence"
 import { restoreSession, session } from "../stores/auth"
 
 const route = useRoute()
@@ -10,6 +11,8 @@ const message = ref("")
 const title = ref("")
 const body = ref("")
 const notice = ref("")
+const links = ref<EvidenceLink[]>([])
+const selected = ref<EvidenceLink | null>(null)
 
 async function load(): Promise<void> {
   phase.value = "loading"
@@ -40,6 +43,8 @@ async function load(): Promise<void> {
     title.value = asString(data.title) ?? "研究记录"
     body.value = asString(data.body) ?? ""
     notice.value = asString(data.notice) ?? ""
+    links.value = evidenceLinks(body.value)
+    selected.value = null
     phase.value = "ready"
   } catch {
     message.value = "无法连接接口"
@@ -58,6 +63,16 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value ? value : null
 }
 
+function downloadMarkdown(): void {
+  const file = new Blob([body.value], { type: "text/markdown;charset=utf-8" })
+  const url = URL.createObjectURL(file)
+  const anchor = document.createElement("a")
+  anchor.href = url
+  anchor.download = markdownFilename(title.value)
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
 onMounted(() => {
   void load()
 })
@@ -73,6 +88,20 @@ onMounted(() => {
     <section v-else class="panel">
       <h1>{{ title }}</h1>
       <p class="muted">{{ notice }}</p>
+      <button class="retry" type="button" @click="downloadMarkdown">下载 Markdown</button>
+      <h2>核对数字</h2>
+      <p v-if="!links.length" class="muted">这份记录没有可核对的申报数字。</p>
+      <ul v-else>
+        <li v-for="link in links" :key="link.key">
+          <button type="button" @click="selected = link">{{ link.label }}</button>
+        </li>
+      </ul>
+      <aside v-if="selected" class="panel" role="dialog" aria-label="数字来源">
+        <p>数值 {{ selected.value }}</p>
+        <p>申报号 {{ selected.accession }}</p>
+        <p>来源 {{ selected.sourceUrl }}</p>
+        <button type="button" @click="selected = null">关闭</button>
+      </aside>
       <pre class="report-body">{{ body }}</pre>
     </section>
   </main>
