@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
+import { modelNotice } from "../api/modelStatus"
 import { describeResearch, type ResearchMetric } from "../api/research"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 
@@ -10,6 +11,7 @@ const periodA = ref("")
 const periodB = ref("")
 const lines = ref<string[]>([])
 const instrumentId = ref("")
+const modelLine = ref("正在确认模型状态")
 
 async function loadCompany(): Promise<void> {
   phase.value = "loading"
@@ -116,8 +118,20 @@ function parseSide(value: unknown): ResearchMetric["earlier"] {
   return { value: amount, accessionNo: accession, sourceUrl: source, filed }
 }
 
+async function loadModel(): Promise<void> {
+  try {
+    const response = await fetch(apiUrl("/api/v1/analysis/model-status"))
+    const body = await readJson(response)
+    const data = asRecord(asRecord(body)?.data)
+    modelLine.value = modelNotice(asString(data?.message), data?.available === true)
+  } catch {
+    modelLine.value = modelNotice(null, false)
+  }
+}
+
 onMounted(() => {
   void loadCompany()
+  void loadModel()
 })
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -142,7 +156,8 @@ function asString(value: unknown): string | null {
     </section>
     <section v-else class="panel">
       <h1>公司研究</h1>
-      <p class="muted">苹果样例。选择两个不同的报告期后，每个数字都附带来源。没有 AI。</p>
+      <p class="muted">苹果样例。选择两个不同的报告期后，每个数字都附带来源。</p>
+      <p class="muted">{{ modelLine }}</p>
       <form class="form" @submit.prevent="loadResearch">
         <label>
           报告期甲
