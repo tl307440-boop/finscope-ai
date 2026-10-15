@@ -4,6 +4,9 @@ from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
 from app.db.models import account as account_model
+from app.db.models import macro as macro_model
+from app.db.models import market as market_model
+from app.db.models import provider as provider_model
 from app.db.models import worker_heartbeat as worker_heartbeat_model
 from sqlalchemy import engine_from_config, pool
 
@@ -14,6 +17,9 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 _ = (
     account_model.User.__tablename__,
+    provider_model.DataProvider.__tablename__,
+    market_model.Instrument.__tablename__,
+    macro_model.MacroSeries.__tablename__,
     worker_heartbeat_model.WorkerHeartbeat.__tablename__,
 )
 

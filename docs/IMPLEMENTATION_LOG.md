@@ -92,3 +92,31 @@ T01：登录、退出、刷新 token、researcher/admin 权限和前端路由守
 
 T02：补齐首批业务表迁移，并保证空库可以一键升级。
 
+## 2026-10-15 T02 首批业务表
+
+### 本轮范围
+
+把行情、交易日历、宏观序列和同步任务表放进迁移。不抓取真实行情，也不写入演示价格。
+
+### 变更
+
+- 迁移 `20261015_0003`：`data_providers`、`sync_jobs`、`sync_job_events`、`instruments`、`trading_calendars`、`market_bars`、`macro_series`、`macro_observations`。
+- 价格使用 `NUMERIC(20,6)`，成交额和宏观数值使用 `NUMERIC(24,6)`。
+- 宏观观测在 `realtime_start` 为空时，用唯一索引里的日期哨兵避免重复行；表中仍保存空值。
+- `instruments.industry_id` 先不建外键，产业表还没有。
+
+### 验证
+
+- Ruff、Mypy 通过。
+- `uv run pytest` 通过。其中空库测试会新建 `finscope_empty_t02`，执行 `alembic upgrade head`，核对上述表和价格精度，然后删除该库。
+
+### 已知局限
+
+- 这些表还没有采集接口。同步任务状态机留到 T07。
+- 板块、快照和财务事实表不在本轮。
+
+### 下一项
+
+T03：统一数据源适配器，处理 429、503 和超时，并避免失败污染已有数据。
+
+
