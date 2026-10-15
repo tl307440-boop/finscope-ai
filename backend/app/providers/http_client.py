@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.providers.errors import ProviderError, ProviderTimeout
 
@@ -10,6 +10,7 @@ Sleep = Callable[[float], Awaitable[None]]
 class OutboundRequest:
     method: str
     url: str
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -45,12 +46,15 @@ class ResilientHttpClient:
         self.min_interval_seconds = min_interval_seconds
         self._last_started = False
 
-    async def get(self, url: str) -> bytes:
+    async def get(self, url: str, headers: Mapping[str, str] | None = None) -> bytes:
         await self._pace()
         last_error: ProviderError | None = None
+        request_headers = headers or {}
         for attempt in range(1, self.max_attempts + 1):
             try:
-                response = await self.transport.send(OutboundRequest(method="GET", url=url))
+                response = await self.transport.send(
+                    OutboundRequest(method="GET", url=url, headers=request_headers)
+                )
             except ProviderTimeout:
                 last_error = ProviderError(
                     code="UPSTREAM_TIMEOUT",

@@ -10,7 +10,11 @@ class HttpxTransport(Transport):
 
     async def send(self, request: OutboundRequest) -> RawResponse:
         try:
-            response = await self.client.request(request.method, request.url)
+            response = await self.client.request(
+                request.method,
+                request.url,
+                headers=dict(request.headers),
+            )
         except httpx.TimeoutException as exc:
             raise ProviderTimeout from exc
         return RawResponse(
