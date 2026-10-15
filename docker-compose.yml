@@ -1,0 +1,76 @@
+name: finscope-ai
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: finscope
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: finscope
+    ports:
+      - "${FINSCOPE_DB_PORT:-5432}:5432"
+    volumes:
+      - finscope_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finscope -d finscope"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: development
+      APP_BASE_URL: http://localhost:8000
+      FRONTEND_ORIGIN: http://localhost:5173,http://localhost:8080
+      DATABASE_URL: postgresql+psycopg://finscope:change-me@db:5432/finscope
+      JWT_SECRET: replace-with-long-random-secret
+      DATA_MODE: live
+      LOG_LEVEL: INFO
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: "5"
+      WORKER_HEARTBEAT_TTL_SECONDS: "30"
+    ports:
+      - "${FINSCOPE_API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://finscope:change-me@db:5432/finscope
+      JWT_SECRET: replace-with-long-random-secret
+      DATA_MODE: live
+      LOG_LEVEL: INFO
+      WORKER_HEARTBEAT_INTERVAL_SECONDS: "5"
+      WORKER_HEARTBEAT_TTL_SECONDS: "30"
+    depends_on:
+      api:
+        condition: service_healthy
+    command: ["python", "-m", "app.workers.main"]
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "${FINSCOPE_WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  finscope_pg:

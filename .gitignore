@@ -1,0 +1,28 @@
+# 本地密钥与虚拟环境
+.env
+.venv/
+**/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 前端
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 运行时数据。示例目录保留，真实上传与导出不入库。
+data/uploads/**
+data/imports/**
+data/exports/**
+data/runtime/**
+!data/**/.gitkeep
+
+# 编辑器
+.idea/
+.vscode/
+*.log

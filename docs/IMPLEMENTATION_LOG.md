@@ -1,0 +1,63 @@
+# 实现日志
+
+## 2026-10-15 T00 工程地基
+
+### 本轮范围
+
+初始化 `finscope-ai` 仓库，落下规范与设计文档，接通 PostgreSQL、API、Worker 和前端运行状态页。登录、行情、宏观、财报和 AI 未开始。
+
+### 变更
+
+- 根目录：`AGENTS.md`、`README.md`、`.env.example`、`docker-compose.yml`、`Makefile`、`.pre-commit-config.yaml`、CI。
+- 文档：`docs/SPEC.md`、`docs/TASKS.md`、`docs/ADR-001-architecture.md`、`docs/API.md`。
+- 后端：FastAPI `/api/v1/health/live` 与 `/api/v1/health/ready`，请求编号，结构化错误，日志脱敏，Alembic 修订 `20261015_0001`（pgvector 与 `worker_heartbeats`）。
+- 前端：`/` 运行状态页，加载、就绪、缺失/停止和网络失败状态；`DATA_MODE=demo` 时显示“演示数据 / 非实时”。
+- 本轮没有写入演示行情或用户。
+
+### 验证
+
+在 `backend` 目录：
+
+- `uv run ruff check .` 通过
+- `uv run ruff format --check .` 通过
+- `uv run mypy app` 通过，32 个源文件无问题
+- `uv run pytest` 通过。数据库未启动时 38 通过、1 个集成测试跳过；连接到本机 pgvector 后全部通过，不再跳过
+
+在 `frontend` 目录：
+
+- `npm test` 10 个测试通过
+- `npm run typecheck` 通过
+- Docker 构建中的 `vue-tsc --noEmit && vite build` 通过
+
+本机 5432 和 8000 已被其他项目占用，因此使用：
+
+```powershell
+$env:FINSCOPE_DB_PORT = "54329"
+$env:FINSCOPE_API_PORT = "18000"
+$env:FINSCOPE_WEB_PORT = "8080"
+docker compose up --build -d
+```
+
+实际结果：
+
+- `db`、`api` 健康，`worker` 和 `frontend` 已启动
+- `GET http://127.0.0.1:18000/api/v1/health/live` 返回 200，`data_mode` 为 `live`
+- `GET http://127.0.0.1:18000/api/v1/health/ready` 返回 200，数据库与 Worker 均为 `up`
+- `GET http://127.0.0.1:18000/docs` 返回 200
+- `GET http://127.0.0.1:8080/` 返回 200，页面经 nginx 转发 `/api`
+- Alembic 日志：`Running upgrade  -> 20261015_0001`
+- 停止 Worker 后 ready 返回 503，`reason` 为 `heartbeat_stopped`，数据库仍为 `up`，响应中没有口令
+- 浏览器打开 `http://127.0.0.1:8080/`：1440 宽为四列，390 宽为单列；显示“运行正常”“尚未接入”和北京时间
+- 未知路由显示“页面不存在”，返回链接可用
+- Worker 停止后页面显示“部分组件不可用 / 已停止”；重新启动并点击“重试”后恢复“运行正常”
+
+### 已知局限
+
+- T01 及之后的任务均为 `NOT_IMPLEMENTED`。
+- 当前机器需改宿主机端口；仓库默认仍是 5432、8000、8080。
+- FastAPI `TestClient` 在 Starlette 1.8 下提示改用 `httpx2`，测试仍通过。
+- 容器为了本机卷权限以默认用户运行，不是生产加固。
+
+### 下一项
+
+T01：登录、退出、刷新 token、researcher/admin 权限和前端路由守卫。
