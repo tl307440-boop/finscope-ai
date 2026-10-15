@@ -20,6 +20,7 @@ const links = computed(() => {
     { href: "/metrics", label: "财务试算" },
     { href: "/company", label: "公司研究" },
     { href: "/uploads", label: "上传 PDF" },
+    { href: "/assistant", label: "问答" },
   ]
   if (session.role === "admin") {
     items.push({ href: "/data-center", label: "数据源" })

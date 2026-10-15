@@ -1,5 +1,6 @@
 from app.db.models.account import RefreshSession, User, UserPreference
 from app.db.models.analysis import AnalysisRun, Report
+from app.db.models.chat import ChatMessage, ChatSession
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
 from app.db.models.financial import FinancialMetric
@@ -11,6 +12,8 @@ from app.db.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
     "AnalysisRun",
+    "ChatMessage",
+    "ChatSession",
     "DataProvider",
     "Document",
     "DocumentChunk",
