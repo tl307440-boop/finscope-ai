@@ -1,5 +1,6 @@
 from collections.abc import Iterator
 from datetime import date
+from decimal import Decimal
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -16,8 +17,8 @@ from app.services.auth_types import UserRecord
 from app.services.china_macro import CHINA_SERIES, series_status
 from app.services.daily_digest import build_digest
 from app.services.disclosure_events import heat_label
-from app.trading_agents.graph import run_mock_graph
-from app.trading_agents.vendor import income_visible
+from app.trading_agents.backtest import window_return
+from app.trading_agents.upstream import run_upstream
 
 router = APIRouter(tags=["研究板"])
 
@@ -35,6 +36,8 @@ class SimulationData(BaseModel):
     rating: str
     decision: str
     nodes: list[str]
+    bull: str = ""
+    bear: str = ""
     disclaimer: str
 
 
@@ -52,6 +55,12 @@ class ChinaSeriesList(BaseModel):
 class HotspotData(BaseModel):
     label: str
     count: int
+
+
+class BacktestData(BaseModel):
+    quality_flag: str
+    actual_return: str | None = None
+    note: str
 
 
 class DigestLine(BaseModel):
@@ -112,13 +121,7 @@ def create_simulation(
     request: Request,
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> JSONResponse:
-    context = income_visible(body.symbol, body.as_of)
-    result = run_mock_graph(
-        symbol=body.symbol,
-        as_of_text=body.as_of.isoformat(),
-        context=context,
-        max_debate_rounds=body.max_debate_rounds,
-    )
+    result = run_upstream(body.symbol, body.as_of, body.max_debate_rounds)
     saved = SimulationRepository(_engine(request)).save(
         user_id=user.id,
         symbol=body.symbol,
@@ -138,6 +141,8 @@ def create_simulation(
                 rating=saved.rating,
                 decision=saved.decision,
                 nodes=list(saved.nodes),
+                bull=saved.bull,
+                bear=saved.bear,
                 disclaimer="仅用于研究与教学，不构成交易建议，也不会发送委托。",
             ),
         ),
@@ -164,10 +169,71 @@ def read_simulation(
                 rating=saved.rating,
                 decision=saved.decision,
                 nodes=list(saved.nodes),
+                bull=saved.bull,
+                bear=saved.bear,
                 disclaimer="仅用于研究与教学，不构成交易建议，也不会发送委托。",
             ),
         ),
     )
+
+
+@router.post("/simulation/runs/{run_id}/backtest", summary="用已入库收盘价核算区间收益")
+def record_simulation_backtest(
+    run_id: UUID,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    saved = SimulationRepository(_engine(request)).get_owned(user.id, run_id)
+    if saved is None:
+        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
+    measured = window_return(_closes(_engine(request), saved.symbol), saved.as_of, 30)
+    if measured is None:
+        note = "已入库日线不足以计算区间收益，没有写入收益率"
+        actual = None
+    else:
+        note = f"{measured.entry_date.isoformat()} 至 {measured.exit_date.isoformat()} 的收盘价变化"
+        actual = measured.actual
+    flag = SimulationRepository(_engine(request)).record_backtest(
+        user.id,
+        run_id,
+        actual=actual,
+        note=note,
+    )
+    if flag is None:
+        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
+    return JSONResponse(
+        status_code=200,
+        content=success_response(
+            request,
+            BacktestData(
+                quality_flag=flag,
+                actual_return=None if actual is None else str(actual),
+                note=note,
+            ),
+        ),
+    )
+
+
+def _closes(engine: Engine, symbol: str) -> list[tuple[date, Decimal]]:
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    from app.db.models.market import Instrument, MarketBar
+
+    code, _, suffix = symbol.partition(".")
+    exchange = "SSE" if suffix == "SH" else "SZSE"
+    with Session(engine) as session:
+        instrument = session.scalars(
+            select(Instrument).where(Instrument.exchange == exchange, Instrument.symbol == code)
+        ).one_or_none()
+        if instrument is None:
+            return []
+        rows = session.scalars(
+            select(MarketBar)
+            .where(MarketBar.instrument_id == instrument.id, MarketBar.timeframe == "1d")
+            .order_by(MarketBar.trade_date)
+        ).all()
+        return [(row.trade_date, row.close) for row in rows if isinstance(row.close, Decimal)]
 
 
 @router.get("/simulation/runs/{run_id}/stream", summary="重放推演节点")

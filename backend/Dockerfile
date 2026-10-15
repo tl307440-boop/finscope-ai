@@ -10,6 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:$PATH"
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock alembic.ini ./
 COPY app ./app
 COPY alembic ./alembic

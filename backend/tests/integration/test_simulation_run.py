@@ -102,11 +102,23 @@ def test_mock_simulation_persists_rating_without_an_order() -> None:
             data = created.json()["data"]
             assert data["rating"] == "Hold"
             assert "Market Analyst" in data["nodes"]
+            assert "Bull Researcher" in data["nodes"]
+            assert "Portfolio Manager" in data["nodes"]
             assert "Conservative Analyst" in data["nodes"]
+            assert data["nodes"].index("Conservative Analyst") < data["nodes"].index(
+                "Portfolio Manager"
+            )
             assert "委托" in data["disclaimer"]
             detail = client.get(f"/api/v1/simulation/runs/{data['run_id']}", headers=headers)
             assert detail.status_code == 200
             stream = client.get(f"/api/v1/simulation/runs/{data['run_id']}/stream", headers=headers)
+            backtest = client.post(
+                f"/api/v1/simulation/runs/{data['run_id']}/backtest",
+                headers=headers,
+            )
+            assert backtest.status_code == 200
+            assert backtest.json()["data"]["quality_flag"] == "insufficient"
+            assert "actual_return" not in backtest.json()["data"]
             assert "event: node_started" in stream.text
             assert "Market Analyst" in stream.text
             other_token = client.post(

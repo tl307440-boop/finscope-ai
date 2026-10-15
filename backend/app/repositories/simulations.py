@@ -1,9 +1,10 @@
 import uuid
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from app.db.models.simulation import (
@@ -42,6 +43,8 @@ class StoredRun:
     decision: str
     nodes: tuple[str, ...]
     events: tuple[str, ...]
+    bull: str = ""
+    bear: str = ""
 
 
 class SimulationRepository:
@@ -126,6 +129,8 @@ class SimulationRepository:
             decision=result.decision,
             nodes=tuple(trace.node_name for trace in result.traces),
             events=result.events,
+            bull=result.debates[0].bull_claim if result.debates else "",
+            bear=result.debates[0].bear_claim if result.debates else "",
         )
 
     def get_owned(self, user_id: UUID, run_id: UUID) -> StoredRun | None:
@@ -141,6 +146,11 @@ class SimulationRepository:
                 .where(AgentNodeTrace.run_id == run_id)
                 .order_by(AgentNodeTrace.seq)
             ).all()
+            debate = session.scalars(
+                select(AgentDebateRound)
+                .where(AgentDebateRound.run_id == run_id)
+                .order_by(AgentDebateRound.round_no)
+            ).first()
             return StoredRun(
                 id=run.id,
                 symbol=run.symbol,
@@ -150,4 +160,46 @@ class SimulationRepository:
                 decision=decision.final_trade_decision,
                 nodes=tuple(row.node_name for row in traces),
                 events=(),
+                bull="" if debate is None else debate.bull_claim,
+                bear="" if debate is None else debate.bear_claim,
             )
+
+    def record_backtest(
+        self,
+        user_id: UUID,
+        run_id: UUID,
+        *,
+        actual: Decimal | None,
+        note: str,
+    ) -> str | None:
+        with Session(self.engine) as session, session.begin():
+            run = session.get(AgentSimulationRun, run_id)
+            if run is None or run.user_id != user_id:
+                return None
+            decision = session.scalars(
+                select(AgentSimulationDecision).where(AgentSimulationDecision.run_id == run_id)
+            ).one()
+            flag = "measured" if actual is not None else "insufficient"
+            session.execute(
+                text(
+                    """
+                    INSERT INTO agent_backtest_evaluations (
+                        id, decision_id, evaluation_date, note, created_at,
+                        actual_return, quality_flag
+                    ) VALUES (
+                        :id, :decision_id, :evaluation_date, :note, :created_at,
+                        :actual_return, :quality_flag
+                    )
+                    """
+                ),
+                {
+                    "id": uuid.uuid4(),
+                    "decision_id": decision.id,
+                    "evaluation_date": run.as_of,
+                    "note": note,
+                    "created_at": utc_now(),
+                    "actual_return": actual,
+                    "quality_flag": flag,
+                },
+            )
+            return flag

@@ -1,6 +1,7 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
+from app.scripts.eval_multi_agent_experiment import recall, summary
 from app.services.china_macro import parse_macro_csv, series_status
 from app.services.daily_digest import build_digest
 from app.services.disclosure_events import (
@@ -9,6 +10,7 @@ from app.services.disclosure_events import (
     heat_label,
     validate_disclosure,
 )
+from app.trading_agents.backtest import window_return
 from app.trading_agents.graph import debate_ready, parse_rating, risk_ready, run_mock_graph
 from app.trading_agents.vendor import income_visible, single_quarter_check
 
@@ -62,6 +64,16 @@ def test_moutai_interim_is_hidden_before_its_notice_date() -> None:
     check = single_quarter_check("600519.SH", date(2026, 8, 16))
     assert "差额 0.00" in check
     assert single_quarter_check("600519.SH", date(2026, 6, 1)).startswith("NO_DATA_AVAILABLE")
+
+
+def test_backtest_needs_a_later_close_and_recall_needs_labels() -> None:
+    closes = [(date(2024, 1, 2), Decimal("10")), (date(2024, 1, 20), Decimal("12"))]
+    measured = window_return(closes, date(2024, 1, 2), 30)
+    assert measured is not None
+    assert measured.actual == Decimal("0.2")
+    assert window_return(closes[:1], date(2024, 1, 2), 30) is None
+    assert recall({"002717"}, {"002717", "000001"}) == Decimal("0.5")
+    assert "留空" in summary(1)
 
 
 def test_mock_graph_waits_for_both_sides_and_does_not_default_to_hold() -> None:

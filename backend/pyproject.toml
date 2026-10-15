@@ -15,6 +15,7 @@ dependencies = [
     "pypdf>=6.20.1",
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
+    "tradingagents",
     "tzdata>=2026.5",
     "uvicorn[standard]>=0.32",
 ]
@@ -60,5 +61,8 @@ warn_unused_ignores = true
 disallow_any_generics = true
 
 [[tool.mypy.overrides]]
-module = ["pypdf", "pypdf.*"]
+module = ["pypdf", "pypdf.*", "tradingagents", "tradingagents.*"]
 ignore_missing_imports = true
+
+[tool.uv.sources]
+tradingagents = { git = "https://github.com/TauricResearch/TradingAgents.git", rev = "1394a3f72aa4393e1a98f51b382434c4b4c2d972" }
