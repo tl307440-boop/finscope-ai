@@ -161,3 +161,36 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
+.nav-links {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.form-card {
+  max-width: 480px;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+}
+
+.form label {
+  display: grid;
+  gap: 6px;
+}
+
+.form input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 12px;
+}
+
+.provider-list {
+  padding-left: 18px;
+}

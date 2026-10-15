@@ -5,7 +5,7 @@
 ## P0 — 可运行的基础闭环
 
 - [x] **T00** 初始化仓库、规范、pre-commit/lint、`.env.example`、Docker Compose、README、设计文档落位。验收：DB/API/Frontend/Worker起得来，Health和页面可访问。
-- [ ] **T01** 用户登录/退出/刷新token、researcher/admin RBAC、前端路由守卫。验收：未登录跳转；研究者访问admin接口403；敏感信息不在日志。
+- [x] **T01** 用户登录/退出/刷新token、researcher/admin RBAC、前端路由守卫。验收：未登录跳转；研究者访问admin接口403；敏感信息不在日志。
 - [ ] **T02** 首批数据库迁移：users、data_providers、sync_jobs、instruments、trading_calendars、market_bars、macro_series、macro_observations。验收：重建空DB可一键迁移。
 - [ ] **T03** 统一 source adapter 协议、HTTP异常、重试限速、quality检查、演示数据状态。验收：模拟429/503/timeout都被明确处理，不污染已有数据。
 - [ ] **T04** 导入首批证券与交易日历元数据，标准化美股CIK和A股交易所标识。验收：按名称/代码搜索返回唯一交易所代码。

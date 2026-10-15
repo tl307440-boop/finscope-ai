@@ -61,6 +61,19 @@ powershell -ExecutionPolicy Bypass -File scripts/verify.ps1
 
 `DATA_MODE` 只有 `live` 和 `demo`。默认是 `live`。只有显式设为 `demo` 时，界面和响应才会标出“演示数据 / 非实时”。本阶段没有演示行情。
 
+## 登录
+
+登录页是 `/login`。未登录访问 `/settings` 会跳回登录页。研究者打开 `/data-center` 会看到无权限提示；管理接口对研究者返回 403。
+
+创建管理员时在环境变量中设置 `ADMIN_USERNAME`、`ADMIN_EMAIL`、`ADMIN_PASSWORD`，密码至少 8 位，然后运行：
+
+```powershell
+cd backend
+uv run python -m app.scripts.seed
+```
+
+命令输出不会打印密码。未设置这三个变量时，不会创建账号，也不会写入行情。
+
 ## 配置
 
 复制 `.env.example` 为 `.env` 后再修改。示例口令只适合本机。生产环境拒绝示例 `JWT_SECRET` 和含 `change-me` 的数据库地址。

@@ -13,3 +13,12 @@ declare module "*.vue" {
   const component: DefineComponent
   export default component
 }
+
+export {}
+
+declare module "vue-router" {
+  interface RouteMeta {
+    requiresAuth?: boolean
+    requiresAdmin?: boolean
+  }
+}

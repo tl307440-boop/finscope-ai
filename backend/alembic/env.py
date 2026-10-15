@@ -3,6 +3,7 @@ from logging.config import fileConfig
 from alembic import context
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.models import account as account_model
 from app.db.models import worker_heartbeat as worker_heartbeat_model
 from sqlalchemy import engine_from_config, pool
 
@@ -11,7 +12,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
-_ = worker_heartbeat_model.WorkerHeartbeat.__tablename__
+_ = (
+    account_model.User.__tablename__,
+    worker_heartbeat_model.WorkerHeartbeat.__tablename__,
+)
 
 
 def run_migrations_offline() -> None:

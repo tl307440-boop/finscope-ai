@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     worker_heartbeat_interval_seconds: int = 5
     worker_heartbeat_ttl_seconds: int = 30
     worker_service_name: str = "worker"
+    login_max_failures: int = 5
+    login_failure_window_seconds: int = 300
 
     @field_validator("frontend_origin")
     @classmethod
@@ -54,6 +56,8 @@ class Settings(BaseSettings):
     def check_runtime_policy(self) -> "Settings":
         if self.worker_heartbeat_ttl_seconds <= self.worker_heartbeat_interval_seconds:
             raise ValueError("WORKER_HEARTBEAT_TTL_SECONDS 必须大于心跳间隔")
+        if self.login_max_failures < 1 or self.login_failure_window_seconds < 1:
+            raise ValueError("登录失败限制必须为正数")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")

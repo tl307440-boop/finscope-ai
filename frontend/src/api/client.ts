@@ -32,3 +32,54 @@ export async function readJson(response: Response): Promise<unknown> {
     )
   }
 }
+
+export function errorFrom(body: unknown, headerRequestId: string | null): ApiError {
+  const record = asRecord(body)
+  const error = asRecord(record?.error)
+  const message = asString(error?.message) ?? "请求失败"
+  const code = asString(error?.code) ?? "HTTP_ERROR"
+  const requestId = asString(record?.request_id) ?? headerRequestId
+  return new ApiError(message, code, requestId)
+}
+
+export async function authorizedFetch(
+  path: string,
+  init: RequestInit,
+  token: string | null,
+  refresh: () => Promise<string | null>,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
+  const first = await send(path, init, token, fetcher)
+  if (first.status !== 401 || path.endsWith("/auth/refresh") || path.endsWith("/auth/login")) {
+    return first
+  }
+  const nextToken = await refresh()
+  if (!nextToken) {
+    return first
+  }
+  return send(path, init, nextToken, fetcher)
+}
+
+async function send(
+  path: string,
+  init: RequestInit,
+  token: string | null,
+  fetcher: typeof fetch,
+): Promise<Response> {
+  const headers = new Headers(init.headers)
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`)
+  }
+  return fetcher(apiUrl(path), { ...init, headers, credentials: "include" })
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return null
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null
+}

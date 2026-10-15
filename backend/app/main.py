@@ -20,6 +20,7 @@ from app.core.exceptions import (
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
 from app.db.session import create_db_engine
+from app.services.login_limiter import LoginRateLimiter
 
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
 
@@ -32,6 +33,10 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_db_engine(settings.database_url)
         app.state.engine = engine
+        app.state.login_limiter = LoginRateLimiter(
+            max_failures=settings.login_max_failures,
+            window_seconds=settings.login_failure_window_seconds,
+        )
         yield
         engine.dispose()
 
@@ -44,7 +49,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
         expose_headers=["X-Request-ID"],

@@ -61,3 +61,34 @@ docker compose up --build -d
 ### 下一项
 
 T01：登录、退出、刷新 token、researcher/admin 权限和前端路由守卫。
+
+## 2026-10-15 T01 登录与权限
+
+### 本轮范围
+
+账号登录、刷新、退出、个人偏好，以及管理员才能读取的数据源配置状态。没有公开注册，也没有行情数据。
+
+### 变更
+
+- 迁移 `20261015_0002`：`users`、`refresh_sessions`、`user_preferences`。
+- 密码使用 Argon2id。刷新凭据只保存哈希，放在 HttpOnly cookie。访问令牌是短期 JWT。
+- 未知账号、错误密码和停用账号返回同一句“账号或密码错误”。连续失败返回 429。
+- 研究者调用 `GET /api/v1/admin/providers` 返回 403。响应只说明密钥是否已配置。
+- 前端：`/login`、`/settings`、`/data-center`、`/forbidden`。未登录访问账号页会跳到登录页。
+
+### 验证
+
+- `uv run ruff check .`、`uv run ruff format --check .`、`uv run mypy app` 通过。
+- `DATABASE_URL` 指向本机 pgvector 时，`uv run pytest` 通过，包含登录、刷新轮换、退出和 403。
+- `npm test` 20 个测试通过，`npm run typecheck` 通过。
+
+### 已知局限
+
+- 登录失败计数在单个 API 进程内存中，多进程部署不会共享。
+- 管理页目前只展示密钥是否配置，不执行同步。
+- FastAPI `TestClient` 仍提示未来改用 `httpx2`。
+
+### 下一项
+
+T02：补齐首批业务表迁移，并保证空库可以一键升级。
+
