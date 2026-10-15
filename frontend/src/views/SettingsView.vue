@@ -83,7 +83,16 @@ function asString(value: unknown): string | null {
       <p>邮箱 {{ profile.email }}</p>
       <p>角色 {{ roleText[profile.role] ?? profile.role }}</p>
       <p class="muted">主题 {{ profile.theme === "light" ? "浅色" : "深色" }}</p>
-      <button class="retry" type="button" @click="signOut">退出</button>
+      <div class="action-row">
+        <router-link
+          v-if="profile.role === 'admin'"
+          class="retry link-button"
+          to="/data-center"
+        >
+          打开数据源管理
+        </router-link>
+        <button class="retry" type="button" @click="signOut">退出</button>
+      </div>
     </section>
   </main>
 </template>

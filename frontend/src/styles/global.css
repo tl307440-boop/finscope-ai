@@ -192,6 +192,16 @@
   padding: 10px 12px;
 }
 
-.provider-list {
-  padding-left: 18px;
+a.retry,
+.link-button {
+  display: inline-block;
+  text-decoration: none;
+  text-align: center;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
 }

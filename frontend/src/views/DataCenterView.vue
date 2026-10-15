@@ -122,6 +122,9 @@ function asString(value: unknown): string | null {
       <button class="retry" type="button" @click="load">重试</button>
     </section>
     <section v-else class="panel">
+      <p class="nav-links">
+        <router-link to="/settings">返回账号设置</router-link>
+      </p>
       <h1>数据源配置</h1>
       <p class="muted">这里只显示密钥是否已经配置，不展示密钥，也不表示行情已经同步。</p>
       <ul v-if="rows.length" class="provider-list">
