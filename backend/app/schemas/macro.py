@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.catalog.macro_series import MacroSeriesSeed
 from app.providers.vintage import VintagePoint
 from app.repositories.macro import decimal_text
+from app.services.macro_rules import MacroAssessment, RuleScore
 
 Availability = Literal["unavailable", "configured"]
 CATALOG_NOTICE = "这里只列出序列定义。没有同步到的观测值不会用演示数字填补。"
@@ -107,4 +108,42 @@ def build_observations(
         ],
         empty_message=EMPTY_OBSERVATIONS if not rows else None,
         truncated=len(rows) > limit,
+    )
+
+
+class RuleScoreModel(BaseModel):
+    code: str
+    value: int | None = None
+    reason: str | None = None
+    evidence: list[str]
+
+
+class AssessmentData(BaseModel):
+    pit_date: date
+    regime_code: str
+    growth: RuleScoreModel
+    inflation: RuleScoreModel
+    liquidity: RuleScoreModel
+    notice: str
+    version: str
+
+
+def build_assessment(result: MacroAssessment, pit: date) -> AssessmentData:
+    return AssessmentData(
+        pit_date=pit,
+        regime_code=result.regime_code,
+        growth=_score_model(result.growth),
+        inflation=_score_model(result.inflation),
+        liquidity=_score_model(result.liquidity),
+        notice=result.notice,
+        version=result.version,
+    )
+
+
+def _score_model(score: RuleScore) -> RuleScoreModel:
+    return RuleScoreModel(
+        code=score.code,
+        value=score.value,
+        reason=score.reason,
+        evidence=list(score.evidence),
     )

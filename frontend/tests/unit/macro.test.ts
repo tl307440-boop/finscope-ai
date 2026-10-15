@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { describeObservations, providerStatusLabel } from "../../src/api/macro"
+import { chartPolyline, describeObservations, providerStatusLabel, scoreText } from "../../src/api/macro"
 
 describe("宏观序列展示", () => {
   it("没有密钥时显示不可用", () => {
@@ -18,6 +18,12 @@ describe("宏观序列展示", () => {
     expect(describeObservations({ emptyMessage: "该日期还看不到已公布的数值", observations: [] })).toEqual([
       "该日期还看不到已公布的数值",
     ])
+  })
+
+  it("少于两个点不画线，缺分数不编造", () => {
+    expect(chartPolyline([1])).toBeNull()
+    expect(chartPolyline([1, 3])).toContain("0.0,")
+    expect(scoreText({ value: null, evidence: [] })).toBe("数据不足，没有编造分数")
   })
 
   it("展示当时可见的修订，而不是把两次修订并成一个数", () => {

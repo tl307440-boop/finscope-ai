@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
-import { describeObservations, type MacroCatalog, type MacroObservation } from "../api/macro"
+import {
+  chartPolyline,
+  describeObservations,
+  scoreText,
+  type MacroCatalog,
+  type MacroObservation,
+} from "../api/macro"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 
 const phase = ref<"loading" | "ready" | "error">("loading")
@@ -10,6 +16,8 @@ const seriesCode = ref("UNRATE")
 const asOf = ref("")
 const resultPhase = ref<"idle" | "loading" | "ready" | "error">("idle")
 const lines = ref<string[]>([])
+const chart = ref<string | null>(null)
+const scores = ref<string[]>([])
 const resultError = ref("")
 
 async function load(): Promise<void> {
@@ -37,11 +45,15 @@ async function query(): Promise<void> {
     resultPhase.value = "error"
     resultError.value = "请选择日期"
     lines.value = []
+    chart.value = null
+    scores.value = []
     return
   }
   resultPhase.value = "loading"
   resultError.value = ""
   lines.value = []
+  chart.value = null
+  scores.value = []
   try {
     const params = new URLSearchParams({ as_of: asOf.value, limit: "100" })
     const response = await fetch(
@@ -59,11 +71,37 @@ async function query(): Promise<void> {
       emptyMessage: asString(data?.empty_message),
       observations,
     })
+    chart.value = chartPolyline(observations.map((item) => Number(item.value)))
+    scores.value = await loadScores(asOf.value)
     resultPhase.value = "ready"
   } catch (caught) {
     resultError.value = caught instanceof ApiError ? caught.message : "无法连接接口"
     resultPhase.value = "error"
   }
+}
+
+async function loadScores(asOfValue: string): Promise<string[]> {
+  const response = await fetch(apiUrl(`/api/v1/macro/assessments?as_of=${encodeURIComponent(asOfValue)}`))
+  const body = await readJson(response)
+  if (!response.ok) {
+    throw errorFrom(body, response.headers.get("X-Request-ID"))
+  }
+  const data = asRecord(asRecord(body)?.data)
+  const notice = asString(data?.notice) ?? "这是规则计算，不是经济定论。"
+  return [
+    notice,
+    `增长 ${scoreText(readScore(data?.growth))}`,
+    `通胀 ${scoreText(readScore(data?.inflation))}`,
+    `流动性 ${scoreText(readScore(data?.liquidity))}`,
+  ]
+}
+
+function readScore(value: unknown): { value: number | null; evidence: string[] } {
+  const record = asRecord(value)
+  const evidence = Array.isArray(record?.evidence)
+    ? record.evidence.filter((item): item is string => typeof item === "string")
+    : []
+  return { value: typeof record?.value === "number" ? record.value : null, evidence }
 }
 
 function parseCatalog(data: Record<string, unknown> | null): MacroCatalog {
@@ -173,9 +211,22 @@ function asString(value: unknown): string | null {
         <button class="retry" type="submit" :disabled="resultPhase === 'loading'">查看当时可见的数据</button>
         <p v-if="resultPhase === 'loading'">正在查询</p>
         <p v-else-if="resultPhase === 'error'" role="alert">{{ resultError }}</p>
-        <ul v-else-if="lines.length" class="provider-list">
-          <li v-for="line in lines" :key="line">{{ line }}</li>
-        </ul>
+        <template v-else-if="lines.length">
+          <svg
+            v-if="chart"
+            class="macro-chart"
+            viewBox="0 0 280 100"
+            role="img"
+            aria-label="已公布观测折线"
+          >
+            <polyline :points="chart" fill="none" stroke="currentColor" stroke-width="2" />
+          </svg>
+          <p v-else class="muted">至少两个已公布的点才能画线</p>
+          <ul class="provider-list">
+            <li v-for="line in scores" :key="line">{{ line }}</li>
+            <li v-for="line in lines" :key="line">{{ line }}</li>
+          </ul>
+        </template>
       </form>
     </section>
   </main>

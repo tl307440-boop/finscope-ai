@@ -36,6 +36,30 @@ export function providerStatusLabel(input: {
   return "已提供密钥"
 }
 
+export function chartPolyline(values: number[], width = 280, height = 100): string | null {
+  if (values.length < 2) {
+    return null
+  }
+  const low = Math.min(...values)
+  const high = Math.max(...values)
+  const span = high - low || 1
+  return values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * width
+      const y = height - ((value - low) / span) * (height - 8) - 4
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(" ")
+}
+
+export function scoreText(input: { value: number | null; evidence: string[] }): string {
+  if (input.value === null) {
+    return "数据不足，没有编造分数"
+  }
+  const evidence = input.evidence.length ? `。证据：${input.evidence.join("；")}` : ""
+  return `${input.value}${evidence}`
+}
+
 export function describeObservations(input: {
   emptyMessage: string | null
   observations: MacroObservation[]

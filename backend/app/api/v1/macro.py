@@ -8,10 +8,11 @@ from sqlalchemy import Engine
 from app.api.responses import success_response
 from app.core.config import get_settings
 from app.core.exceptions import AppError
-from app.providers.vintage import pit_date, select_visible
+from app.providers.vintage import VintagePoint, pit_date, select_visible
 from app.repositories.macro import MacroRepository
 from app.schemas.auth import fred_availability
-from app.schemas.macro import build_catalog, build_observations
+from app.schemas.macro import build_assessment, build_catalog, build_observations
+from app.services.macro_rules import MacroPoint, assess_macro
 from app.utils.time import utc_now
 
 router = APIRouter(prefix="/macro", tags=["宏观"])
@@ -45,6 +46,35 @@ def read_macro_observations(
     visible = select_visible(rows, pit)
     payload = build_observations(series_code=series_code, pit=pit, rows=visible, limit=limit)
     return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.get("/assessments", summary="按历史时点计算宏观规则分数")
+def read_macro_assessment(
+    request: Request,
+    as_of: Annotated[str | None, Query()] = None,
+) -> JSONResponse:
+    pit = _parse_as_of(as_of)
+    repository = _repository(request)
+    points: list[MacroPoint] = []
+    for series_code in ("GDP", "CPIAUCSL", "FEDFUNDS"):
+        rows = repository.list_vintages(series_code, start=None, end=None)
+        if rows is None:
+            continue
+        points.extend(_points(series_code, select_visible(rows, pit)))
+    payload = build_assessment(assess_macro(points), pit)
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+def _points(series_code: str, rows: list[VintagePoint]) -> list[MacroPoint]:
+    return [
+        MacroPoint(
+            series_code=series_code,
+            observation_date=row.observation_date,
+            value=row.value,
+            realtime_start=row.realtime_start,
+        )
+        for row in rows
+    ]
 
 
 def _parse_as_of(value: str | None) -> date:
