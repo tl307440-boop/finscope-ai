@@ -29,6 +29,7 @@ class FilingRecord:
 
 @dataclass(frozen=True)
 class FactRecord:
+    id: UUID
     concept: str
     unit: str
     value: Decimal
@@ -183,6 +184,7 @@ def _filing_record(row: Filing) -> FilingRecord:
 
 def _fact_record(row: SecFact, accession_no: str) -> FactRecord:
     return FactRecord(
+        id=row.id,
         concept=row.concept,
         unit=row.unit,
         value=row.value,

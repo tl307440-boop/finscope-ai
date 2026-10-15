@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
+import { useRouter } from "vue-router"
+import { authorizedFetch, ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { modelNotice } from "../api/modelStatus"
 import { describeResearch, type ResearchMetric } from "../api/research"
-import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
+import { restoreSession, session } from "../stores/auth"
 
 const phase = ref<"loading" | "ready" | "error">("loading")
 const failure = ref("无法读取公司")
@@ -12,6 +14,9 @@ const periodB = ref("")
 const lines = ref<string[]>([])
 const instrumentId = ref("")
 const modelLine = ref("正在确认模型状态")
+const saveMessage = ref("")
+const saving = ref(false)
+const router = useRouter()
 
 async function loadCompany(): Promise<void> {
   phase.value = "loading"
@@ -118,6 +123,52 @@ function parseSide(value: unknown): ResearchMetric["earlier"] {
   return { value: amount, accessionNo: accession, sourceUrl: source, filed }
 }
 
+async function saveReport(): Promise<void> {
+  saveMessage.value = ""
+  if (!session.accessToken) {
+    saveMessage.value = "请先登录后再保存"
+    return
+  }
+  if (!instrumentId.value || !periodA.value || !periodB.value || periodA.value === periodB.value) {
+    saveMessage.value = "请选择两个不同的报告期"
+    return
+  }
+  saving.value = true
+  try {
+    const response = await authorizedFetch(
+      "/api/v1/analysis/filing",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instrument_id: instrumentId.value,
+          as_of: "2024-06-01",
+          period_a: periodA.value,
+          period_b: periodB.value,
+        }),
+      },
+      session.accessToken,
+      async () => {
+        const restored = await restoreSession()
+        return restored ? session.accessToken : null
+      },
+    )
+    const payload = await readJson(response)
+    const data = asRecord(asRecord(payload)?.data)
+    const runId = asString(data?.run_id)
+    if (!response.ok || !runId) {
+      const error = asRecord(asRecord(payload)?.error)
+      saveMessage.value = asString(error?.message) ?? "无法保存研究记录"
+      return
+    }
+    await router.push(`/reports/${runId}`)
+  } catch {
+    saveMessage.value = "无法连接接口"
+  } finally {
+    saving.value = false
+  }
+}
+
 async function loadModel(): Promise<void> {
   try {
     const response = await fetch(apiUrl("/api/v1/analysis/model-status"))
@@ -172,6 +223,9 @@ function asString(value: unknown): string | null {
           </select>
         </label>
         <button class="retry" type="submit">对比</button>
+        <button class="retry" type="button" :disabled="saving" @click="saveReport">保存研究记录</button>
+        <p v-if="!session.accessToken" class="muted"><a href="/login?redirect=/company">请先登录后再保存</a></p>
+        <p v-else-if="saveMessage" role="status">{{ saveMessage }}</p>
       </form>
       <ul v-if="lines.length" class="provider-list">
         <li v-for="line in lines" :key="line">{{ line }}</li>

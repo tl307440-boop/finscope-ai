@@ -34,7 +34,7 @@ def read_company_research(
         raise AppError(code="NOT_FOUND", message="暂无该证券", status_code=404)
     facts: list[FactRecord] = []
     if instrument.cik:
-        facts = _facts(engine, normalize_cik(instrument.cik), as_of)
+        facts = visible_sample_facts(engine, normalize_cik(instrument.cik), as_of)
     payload = build_research(
         instrument_id=instrument.id,
         name_cn=instrument.name_cn,
@@ -45,7 +45,7 @@ def read_company_research(
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 
-def _facts(engine: Engine, cik: str, as_of: date) -> list[FactRecord]:
+def visible_sample_facts(engine: Engine, cik: str, as_of: date) -> list[FactRecord]:
     InstrumentRepository(engine).upsert_reference(reference_instruments())
     payload = load_fixture()
     parsed = [fact for fact in parse_companyfacts(payload) if fact.cik == cik]

@@ -9,6 +9,7 @@ import MetricsView from "../views/MetricsView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
 import MacroView from "../views/MacroView.vue"
 import QuotesView from "../views/QuotesView.vue"
+import ReportView from "../views/ReportView.vue"
 import SettingsView from "../views/SettingsView.vue"
 import SystemStatusView from "../views/SystemStatusView.vue"
 import UploadView from "../views/UploadView.vue"
@@ -25,6 +26,12 @@ export const routes = [
   { path: "/filings", name: "filings", component: FilingsView },
   { path: "/metrics", name: "metrics", component: MetricsView },
   { path: "/company", name: "company", component: CompanyView },
+  {
+    path: "/reports/:runId",
+    name: "report",
+    component: ReportView,
+    meta: { requiresAuth: true },
+  },
   { path: "/uploads", name: "uploads", component: UploadView, meta: { requiresAuth: true } },
   { path: "/login", name: "login", component: LoginView },
   { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },

@@ -1,4 +1,5 @@
 from app.db.models.account import RefreshSession, User, UserPreference
+from app.db.models.analysis import AnalysisRun, Report
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
 from app.db.models.financial import FinancialMetric
@@ -9,6 +10,7 @@ from app.db.models.sec import Filing, SecFact
 from app.db.models.worker_heartbeat import WorkerHeartbeat
 
 __all__ = [
+    "AnalysisRun",
     "DataProvider",
     "Document",
     "DocumentChunk",
@@ -20,6 +22,7 @@ __all__ = [
     "MacroSeries",
     "MarketBar",
     "RefreshSession",
+    "Report",
     "SyncJob",
     "SyncJobEvent",
     "TradingCalendar",

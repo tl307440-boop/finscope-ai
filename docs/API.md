@@ -108,6 +108,8 @@
 
 `GET /api/v1/analysis/model-status` 只说明模型是否已配置，不返回密钥或接口地址。未配置时不会生成 AI 段落。模型输出要经过 JSON 结构和引用校验；不存在的引用、材料里没有的数字，以及连续两次无效 JSON，都会得到 `analysis_validation_failed`，不会被当成已核实。超时不会补写分析。
 
+`POST /api/v1/analysis/filing` 需要登录。它读取截止日之前已经入库的样例事实，计算两个报告期的变化，并检索该用户在截止日之前上传的文档。没有模型时只保存这些数字和申报号。模型输出未通过校验时，正文仍只保留已入库数字，状态为 `failed`。`GET /api/v1/analysis/runs/{runId}` 只返回当前用户自己的记录。
+
 管理员 `POST /api/v1/admin/akshare-syncs`。同一交易日的重复行只保留第一条。上游失败时 `rows_written` 为 0，已有 K 线不改。自动测试使用脚本响应，不访问外网。
 
 ## 同步任务
