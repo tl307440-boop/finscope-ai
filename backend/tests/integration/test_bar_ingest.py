@@ -158,6 +158,12 @@ def test_failed_ingest_and_bad_revision_do_not_replace_good_bar() -> None:
                 text("DELETE FROM instruments WHERE id = :instrument_id"),
                 {"instrument_id": instrument_id},
             )
+            # 探测用数据源也要清掉：漏了这一句，每跑一次集成就往 data_providers
+            # 里落一条 probe-xxxxxxxx，跑几十次之后数据中心页会列出一堆僵尸源。
+            connection.execute(
+                text("DELETE FROM data_providers WHERE id = :provider_id"),
+                {"provider_id": provider_id},
+            )
         engine.dispose()
 
 
