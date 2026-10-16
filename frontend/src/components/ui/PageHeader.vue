@@ -1,12 +1,11 @@
 <script setup lang="ts">
 /**
- * 页面标题区。效果图里每页顶部那条：大标题 + 同一行的副标题 + 右侧操作按钮 + 可选页签行。
+ * 页面标题区：大标题 + 同一行的副标题 + 右侧操作按钮 + 可选页签行。
  */
 withDefaults(
   defineProps<{
     title: string
     subtitle?: string
-    /** 右上角是否要一个「自定义看板」这类默认按钮，交给 actions 插槽更灵活 */
     dense?: boolean
   }>(),
   { subtitle: "", dense: false },
@@ -31,7 +30,7 @@ withDefaults(
 
 <style scoped>
 .page-header {
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 
 .row {
@@ -39,25 +38,28 @@ withDefaults(
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  min-height: 36px;
 }
 
 .titles {
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
 }
 
 h1 {
   margin: 0;
-  font-size: 26px;
+  font-size: 24px;
   font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-strong);
   white-space: nowrap;
 }
 
 .subtitle {
   margin: 0;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,7 +78,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 14px;
+  margin-top: 12px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 10px;
 }
@@ -89,6 +91,6 @@ h1 {
 }
 
 .dense {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 </style>

@@ -76,3 +76,28 @@ export function formatNumber(value: number | null, digits = 2): string {
   }
   return value.toFixed(digits)
 }
+
+/** 大额数值按中文量级缩写：1.2e10 → { text: "120.00", scale: "亿" }；小于 1 万原样保留。 */
+export function scaleAmount(value: number | null, digits = 2): { text: string; scale: string } {
+  if (value === null || !Number.isFinite(value)) {
+    return { text: "—", scale: "" }
+  }
+  const size = Math.abs(value)
+  const steps: [number, string][] = [
+    [1e12, "万亿"],
+    [1e8, "亿"],
+    [1e4, "万"],
+  ]
+  for (const [base, scale] of steps) {
+    if (size >= base) {
+      return { text: (value / base).toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits }), scale }
+    }
+  }
+  return { text: value.toLocaleString("zh-CN", { maximumFractionDigits: digits }), scale: "" }
+}
+
+/** scaleAmount 的字符串版：附带单位，例如 formatAmount(2.18e10, "美元") → "218.37 亿美元"。 */
+export function formatAmount(value: number | null, unit = "", digits = 2): string {
+  const { text, scale } = scaleAmount(value, digits)
+  return text === "—" ? text : `${text} ${scale}${unit}`.trim()
+}

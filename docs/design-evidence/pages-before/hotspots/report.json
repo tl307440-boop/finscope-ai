@@ -1,0 +1,41 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 2,
+        "examples": [
+          "div.state.empty「接口没有主题成分股数据：/api/v1/mark」（外层 section.card.tone-accent）",
+          "div.state.empty「没有可解读的合规公告：解读文本必须由带 cita」（外层 section.card.tone-violet）"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 7,
+        "examples": [
+          "span.pill.tone-accent「22 条」（3.87:1）",
+          "span.pill.tone-accent「2 条」（3.87:1）",
+          "span.pill.tone-accent「无法判断」（3.87:1）"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 1,
+        "examples": [
+          "a「东方财富信息股份有限公司关于子公司东方财富证券股」（每行约 55 字）"
+        ]
+      }
+    ]
+  }
+]

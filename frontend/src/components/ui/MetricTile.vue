@@ -39,10 +39,10 @@ withDefaults(
 
 <style scoped>
 .tile {
-  background: var(--panel-soft);
+  background: linear-gradient(180deg, rgb(96 140 220 / 7%), rgb(96 140 220 / 2%));
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
-  padding: 12px 14px;
+  padding: 11px 13px;
   min-width: 0;
 }
 
@@ -81,11 +81,15 @@ header {
 
 .value {
   margin: 6px 0 6px;
+  font-family: var(--font-num);
   font-size: 24px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.1;
+  color: var(--text-strong);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .value small {

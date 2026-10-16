@@ -99,6 +99,130 @@ def _cleanup(username: str) -> None:
     engine.dispose()
 
 
+def _has_bars(display_symbol: str) -> bool:
+    engine = create_db_engine(get_settings().database_url)
+    try:
+        with engine.connect() as connection:
+            count = connection.execute(
+                text(
+                    """
+                    SELECT count(*) FROM market_bars b
+                    JOIN instruments i ON i.id = b.instrument_id
+                    WHERE i.display_symbol = :symbol
+                    """
+                ),
+                {"symbol": display_symbol},
+            ).scalar_one()
+        return int(count) >= 120
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_rules_engine_runs_on_stored_data_and_settles_alpha() -> None:
+    if not _ready():
+        pytest.skip("PostgreSQL 不可用")
+    if not _has_bars("600519.SH"):
+        pytest.skip("本机还没有灌入 600519.SH 的日线")
+    username = f"t30-{uuid4().hex[:8]}"
+    engine = create_db_engine(get_settings().database_url)
+    AccountRepository(engine).create_user(
+        username=username,
+        email=f"{username}@example.com",
+        password_hash=PasswordService("test").hash("correct-password"),
+        role="researcher",
+    )
+    engine.dispose()
+    try:
+        with TestClient(create_app()) as client:
+            token = client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": "correct-password"},
+            ).json()["data"]["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            early = client.post(
+                "/api/v1/simulation/runs",
+                headers=headers,
+                json={"symbol": "600519.SH", "as_of": "2025-06-03", "holding_days": 30},
+            )
+            assert early.status_code == 200
+            first = early.json()["data"]
+            assert first["engine"] == "finscope-rules"
+            assert first["config"]["llm"] is False
+            assert "未调用语言模型" in first["engine_label"]
+            analysts = {item["analyst"]: item for item in first["detail"]["analysts"]}
+            assert set(analysts) == {"fundamental", "technical", "macro_news", "sentiment"}
+            assert analysts["fundamental"]["coverage"] == "unavailable"
+            for item in analysts["technical"]["findings"]:
+                assert item["citations"]
+                for cite in item["citations"]:
+                    assert cite["observed_at"] <= "2025-06-03"
+            assert first["detail"]["risks"]
+            assert "委托" in first["disclaimer"]
+
+            later = client.post(
+                "/api/v1/simulation/runs",
+                headers=headers,
+                json={"symbol": "600519.SH", "as_of": "2025-09-01", "holding_days": 30},
+            )
+            assert later.status_code == 200
+            memory = later.json()["data"]["detail"]["memory"]
+            if first["rating"] != "REVIEW":
+                assert memory, "持有期已走完的历史决策应进入决策记忆"
+                assert memory[0]["as_of"] == "2025-06-03"
+                assert memory[0]["verdict"] in {"accurate", "partially_accurate", "divergent"}
+
+            listed = client.get("/api/v1/simulation/runs", headers=headers).json()["data"]
+            assert len(listed["runs"]) == 2
+            report = client.get(
+                f"/api/v1/simulation/runs/{first['run_id']}/report", headers=headers
+            ).json()["data"]
+            assert "多空辩论" in report["markdown"]
+            settled = client.post(
+                f"/api/v1/simulation/runs/{first['run_id']}/backtest", headers=headers
+            ).json()["data"]
+            assert settled["quality_flag"] == "measured"
+            assert settled["benchmark_symbol"] == "000300.SH"
+            assert "excess_return" in settled
+            stream = client.get(
+                f"/api/v1/simulation/runs/{first['run_id']}/stream", headers=headers
+            )
+            assert "event: agent_signal" in stream.text
+            assert "event: simulation_completed" in stream.text
+
+            grid = client.post(
+                "/api/v1/simulation/experiments",
+                headers=headers,
+                json={
+                    "symbols": ["600519.SH"],
+                    "start": "2025-03-03",
+                    "end": "2025-06-30",
+                    "step": 20,
+                    "holding_days": 30,
+                },
+            )
+            assert grid.status_code == 200
+            body = grid.json()["data"]
+            assert body["samples"] > 0
+            assert [item["code"] for item in body["modes"]] == ["multi_agent", "technical_only"]
+
+            future = client.post(
+                "/api/v1/simulation/runs",
+                headers=headers,
+                json={"symbol": "600519.SH", "as_of": "2099-01-01"},
+            )
+            assert future.status_code == 422
+            if not (get_settings().llm_api_key and get_settings().llm_model):
+                blocked = client.post(
+                    "/api/v1/simulation/runs",
+                    headers=headers,
+                    json={"symbol": "600519.SH", "as_of": "2025-06-03", "engine": "tradingagents"},
+                )
+                assert blocked.status_code == 409
+    finally:
+        _cleanup(username)
+
+
 @pytest.mark.integration
 def test_mock_simulation_persists_rating_without_an_order() -> None:
     if not _ready():

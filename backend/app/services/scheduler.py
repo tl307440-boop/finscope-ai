@@ -57,6 +57,8 @@ from app.repositories.instruments import InstrumentRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.market_bars import MarketBarRepository
 from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
+from app.repositories.universe import UniverseRepository
+from app.services.data_sync import bars_window
 from app.services.pdf_upload import default_parser_version, parse_document_identity
 from app.services.sync_queue import dedupe_key_for
 from app.utils.time import utc_now
@@ -230,6 +232,50 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="来源无授权直接禁用，不生成任务",
             )
         )
+    if settings.scheduler_enable_cn_statements:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_cn_statements",
+                task_name="sync_cn_statements",
+                trigger=CronTrigger(
+                    hour=settings.scheduler_cn_statements_hour,
+                    minute=settings.scheduler_cn_statements_minute,
+                    timezone=zone,
+                ),
+                builder=build_cn_statement_tasks,
+                failure_policy="只刷新被关注过的 A 股；最多重试 2 次，失败保留上次入库的值",
+            )
+        )
+    if settings.scheduler_enable_us_bars:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_us_bars",
+                task_name="sync_us_bars",
+                trigger=CronTrigger(
+                    day_of_week="tue-sat",
+                    hour=settings.scheduler_us_bars_hour,
+                    minute=settings.scheduler_us_bars_minute,
+                    timezone=zone,
+                ),
+                builder=build_us_bar_tasks,
+                failure_policy="Tiingo 限额：每轮限量、轮流刷新；无 key 标 unavailable",
+            )
+        )
+    if settings.scheduler_enable_universe:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_universe",
+                task_name="sync_universe",
+                trigger=CronTrigger(
+                    day_of_week="sun",
+                    hour=settings.scheduler_universe_hour,
+                    minute=settings.scheduler_universe_minute,
+                    timezone=zone,
+                ),
+                builder=build_universe_tasks,
+                failure_policy="每周一次；失败保留上次清单，不删除已有证券",
+            )
+        )
     if settings.scheduler_enable_parse_document:
         # 上传后立即入队是主路径（见 parse_document_task）；这里只做兜底扫描，
         # 把「已落盘但没进队列」的文档补登记，撞上同一 sha256+parser_version 会被幂等键拦掉。
@@ -299,6 +345,19 @@ def register_jobs(
     return registered
 
 
+UNIVERSE_MIN_US = 1000
+
+
+def catch_up_universe(engine: Engine, settings: Settings) -> int:
+    """首次启动时清单还没灌（美股只有种子数据）就补登记一次，不用等到周日。"""
+
+    if not settings.scheduler_enable_universe:
+        return 0
+    if UniverseRepository(engine).count("US") >= UNIVERSE_MIN_US:
+        return 0
+    return enqueue_built(engine, settings, build_universe_tasks, "sync_universe")
+
+
 def enqueue_tasks(
     builder: Callable[[Engine, Settings, datetime], Sequence[ScheduledTask]],
     task_name: str,
@@ -363,20 +422,8 @@ def enqueue_built(
 
 
 def build_fred_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """每天 1 次宏观序列同步；未配置 FRED 密钥时标 unavailable。"""
+    """每天 1 次宏观序列同步；没有密钥时执行器走 FRED 公开 CSV（只有最新修订）。"""
 
-    if not settings.fred_api_key.strip():
-        return [
-            ScheduledTask(
-                task_name="sync_fred_series",
-                job_type="fred_series",
-                dedupe_key="fred:unavailable",
-                scope={},
-                provider_id=FRED_PROVIDER_ID,
-                failure_policy="超时/429 退避",
-                unavailable_reason="未配置 FRED_API_KEY，数据源不可用",
-            )
-        ]
     MacroRepository(engine).ensure_catalog()
     provider_id = _provider_id(engine, code="fred", name="FRED")
     end = now.date()
@@ -403,72 +450,166 @@ def build_fred_tasks(engine: Engine, settings: Settings, now: datetime) -> list[
 
 
 def build_a_stock_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """A 股收盘后延迟执行；非交易日不登记，交易日判断复用 trading_calendars。"""
+    """A 股日线：只补「被关注过」的标的，从最后一根日线的次日补到今天。
 
-    target = now.date() - timedelta(days=settings.scheduler_a_stock_lag_trading_days)
-    trade_date = ensure_trading_day(
-        InstrumentRepository(engine), settings.scheduler_cn_market_exchange, target
-    )
-    if trade_date is None:
-        # 日历里没有这段数据 => 无法确认是否交易日；跳过本轮，不猜。
-        logger.warning(
-            "scheduler skip task=sync_a_stock_bars reason=trading_calendar_unknown date=%s",
-            target.isoformat(),
-        )
-        return []
-    provider_id = MarketBarRepository(engine).ensure_akshare_provider()
-    adjustment = DEFAULT_ADJUSTMENT
+    不再依赖交易日历判断：日历只记录了开市日，周末与休市日是「未知」，按未知跳过会让
+    整条链路在日历用完后静默停摆。改为请求增量窗口——休市日上游返回空，worker 当作
+    「没有新交易日」成功收尾；真正的断更由新鲜度监控按最后一根日线报出来。
+    """
+
+    repository = UniverseRepository(engine)
+    today = now.date()
     tasks: list[ScheduledTask] = []
-    for item in DAILY_TARGETS:
-        if target_for(item.display_symbol) is None:
+    for company in repository.tracked_cn_bars():
+        if target_for(company.display_symbol) is None:
             continue
-        scope: dict[str, object] = {
-            "display_symbol": item.display_symbol,
-            "observation_start": trade_date.isoformat(),
-            "observation_end": trade_date.isoformat(),
-            "adjustment": adjustment,
-        }
-        tasks.append(
-            ScheduledTask(
-                task_name="sync_a_stock_bars",
-                job_type="akshare_daily",
-                # 幂等标识：provider + instrument + trade_date + adjustment
-                dedupe_key=dedupe_key_for("akshare_daily", _as_text_scope(scope)),
-                scope=scope,
-                provider_id=provider_id,
-                failure_policy="最多重试 3 次",
-                max_attempts=3,
-            )
-        )
+        window = bars_window(repository.last_bar_date(company.instrument_id), today)
+        if window is None:
+            continue
+        tasks.append(cn_bars_task(engine, company.display_symbol, window[0], window[1]))
     return tasks
 
 
+def cn_bars_task(engine: Engine, symbol: str, start: date, end: date) -> ScheduledTask:
+    provider_id = MarketBarRepository(engine).ensure_akshare_provider()
+    scope: dict[str, object] = {
+        "display_symbol": symbol,
+        "observation_start": start.isoformat(),
+        "observation_end": end.isoformat(),
+        "adjustment": DEFAULT_ADJUSTMENT,
+    }
+    return ScheduledTask(
+        task_name="sync_a_stock_bars",
+        job_type="akshare_daily",
+        # 幂等标识：provider + instrument + 窗口 + adjustment
+        dedupe_key=dedupe_key_for("akshare_daily", _as_text_scope(scope)),
+        scope=scope,
+        provider_id=provider_id,
+        failure_policy="最多重试 3 次",
+        max_attempts=3,
+    )
+
+
 def build_sec_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """SEC 申报：按公司登记任务，抓取由 worker 串行执行以遵守公平访问政策。"""
+    """SEC 财报：只刷新被关注过的美股，由 worker 串行执行以遵守公平访问政策。"""
 
     day = now.date().isoformat()
+    return [
+        sec_filings_task(engine, company.cik, company.display_symbol, day)
+        for company in UniverseRepository(engine).tracked_us()
+        if company.cik is not None
+    ]
+
+
+def sec_filings_task(engine: Engine, cik: str, symbol: str, day: str) -> ScheduledTask:
     provider_id = _provider_id(engine, code="sec", name="SEC EDGAR")
-    tasks: list[ScheduledTask] = []
-    for cik, symbol in _us_companies(engine):
-        scope: dict[str, object] = {
+    return ScheduledTask(
+        task_name="sync_us_sec_filings",
+        job_type="sec_filings",
+        # 幂等标识：company + 日期（同一天重复触发只留一条活跃任务）
+        dedupe_key=_sec_key(provider_id, cik, day),
+        scope={
             "cik": cik,
             "display_symbol": symbol,
             "observation_start": day,
             "observation_end": day,
-        }
-        tasks.append(
-            ScheduledTask(
-                task_name="sync_us_sec_filings",
-                job_type="sec_filings",
-                # 幂等标识：company + filing accession（accession 由 worker 抓到时回填）
-                dedupe_key=_sec_key(provider_id, cik, day),
-                scope=scope,
-                provider_id=provider_id,
-                failure_policy="遵守 SEC 公平访问政策：串行限速，带 User-Agent",
-                max_attempts=2,
-            )
-        )
+        },
+        provider_id=provider_id,
+        failure_policy="遵守 SEC 公平访问政策：串行限速，带 User-Agent",
+        max_attempts=2,
+    )
+
+
+def build_cn_statement_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    day = now.date().isoformat()
+    return [
+        cn_statements_task(engine, company.display_symbol, day)
+        for company in UniverseRepository(engine).tracked_cn_stocks()
+    ]
+
+
+def cn_statements_task(engine: Engine, symbol: str, day: str) -> ScheduledTask:
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="eastmoney_f10",
+        name="A股财报（东方财富 F10）",
+        enabled=True,
+        config_public={"upstream": "https://datacenter.eastmoney.com", "credential": "none"},
+    )
+    return ScheduledTask(
+        task_name="sync_cn_statements",
+        job_type="cn_statements",
+        dedupe_key=f"cn_statements:{symbol}:{day}",
+        scope={"display_symbol": symbol, "observation_start": day, "observation_end": day},
+        provider_id=provider_id,
+        failure_policy="最多重试 2 次，失败保留上次入库的值",
+        max_attempts=2,
+    )
+
+
+def build_us_bar_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
+    """美股日线：按最久未更新轮流，每轮限量，给 Tiingo 免费档（每小时 50 次）留余量。"""
+
+    repository = UniverseRepository(engine)
+    today = now.date()
+    tasks: list[ScheduledTask] = []
+    for company in repository.tracked_us_by_oldest_bar(settings.scheduler_us_bars_max_symbols):
+        window = bars_window(repository.last_bar_date(company.instrument_id), today)
+        if window is None:
+            continue
+        tasks.append(us_bars_task(engine, settings, company.display_symbol, window[0], window[1]))
     return tasks
+
+
+def us_bars_task(
+    engine: Engine, settings: Settings, symbol: str, start: date, end: date
+) -> ScheduledTask:
+    configured = bool(settings.tiingo_api_key.strip())
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="tiingo",
+        name="美股日线（Tiingo EOD）",
+        enabled=configured,
+        config_public={"upstream": "https://api.tiingo.com", "credential": "api_key"},
+    )
+    return ScheduledTask(
+        task_name="sync_us_bars",
+        job_type="tiingo_daily",
+        dedupe_key=f"tiingo:{symbol}:{start.isoformat()}:{end.isoformat()}",
+        scope={
+            "display_symbol": symbol,
+            "observation_start": start.isoformat(),
+            "observation_end": end.isoformat(),
+        },
+        provider_id=provider_id,
+        failure_policy="限额用尽时留在队列重试，不写空值",
+        max_attempts=2,
+        unavailable_reason=None if configured else "未配置 TIINGO_API_KEY，美股日线不可用",
+    )
+
+
+def build_universe_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
+    """全市场证券清单：美股（SEC）与 A 股（巨潮）各一条，每周一次。"""
+
+    day = now.date().isoformat()
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="universe",
+        name="证券清单（SEC / 巨潮）",
+        enabled=True,
+        config_public={"upstreams": ["https://www.sec.gov", "https://www.cninfo.com.cn"]},
+    )
+    return [
+        ScheduledTask(
+            task_name="sync_universe",
+            job_type=job_type,
+            dedupe_key=f"universe:{market}:{day}",
+            scope={"display_symbol": f"universe-{market}", "observation_end": day},
+            provider_id=provider_id,
+            failure_policy="每周一次；失败保留上次清单",
+            max_attempts=2,
+        )
+        for market, job_type in (("us", "us_universe"), ("cn", "cn_universe"))
+    ]
 
 
 def build_financial_metrics_tasks(

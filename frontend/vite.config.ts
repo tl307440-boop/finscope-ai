@@ -1,25 +1,29 @@
 import vue from "@vitejs/plugin-vue"
 import { defineConfig } from "vitest/config"
 
+declare const process: { env: Record<string, string | undefined> }
+
+const API_TARGET = process.env.FINSCOPE_API_TARGET ?? "http://127.0.0.1:8000"
+
 export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/docs": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/redoc": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/openapi.json": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
     },
@@ -29,19 +33,19 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/docs": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/redoc": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
       "/openapi.json": {
-        target: "http://127.0.0.1:8000",
+        target: API_TARGET,
         changeOrigin: true,
       },
     },

@@ -8,20 +8,19 @@
  *  - GET  /api/v1/assistant/sessions/{id}/messages            历史消息（role/content/completion_status）
  *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 逐段回传 {"delta"} / {"done"}
  *  - POST /api/v1/assistant/sessions/{id}/messages/{cid}/cancel  取消未完成的回答
- *  - GET  /api/v1/analysis/model-status                       模型是否已配置（未配置时把原因原样显示）
+ *  - GET  /api/v1/analysis/model-status                       模型是否已配置
  *  - GET  /api/v1/watchlists / POST /api/v1/watchlists        自选分组
  *  - GET  /api/v1/instruments/search                          加入自选时解析代码
  *  - GET  /api/v1/market/bars/{instrument_id}                 自选股最新价与涨跌幅
  *  - GET  /api/v1/macro/series[/{code}/observations]          宏观指标与迷你图
  *  - GET  /api/v1/documents                                   我上传的文档
  *
- * 没有 LLM key 时后端 rules_reply 只回一句「未配置模型…」，正文就是那一句；
- * 工具调用、参考来源、相关图表都按接口实际返回渲染，取不到就显示对应空态。
+ * 没有模型时后端只回一句固定说明；示例问题只填进输入框，不会在前端生成任何回答。
  */
 import { computed, nextTick, onMounted, ref } from "vue"
+import { ChatDotRound, Cpu } from "@element-plus/icons-vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
-import { modelNotice } from "../api/modelStatus"
 import { VChart } from "../charts"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
@@ -63,7 +62,9 @@ interface MacroTile {
   code: string
   label: string
   unit: string
+  percent: boolean
   value: number | null
+  change: number | null
   observationDate: string
   spark: number[]
 }
@@ -84,6 +85,30 @@ interface TextPart {
   text: string
 }
 
+/** 示例问题都能用库里已有的数据回答；点击只填入输入框，由用户决定是否发送。 */
+const EXAMPLES = [
+  "苹果最近两个财年的营业收入和净利润有什么变化？",
+  "银行、非银金融、食品饮料相对沪深300的强弱如何？",
+  "美国10年期与2年期国债收益率最近怎么走？",
+  "贵州茅台近一个月的收盘价走势怎样？",
+]
+
+/** 宏观栏优先放利率与就业，量纲一致才能放进同一张走势图。 */
+const PREFERRED_SERIES = ["DGS10", "DGS2", "FEDFUNDS", "UNRATE"]
+
+const UNIT_NAMES: Record<string, string> = {
+  Percent: "%",
+  "Billions of Dollars": "十亿美元",
+  "Thousands of Persons": "千人",
+}
+
+const DOC_STATUS: Record<string, { text: string; tone: "ok" | "warn" | "danger" | "muted" | "accent" }> = {
+  queued: { text: "排队解析", tone: "muted" },
+  parsing: { text: "解析中", tone: "accent" },
+  parsed: { text: "已解析", tone: "ok" },
+  failed: { text: "解析失败", tone: "danger" },
+}
+
 const phase = ref<"loading" | "ready" | "error">("loading")
 const message = ref("")
 const question = ref("")
@@ -95,15 +120,14 @@ const streaming = ref(false)
 const activeClientId = ref("")
 const errorText = ref("")
 const threadEl = ref<HTMLElement | null>(null)
+const composerEl = ref<{ focus: () => void } | null>(null)
 
-/** 模型状态：未配置时把后端给的原因原样显示。 */
 const modelAvailable = ref<boolean | null>(null)
 const modelMessage = ref("")
 
-/** 右侧数据栏单独加载，不阻塞问答本身。 */
+/** 右侧上下文栏单独加载，不阻塞问答本身。 */
 const dataPhase = ref<"loading" | "ready" | "error">("loading")
 const dataError = ref("")
-const macroNotice = ref("")
 const macroTiles = ref<MacroTile[]>([])
 const macroSeriesCount = ref(0)
 const seriesLines = ref<SeriesLine[]>([])
@@ -114,9 +138,32 @@ const stockMessage = ref("")
 const docs = ref<DocRow[]>([])
 const dataUpdatedAt = ref("")
 
+const modelTone = computed<"ok" | "warn" | "muted">(() =>
+  modelAvailable.value === null ? "muted" : modelAvailable.value ? "ok" : "warn",
+)
+const modelLabel = computed<string>(() =>
+  modelAvailable.value === null ? "模型状态未知" : modelAvailable.value ? "模型已接入" : "模型不可用",
+)
+
 async function refreshToken(): Promise<string | null> {
   const restored = await restoreSession()
   return restored ? session.accessToken : null
+}
+
+async function createSession(): Promise<void> {
+  const created = await authorizedFetch(
+    "/api/v1/assistant/sessions",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "研究问答" }),
+    },
+    session.accessToken,
+    refreshToken,
+  )
+  const createdBody = dataOf(await readJson(created))
+  sessionId.value = asString(createdBody?.id) ?? ""
+  sessionTitle.value = asString(createdBody?.title) ?? "研究问答"
 }
 
 async function load(): Promise<void> {
@@ -133,32 +180,33 @@ async function load(): Promise<void> {
       session.accessToken,
       refreshToken,
     )
-    const listedBody = await readJson(listed)
-    const first = listOf(dataOf(listedBody)?.sessions)[0] ?? null
+    const first = listOf(dataOf(await readJson(listed))?.sessions)[0] ?? null
     const existing = asString(first?.id)
     if (existing) {
       sessionId.value = existing
       sessionTitle.value = asString(first?.title) ?? "研究问答"
     } else {
-      const created = await authorizedFetch(
-        "/api/v1/assistant/sessions",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: "研究问答" }),
-        },
-        session.accessToken,
-        refreshToken,
-      )
-      const createdBody = dataOf(await readJson(created))
-      sessionId.value = asString(createdBody?.id) ?? ""
-      sessionTitle.value = asString(createdBody?.title) ?? "研究问答"
+      await createSession()
     }
     await loadMessages()
     phase.value = "ready"
   } catch {
-    message.value = "无法连接接口"
+    message.value = "网络连接失败，请稍后重试"
     phase.value = "error"
+  }
+}
+
+/** 新对话：后端新建一条问答记录，旧记录保留在服务器上。 */
+async function startNew(): Promise<void> {
+  if (sending.value || !session.accessToken) {
+    return
+  }
+  try {
+    await createSession()
+    turns.value = []
+    errorText.value = ""
+  } catch {
+    errorText.value = "新建对话失败，请稍后重试"
   }
 }
 
@@ -203,6 +251,11 @@ async function scrollToLatest(): Promise<void> {
   }
 }
 
+function useExample(text: string): void {
+  question.value = text
+  void nextTick(() => composerEl.value?.focus())
+}
+
 /** 提问：POST 拿 SSE，逐段把 delta 追加到临时气泡。 */
 async function ask(): Promise<void> {
   const text = question.value.trim()
@@ -219,20 +272,8 @@ async function ask(): Promise<void> {
   activeClientId.value = clientMessageId
   turns.value = [
     ...turns.value,
-    {
-      id: clientMessageId,
-      clientMessageId,
-      role: "user",
-      content: text,
-      completionStatus: "completed",
-    },
-    {
-      id: clientMessageId,
-      clientMessageId,
-      role: "assistant",
-      content: "",
-      completionStatus: "streaming",
-    },
+    { id: clientMessageId, clientMessageId, role: "user", content: text, completionStatus: "completed" },
+    { id: clientMessageId, clientMessageId, role: "assistant", content: "", completionStatus: "streaming" },
   ]
   question.value = ""
   await scrollToLatest()
@@ -248,19 +289,28 @@ async function ask(): Promise<void> {
       refreshToken,
     )
     if (!response.ok) {
-      errorText.value = `无法发送：后端返回 ${response.status}`
+      errorText.value = `发送失败（状态码 ${response.status}），请稍后重试`
       turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
+      question.value = text
       return
     }
     await readStream(response)
     await loadMessages()
   } catch {
-    errorText.value = "无法连接接口"
+    errorText.value = "网络连接失败，问题没有发出"
     turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
+    question.value = text
   } finally {
     sending.value = false
     streaming.value = false
     activeClientId.value = ""
+  }
+}
+
+function onComposerKey(event: KeyboardEvent): void {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault()
+    void ask()
   }
 }
 
@@ -314,7 +364,7 @@ function parseEvent(raw: string): Record<string, unknown> | null {
 }
 
 function appendDelta(part: string): void {
-  const target = turns.value.find((turn) => turn.id === activeClientId.value)
+  const target = turns.value.find((turn) => turn.id === activeClientId.value && turn.role === "assistant")
   if (!target) {
     return
   }
@@ -332,7 +382,7 @@ function stop(): void {
   if (last && last.role === "assistant" && last.completionStatus === "streaming") {
     turns.value = rows.slice(0, -1)
   }
-  errorText.value = "已停止显示。后端是先算完整段回答再分块回传，所以停止只能撤销这段还没落库的显示。"
+  errorText.value = "已停止显示这段回答"
 }
 
 /** 重新生成：拿最近一条提问重新 POST，后端会按新的 client_message_id 存成新的一条。 */
@@ -399,6 +449,10 @@ function citeParts(line: string): TextPart[] {
   return parts.length ? parts : [{ cite: false, text: line }]
 }
 
+function docStatus(status: string): { text: string; tone: "ok" | "warn" | "danger" | "muted" | "accent" } {
+  return DOC_STATUS[status] ?? { text: "处理中", tone: "muted" }
+}
+
 async function loadSidebar(): Promise<void> {
   if (!session.accessToken) {
     return
@@ -406,12 +460,11 @@ async function loadSidebar(): Promise<void> {
   dataPhase.value = "loading"
   dataError.value = ""
   try {
-    await loadModelStatus()
-    await Promise.all([loadMacro(), loadStocks(), loadDocs()])
-    dataUpdatedAt.value = formatMoment(new Date())
+    await Promise.all([loadModelStatus(), loadMacro(), loadStocks(), loadDocs()])
+    dataUpdatedAt.value = formatMoment(new Date().toISOString())
     dataPhase.value = "ready"
   } catch {
-    dataError.value = "无法连接接口"
+    dataError.value = "网络连接失败，研究上下文暂时读不到"
     dataPhase.value = "error"
   }
 }
@@ -427,9 +480,8 @@ async function loadModelStatus(): Promise<void> {
     return
   }
   const data = dataOf(await readJson(response))
-  const available = data?.available === true
-  modelAvailable.value = available
-  modelMessage.value = modelNotice(asString(data?.message), available)
+  modelAvailable.value = data?.available === true
+  modelMessage.value = asString(data?.message) ?? ""
 }
 
 async function loadMacro(): Promise<void> {
@@ -439,33 +491,39 @@ async function loadMacro(): Promise<void> {
     session.accessToken,
     refreshToken,
   )
-  const data = dataOf(await readJson(response))
-  macroNotice.value = asString(data?.notice) ?? ""
-  const all = listOf(data?.series)
+  const all = listOf(dataOf(await readJson(response))?.series)
   macroSeriesCount.value = all.length
-  const picked = all.slice(0, 4)
+  const ranked = [
+    ...PREFERRED_SERIES.flatMap((code) => all.filter((item) => asString(item.series_code) === code)),
+    ...all.filter((item) => !PREFERRED_SERIES.includes(asString(item.series_code) ?? "")),
+  ].slice(0, 4)
+  const loaded = await Promise.all(
+    ranked.map(async (item) => {
+      const code = asString(item.series_code)
+      return code ? { item, code, page: await loadSeries(code) } : null
+    }),
+  )
   const tiles: MacroTile[] = []
   const lines: SeriesLine[] = []
-  for (const item of picked) {
-    const code = asString(item.series_code)
-    if (!code) {
+  for (const entry of loaded) {
+    if (!entry?.page) {
       continue
     }
-    const label = asString(item.name_cn) ?? code
-    const page = await loadSeries(code)
-    if (!page) {
-      continue
-    }
+    const { item, code, page } = entry
+    const rawUnit = asString(item.base_unit) ?? ""
     const last = page.values.length - 1
+    const label = asString(item.name_cn) ?? code
     tiles.push({
       code,
       label,
-      unit: asString(item.base_unit) ?? "",
-      value: last >= 0 ? page.values[last] : null,
-      observationDate: last >= 0 ? page.dates[last] : "",
-      spark: page.values,
+      unit: UNIT_NAMES[rawUnit] ?? "",
+      percent: rawUnit === "Percent",
+      value: last >= 0 ? (page.values[last] ?? null) : null,
+      change: last >= 1 ? (page.values[last] ?? 0) - (page.values[last - 1] ?? 0) : null,
+      observationDate: last >= 0 ? (page.dates[last] ?? "") : "",
+      spark: page.values.slice(-30),
     })
-    if (page.values.length >= 2 && lines.length < 2) {
+    if (rawUnit === "Percent" && page.values.length >= 2 && lines.length < 2) {
       lines.push({ name: label, dates: page.dates, values: page.values })
     }
   }
@@ -483,7 +541,7 @@ async function loadSeries(code: string): Promise<{ dates: string[]; values: numb
   if (!response.ok) {
     return null
   }
-  const rows = listOf(dataOf(await readJson(response))?.observations).slice(-24)
+  const rows = listOf(dataOf(await readJson(response))?.observations).slice(-120)
   const dates: string[] = []
   const values: number[] = []
   for (const row of rows) {
@@ -503,42 +561,24 @@ const macroChartOption = computed(() => {
   if (!lines.length) {
     return null
   }
+  const base = lines[0]
   return {
-    grid: { left: 48, right: 12, top: 26, bottom: 24 },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "#121e30",
-      borderColor: "rgba(231,237,248,0.12)",
-      textStyle: { color: "#e7edf8", fontSize: 12 },
-    },
-    legend: {
-      top: 0,
-      icon: "circle",
-      itemWidth: 8,
-      itemHeight: 8,
-      textStyle: { color: "#95a6be", fontSize: 11 },
-    },
-    xAxis: {
-      type: "category",
-      data: lines[0].dates,
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      axisLine: { lineStyle: { color: "rgba(231,237,248,0.12)" } },
-      axisTick: { show: false },
-    },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      splitLine: { lineStyle: { color: "rgba(231,237,248,0.06)" } },
-    },
-    series: lines.map((line) => ({
-      name: line.name,
-      type: "line",
-      smooth: true,
-      showSymbol: false,
-      lineStyle: { width: 2 },
-      data: line.values,
-    })),
+    grid: { left: 36, right: 10, top: 28, bottom: 22 },
+    tooltip: { trigger: "axis", valueFormatter: (value: number) => `${value}%` },
+    legend: { top: 0, left: 0 },
+    xAxis: { type: "category", data: base?.dates ?? [], axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", scale: true, axisLabel: { formatter: "{value}%" } },
+    series: lines.map((line) => {
+      const byDate = new Map(line.dates.map((date, index) => [date, line.values[index]]))
+      return {
+        name: line.name,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        lineStyle: { width: 2 },
+        data: (base?.dates ?? []).map((date) => byDate.get(date) ?? null),
+      }
+    }),
   }
 })
 
@@ -556,23 +596,25 @@ async function loadStocks(): Promise<void> {
     return
   }
   watchGroupId.value = asString(group.id) ?? ""
-  const built: StockRow[] = []
-  for (const row of listOf(group.items).slice(0, 8)) {
-    const instrumentId = asString(row.instrument_id)
-    if (!instrumentId) {
-      continue
-    }
-    const bar = await loadLatestBar(instrumentId)
-    built.push({
-      instrumentId,
-      symbol: asString(row.display_symbol) ?? "—",
-      nameCn: asString(row.name_cn) ?? "—",
-      latestClose: bar.close,
-      latestDate: bar.date,
-      simpleReturn: bar.simpleReturn,
-    })
-  }
-  stocks.value = built
+  const rows = listOf(group.items).slice(0, 8)
+  const built = await Promise.all(
+    rows.map(async (row): Promise<StockRow | null> => {
+      const instrumentId = asString(row.instrument_id)
+      if (!instrumentId) {
+        return null
+      }
+      const bar = await loadLatestBar(instrumentId)
+      return {
+        instrumentId,
+        symbol: asString(row.display_symbol) ?? "—",
+        nameCn: asString(row.name_cn) ?? "—",
+        latestClose: bar.close,
+        latestDate: bar.date,
+        simpleReturn: bar.simpleReturn,
+      }
+    }),
+  )
+  stocks.value = built.filter((row): row is StockRow => row !== null)
 }
 
 async function loadLatestBar(
@@ -628,7 +670,7 @@ async function addSymbol(): Promise<void> {
   const hit = listOf(dataOf(await readJson(found))?.results)[0] ?? null
   const instrumentId = asString(hit?.id)
   if (!instrumentId) {
-    stockMessage.value = "暂无该证券"
+    stockMessage.value = "暂未收录该证券"
     return
   }
   const added = await authorizedFetch(
@@ -642,7 +684,7 @@ async function addSymbol(): Promise<void> {
     refreshToken,
   )
   if (!added.ok) {
-    stockMessage.value = "无法加入自选"
+    stockMessage.value = "加入自选失败，可能已经在列表里"
     return
   }
   symbolInput.value = ""
@@ -661,8 +703,7 @@ async function loadDocs(): Promise<void> {
     docs.value = []
     return
   }
-  const payload = await readJson(response)
-  docs.value = listOf(dataOf(payload)?.documents)
+  docs.value = listOf(dataOf(await readJson(response))?.documents)
     .slice(0, 5)
     .flatMap((row) => {
       const id = asString(row.id)
@@ -681,7 +722,7 @@ async function loadDocs(): Promise<void> {
     })
 }
 
-/** 模板里的「取消」走真正的 cancel 接口，用于后端还没落库的那条。 */
+/** 「取消这条回答」走真正的 cancel 接口，用于还没落库的那条。 */
 async function cancelPending(): Promise<void> {
   const clientId = pendingClientId.value
   if (!clientId || !sessionId.value || !session.accessToken) {
@@ -695,7 +736,7 @@ async function cancelPending(): Promise<void> {
     refreshToken,
   )
   if (!response.ok) {
-    errorText.value = "无法取消这条回答"
+    errorText.value = "这条回答已经完成，无法取消"
     return
   }
   await loadMessages()
@@ -708,50 +749,55 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page stack">
+  <main class="page">
     <PageHeader
       title="AI 智能投研助手"
-      subtitle="基于全市场数据与专业研究框架，提供可验证、可追溯的投研分析"
+      subtitle="围绕已入库的宏观、行情与财报数据提问，回答可追溯到数据来源"
     >
       <template #actions>
-        <StatusPill
-          v-if="modelAvailable !== null"
-          :text="modelAvailable ? '模型已配置' : '模型未配置'"
-          :tone="modelAvailable ? 'ok' : 'warn'"
-          dot
-        />
-        <StatusPill v-else text="模型状态未知" tone="muted" />
+        <StatusPill :text="modelLabel" :tone="modelTone" dot />
+        <el-button :disabled="phase !== 'ready' || sending" @click="startNew">新对话</el-button>
       </template>
     </PageHeader>
 
-    <el-alert
-      v-if="modelMessage"
-      :type="modelAvailable ? 'info' : 'warning'"
-      :closable="false"
-      show-icon
-      :title="modelMessage"
-    />
-
-    <div class="grid-1-2">
-      <!-- 左：问答 -->
-      <PanelCard
-        title="研究问答"
-        :info="`当前会话：${sessionTitle || '—'}`"
-        compact
-      >
+    <div class="grid-2-1">
+      <PanelCard :title="sessionTitle || '研究问答'" info="每次提问都会保存在你的问答记录里" flush>
+        <template #icon><ChatDotRound /></template>
         <template #actions>
-          <span v-if="phase === 'ready'" class="muted msg-count">共 {{ turns.length }} 条消息</span>
+          <span v-if="phase === 'ready' && turns.length" class="muted">共 {{ turns.length }} 条消息</span>
         </template>
 
         <StateBlock v-if="phase === 'loading'" state="loading" :rows="4" />
-
         <StateBlock v-else-if="phase === 'error'" state="error" :message="message" @retry="load" />
 
         <div v-else class="chat">
+          <div v-if="modelAvailable === false" class="model-banner" role="status">
+            <Cpu class="banner-icon" aria-hidden="true" />
+            <div>
+              <strong>模型暂不可用</strong>
+              <p>{{ modelMessage || "未配置模型" }}。提问仍会保存，但只会收到一句系统说明，不会出现分析正文；管理员接入模型后即可使用。</p>
+            </div>
+          </div>
+
           <div ref="threadEl" class="thread">
-            <p v-if="!turns.length" class="muted thread-empty">
-              还没有提问。未配置模型时后端只回一句说明，不会编造财务数字。
-            </p>
+            <section v-if="!turns.length" class="welcome">
+              <span class="avatar large" aria-hidden="true">AI</span>
+              <h3>想研究点什么？</h3>
+              <p class="muted">
+                可以问宏观利率、行业强弱、公司财报或个股走势。点一个示例填入输入框，修改后再发送。
+              </p>
+              <div class="examples">
+                <button
+                  v-for="item in EXAMPLES"
+                  :key="item"
+                  type="button"
+                  class="example"
+                  @click="useExample(item)"
+                >
+                  {{ item }}
+                </button>
+              </div>
+            </section>
 
             <div
               v-for="turn in turns"
@@ -776,8 +822,13 @@ onMounted(() => {
                     tone="muted"
                   />
                   <StatusPill
+                    v-else-if="turn.role === 'assistant' && modelAvailable === false"
+                    text="系统说明"
+                    tone="warn"
+                  />
+                  <StatusPill
                     v-else-if="turn.role === 'assistant' && turn.completionStatus === 'completed'"
-                    text="思考完成"
+                    text="回答完成"
                     tone="ok"
                   />
                 </header>
@@ -785,7 +836,7 @@ onMounted(() => {
                 <p v-if="turn.role === 'user'" class="doc-text user-text">{{ turn.content }}</p>
 
                 <template v-else>
-                  <p v-if="!turn.content" class="muted">正在等待后端返回内容…</p>
+                  <p v-if="!turn.content" class="muted">正在生成…</p>
                   <template v-else>
                     <template v-for="(block, index) in bodyBlocks(turn.content)" :key="index">
                       <h3 v-if="block.kind === 'section'" class="doc-section">{{ block.text }}</h3>
@@ -810,7 +861,10 @@ onMounted(() => {
                     <el-button size="small" @click="stop">停止</el-button>
                     <el-button size="small" @click="cancelPending">取消这条回答</el-button>
                   </footer>
-                  <footer v-else-if="turn.completionStatus === 'completed'" class="reply-actions">
+                  <footer
+                    v-else-if="turn.completionStatus === 'completed' && modelAvailable !== false"
+                    class="reply-actions"
+                  >
                     <el-button size="small" text @click="regenerate">重新生成</el-button>
                   </footer>
                 </template>
@@ -818,31 +872,25 @@ onMounted(() => {
             </div>
           </div>
 
-          <p v-if="errorText" class="muted error-line" role="status">{{ errorText }}</p>
-
           <form class="composer" @submit.prevent="ask">
             <el-input
+              ref="composerEl"
               v-model="question"
               type="textarea"
-              :rows="2"
+              :rows="3"
               resize="none"
               maxlength="2000"
-              placeholder="继续提问，支持宏观、行业、公司、策略等多维度问题…"
+              placeholder="输入问题，支持宏观、行业、公司、策略等多维度提问…"
+              @keydown="onComposerKey"
             />
             <div class="composer-foot">
-              <el-switch
-                disabled
-                active-text="联网搜索"
-                title="后端没有联网检索通道，这个开关固定关闭；未配置模型时也不会用自己的知识补一段分析。"
-              />
+              <span class="muted hint">
+                <template v-if="errorText"><span class="error-line" role="status">{{ errorText }}</span></template>
+                <template v-else>Enter 发送 · Shift + Enter 换行</template>
+              </span>
               <div class="composer-right">
                 <el-button v-if="streaming" @click="stop">停止</el-button>
-                <el-button
-                  type="primary"
-                  native-type="submit"
-                  :loading="sending"
-                  :disabled="sending"
-                >
+                <el-button type="primary" native-type="submit" :loading="sending" :disabled="sending || !question.trim()">
                   发送
                 </el-button>
               </div>
@@ -851,68 +899,69 @@ onMounted(() => {
         </div>
       </PanelCard>
 
-      <!-- 右：本次分析使用的数据 -->
-      <PanelCard title="本次分析使用的数据" compact>
+      <PanelCard title="研究上下文" info="可在提问时参考的已入库数据；模型接入后才会被自动引用">
         <template #actions>
-          <span class="muted side-asof">数据更新时间：{{ dataUpdatedAt || "—" }}</span>
+          <span class="muted side-asof">更新于 {{ dataUpdatedAt || "—" }}</span>
         </template>
 
         <StateBlock v-if="dataPhase === 'loading'" state="loading" :rows="5" />
-        <StateBlock
-          v-else-if="dataPhase === 'error'"
-          state="error"
-          :message="dataError"
-          @retry="loadSidebar"
-        />
+        <StateBlock v-else-if="dataPhase === 'error'" state="error" :message="dataError" @retry="loadSidebar" />
 
-        <div v-else class="stack side-body">
-          <!-- 宏观指标 -->
+        <div v-else class="side-body">
           <section class="side-block">
             <header class="side-head">
-              <h3>宏观指标<template v-if="macroSeriesCount">（{{ macroSeriesCount }}）</template></h3>
+              <h3>宏观指标<span v-if="macroSeriesCount" class="count">（{{ macroSeriesCount }}）</span></h3>
               <router-link class="more" to="/macro/us">查看全部 ›</router-link>
             </header>
-            <p v-if="macroNotice" class="muted side-note">{{ macroNotice }}</p>
-            <div v-if="macroTiles.length" class="grid-2">
+            <div v-if="macroTiles.length" class="grid-2 tiles">
               <MetricTile
                 v-for="tile in macroTiles"
                 :key="tile.code"
                 :label="tile.label"
-                :value="tile.value"
+                :value="tile.value === null ? null : tile.value.toFixed(2)"
                 :period="tile.observationDate"
                 :unit="tile.unit"
+                delta-label="较上期"
               >
-                <template #chart>
-                  <MiniSpark
-                    :points="tile.spark"
-                    kind="line"
-                    tone="accent"
-                    :width="120"
-                    :height="34"
+                <template #delta>
+                  <DeltaValue
+                    :value="tile.change"
+                    :suffix="tile.percent ? ' pct' : ''"
+                    :colored="false"
+                    signed
+                    size="sm"
                   />
+                </template>
+                <template #chart>
+                  <MiniSpark :points="tile.spark" kind="line" tone="accent" :width="72" :height="26" />
                 </template>
               </MetricTile>
             </div>
-            <p v-else class="muted side-note">还没有同步到观测值的宏观序列，这里不填演示数字。</p>
+            <p v-else class="muted side-note">宏观序列还没有同步到观测值，需管理员在数据中心同步 FRED。</p>
           </section>
 
-          <!-- 相关股票 -->
           <section class="side-block">
             <header class="side-head">
-              <h3>相关股票<template v-if="stocks.length">（{{ stocks.length }}）</template></h3>
-              <router-link class="more" to="/watchlist">查看全部 ›</router-link>
+              <h3>自选股票<span v-if="stocks.length" class="count">（{{ stocks.length }}）</span></h3>
+              <router-link class="more" to="/watchlist">管理自选 ›</router-link>
             </header>
-            <el-table v-if="stocks.length" :data="stocks" size="small" class="side-table">
-              <el-table-column prop="symbol" label="代码" width="92" />
-              <el-table-column prop="nameCn" label="公司简称" min-width="96" />
+            <el-table v-if="stocks.length" :data="stocks" size="small">
+              <el-table-column label="证券" min-width="120">
+                <template #default="scope">
+                  <router-link class="stock-link" :to="`/market/stocks/${scope.row.symbol}`">
+                    {{ scope.row.nameCn }}
+                  </router-link>
+                  <span class="muted stock-code">{{ scope.row.symbol }}</span>
+                </template>
+              </el-table-column>
               <el-table-column label="最新价" width="86" align="right">
                 <template #default="scope">
-                  <span class="tabular">
-                    {{ scope.row.latestClose === null ? "—" : scope.row.latestClose }}
+                  <span class="tabular" :title="scope.row.latestDate ? `收盘日 ${scope.row.latestDate}` : ''">
+                    {{ scope.row.latestClose === null ? "—" : scope.row.latestClose.toFixed(2) }}
                   </span>
                 </template>
               </el-table-column>
-              <el-table-column label="涨跌幅" width="94" align="right">
+              <el-table-column label="涨跌幅" width="86" align="right">
                 <template #default="scope">
                   <DeltaValue
                     :value="scope.row.simpleReturn === null ? null : scope.row.simpleReturn * 100"
@@ -921,65 +970,36 @@ onMounted(() => {
                   />
                 </template>
               </el-table-column>
-              <el-table-column label="数据日期" width="104">
-                <template #default="scope">
-                  <span class="muted">{{ scope.row.latestDate || "—" }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="相关性" width="96">
-                <template #default>
-                  <StatusPill text="未计算" tone="muted" />
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="96">
-                <template #default="scope">
-                  <router-link class="row-action" :to="`/market/stocks/${scope.row.symbol}`">
-                    查看
-                  </router-link>
-                </template>
-              </el-table-column>
             </el-table>
-            <p v-else class="muted side-note">
-              自选分组是空的。搜索代码加入自选后，这里显示已入库的收盘价与涨跌幅。
-            </p>
+            <p v-else class="muted side-note">自选还是空的。加入后，这里显示最新收盘价与涨跌幅。</p>
             <form class="inline-form" @submit.prevent="addSymbol">
-              <el-input v-model="symbolInput" size="small" placeholder="代码或名称，例如 002371" />
-              <el-button size="small" native-type="submit">加入自选</el-button>
+              <el-input v-model="symbolInput" size="small" placeholder="代码或名称，例如 600519" />
+              <el-button size="small" native-type="submit" :disabled="!symbolInput.trim()">加入自选</el-button>
             </form>
             <p v-if="stockMessage" class="muted side-note" role="status">{{ stockMessage }}</p>
           </section>
 
-          <!-- 相关研报与文档 -->
           <section class="side-block">
             <header class="side-head">
-              <h3>相关研报与文档<template v-if="docs.length">（{{ docs.length }}）</template></h3>
-              <router-link class="more" to="/data-center">查看全部 ›</router-link>
+              <h3>我的文档<span v-if="docs.length" class="count">（{{ docs.length }}）</span></h3>
             </header>
             <ul v-if="docs.length" class="doc-rows">
               <li v-for="doc in docs" :key="doc.id">
                 <span class="doc-title">{{ doc.title }}</span>
                 <span class="muted doc-meta">{{ doc.uploadedAt }}</span>
-                <StatusPill :text="doc.parseStatus || '—'" tone="muted" />
+                <StatusPill :text="docStatus(doc.parseStatus).text" :tone="docStatus(doc.parseStatus).tone" />
               </li>
             </ul>
-            <p v-else class="muted side-note">还没有上传过文档，这里不展示示例研报。</p>
+            <p v-else class="muted side-note">还没有上传文档。在公司页上传年报或研报后，可在提问时引用。</p>
           </section>
 
-          <!-- 相关图表 -->
           <section class="side-block">
             <header class="side-head">
-              <h3>相关图表</h3>
-              <router-link class="more" to="/macro/us">查看全部 ›</router-link>
+              <h3>利率走势</h3>
+              <router-link class="more" to="/macro/liquidity">流动性 ›</router-link>
             </header>
-            <VChart
-              v-if="macroChartOption"
-              class="side-chart"
-              :option="macroChartOption"
-              autoresize
-            />
-            <p v-else class="muted side-note">
-              可画的序列不足两条（每条至少两个观测值），按规范不画假曲线。
-            </p>
+            <VChart v-if="macroChartOption" class="side-chart" :option="macroChartOption" autoresize />
+            <p v-else class="muted side-note">利率序列的观测值不足，暂不画走势。</p>
           </section>
         </div>
       </PanelCard>
@@ -987,8 +1007,8 @@ onMounted(() => {
 
     <SourceFooter
       :as-of="dataUpdatedAt || '—'"
-      :sources="['后端问答接口', 'FRED（宏观序列）', 'A股日线（东方财富 / 腾讯行情）']"
-      note="正文按后端返回原样渲染；未配置模型时不会有 AI 段落与引用。"
+      :sources="['FinScope 问答记录', 'FRED 宏观序列', 'A 股日线']"
+      :note="modelAvailable === false ? '模型未接入：回答只有系统说明，不会生成分析或引用' : '回答按原文展示，引用角标对应数据来源'"
     />
   </main>
 </template>
@@ -997,25 +1017,97 @@ onMounted(() => {
 .chat {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  min-height: 640px;
 }
 
-.thread {
+.model-banner {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
-  max-height: 620px;
-  overflow-y: auto;
-  padding-right: 4px;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
 }
 
-.msg-count,
-.thread-empty {
+.banner-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  color: var(--warn);
+}
+
+.model-banner strong {
+  color: var(--warn);
   font-size: 13px;
 }
 
-.thread-empty {
+.model-banner p {
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.thread {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: 600px;
+  min-height: 420px;
+  overflow-y: auto;
+  padding: 14px 2px;
+}
+
+.welcome {
+  margin: auto 0;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.welcome h3 {
+  margin: 6px 0 0;
+  font-size: 18px;
+  color: var(--text-strong);
+}
+
+.welcome p {
   margin: 0;
+  max-width: 460px;
+  line-height: 1.7;
+}
+
+.examples {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: min(640px, 100%);
+}
+
+.example {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.example:hover,
+.example:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .turn {
@@ -1042,6 +1134,14 @@ onMounted(() => {
   font-weight: 700;
 }
 
+.avatar.large {
+  flex-basis: 48px;
+  width: 48px;
+  height: 48px;
+  font-size: 16px;
+  box-shadow: 0 0 0 1px var(--edge-light) inset;
+}
+
 .bubble {
   min-width: 0;
   flex: 1 1 auto;
@@ -1053,7 +1153,7 @@ onMounted(() => {
 
 .turn-user .bubble {
   flex: 0 1 auto;
-  max-width: 88%;
+  max-width: 82%;
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: color-mix(in srgb, var(--accent) 32%, transparent);
 }
@@ -1074,14 +1174,9 @@ onMounted(() => {
   margin-top: 10px;
 }
 
-.error-line {
-  margin: 0;
-  font-size: 13px;
-}
-
 .composer {
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  padding: 12px 0 4px;
 }
 
 .composer-foot {
@@ -1090,6 +1185,14 @@ onMounted(() => {
   justify-content: space-between;
   gap: 12px;
   margin-top: 10px;
+}
+
+.hint {
+  font-size: 13px;
+}
+
+.error-line {
+  color: var(--warn);
 }
 
 .composer-right {
@@ -1102,11 +1205,12 @@ onMounted(() => {
 }
 
 .side-body {
+  display: grid;
   gap: 14px;
 }
 
 .side-block + .side-block {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--line-soft);
   padding-top: 12px;
 }
 
@@ -1122,6 +1226,12 @@ onMounted(() => {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  color: var(--text-strong);
+}
+
+.count {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .more {
@@ -1134,30 +1244,31 @@ onMounted(() => {
   color: var(--accent);
 }
 
+.tiles {
+  gap: 10px;
+}
+
 .side-note {
   margin: 0 0 8px;
-  font-size: 13px;
   line-height: 1.7;
 }
 
-.row-action {
-  color: var(--accent);
-  font-size: 13px;
+.stock-link {
+  color: var(--text-strong);
   text-decoration: none;
 }
 
-.side-chart {
-  height: 180px;
+.stock-link:hover {
+  color: var(--accent);
 }
 
-.side-table {
-  margin-bottom: 8px;
-  --el-table-border-color: var(--line);
-  --el-table-bg-color: transparent;
-  --el-table-tr-bg-color: transparent;
-  --el-table-header-bg-color: color-mix(in srgb, var(--text) 6%, transparent);
-  --el-table-text-color: var(--text);
-  --el-table-header-text-color: var(--muted);
+.stock-code {
+  margin-left: 6px;
+  font-size: 12px;
+}
+
+.side-chart {
+  height: 190px;
 }
 
 .doc-rows {
@@ -1171,7 +1282,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
   font-size: 13px;
 }
 
@@ -1195,5 +1306,6 @@ onMounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+  margin-top: 8px;
 }
 </style>

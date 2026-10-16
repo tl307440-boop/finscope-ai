@@ -1,36 +1,52 @@
 <script setup lang="ts">
 /**
- * SEC 样例（`GET /api/v1/sec/facts?cik=320193&as_of=...`）。
+ * SEC 申报事实（`GET /api/v1/sec/facts?cik=320193&as_of=...`）。
  *
- * 固定的 CIK 0000320193，返回的是随仓库附带的解析样例，说明里明确写了
- * 「不是本次向 SEC 拉取的数据」。所以这一页只负责把样例事实逐条列清楚：
- * 概念、金额、申报表、申报日、accession 与来源链接；当天没有已申报事实时，
- * 直接写后端的 notice 和「该日期还看不到已申报的事实」，不换别的日期凑数据。
+ * 固定 CIK 0000320193（苹果）。逐条列出观察日之前已申报的 XBRL 事实：
+ * 指标、数值、期间口径、申报表、申报日、申报号与来源链接；当天没有已申报事实时，
+ * 直接说明「该日期还看不到已申报的事实」，不换别的日期凑数据。
  */
-import { computed, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
-import { describeFacts, type SecFactLine } from "../api/secFacts"
-import { asRecord, asString } from "../api/json"
+import { asRecord, asString, dataOf, listOf } from "../api/json"
+import {
+  conceptLabel,
+  conceptShortName,
+  formatFact,
+  parseFactPoint,
+  periodKindLabel,
+  todayText,
+  type FactPoint,
+} from "../api/secFacts"
 import PanelCard from "../components/ui/PanelCard.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
-import StatusPill from "../components/ui/StatusPill.vue"
 
 const CIK = "0000320193"
 
-const asOf = ref("2024-03-01")
+const asOf = ref(todayText())
 const phase = ref<"idle" | "loading" | "ready" | "error">("idle")
 const failure = ref("")
 const requestId = ref("")
-const lines = ref<string[]>([])
-const facts = ref<SecFactLine[]>([])
+const facts = ref<FactPoint[]>([])
 
-/** 后端 notice 原文始终是 describeFacts 的第一行；缺省时用它的兜底文案。 */
-const notice = computed(() => lines.value[0] ?? "本地样例，不是本次从 SEC 拉取。")
-
-/** 事实为空时 describeFacts 会补一句「该日期还看不到已申报的事实」，原样展示。 */
-const emptyMessage = computed(() => lines.value.slice(1).join(" ") || "该日期还看不到已申报的事实")
+const rows = computed(() =>
+  [...facts.value]
+    .sort((left, right) => right.periodEnd.localeCompare(left.periodEnd) || left.concept.localeCompare(right.concept))
+    .map((point, index) => ({
+      key: `${point.concept}-${point.periodStart}-${point.periodEnd}-${index}`,
+      label: conceptLabel(point.concept),
+      concept: conceptShortName(point.concept),
+      value: formatFact(point.value, point.unit),
+      kind: periodKindLabel(point),
+      periodEnd: point.periodEnd,
+      form: point.form,
+      filed: point.filed,
+      accessionNo: point.accessionNo,
+      sourceUrl: point.sourceUrl,
+    })),
+)
 
 function hostOf(url: string): string {
   try {
@@ -43,76 +59,47 @@ function hostOf(url: string): string {
 async function load(): Promise<void> {
   if (!asOf.value) {
     phase.value = "error"
-    failure.value = "请选择日期"
-    lines.value = []
+    failure.value = "请选择观察日"
     facts.value = []
     return
   }
   phase.value = "loading"
   failure.value = ""
   requestId.value = ""
-  lines.value = []
   facts.value = []
   try {
-    const response = await fetch(
-      apiUrl(`/api/v1/sec/facts?cik=320193&as_of=${encodeURIComponent(asOf.value)}`),
-      { headers: { Accept: "application/json" }, credentials: "include" },
-    )
+    const response = await fetch(apiUrl(`/api/v1/sec/facts?cik=320193&as_of=${encodeURIComponent(asOf.value)}`), {
+      headers: { Accept: "application/json" },
+      credentials: "include",
+    })
     const body = await readJson(response)
     if (!response.ok) {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
     requestId.value = asString(asRecord(asRecord(body)?.meta)?.request_id) ?? ""
-    const data = asRecord(asRecord(body)?.data)
-    const rows = Array.isArray(data?.facts) ? data.facts.flatMap(parseFact) : []
-    facts.value = rows
-    lines.value = describeFacts({ notice: asString(data?.notice), facts: rows })
+    facts.value = listOf(dataOf(body)?.facts).flatMap(parseFactPoint)
     phase.value = "ready"
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务器"
     phase.value = "error"
   }
 }
 
-function parseFact(value: unknown): SecFactLine[] {
-  const record = asRecord(value)
-  const concept = asString(record?.concept)
-  const unit = asString(record?.unit)
-  const amount = asString(record?.value)
-  const filed = asString(record?.filed)
-  const accession = asString(record?.accession_no)
-  const source = asString(record?.source_url)
-  const form = asString(record?.form)
-  if (!concept || !unit || !amount || !filed || !accession || !source || !form) {
-    return []
-  }
-  return [
-    {
-      concept,
-      unit,
-      value: amount,
-      filed,
-      accessionNo: accession,
-      sourceUrl: source,
-      form,
-    },
-  ]
-}
+onMounted(() => {
+  void load()
+})
 </script>
 
 <template>
   <main class="page">
-    <PageHeader
-      title="SEC 样例"
-      :subtitle="`CIK ${CIK} · 随仓库附带的解析样例，不是本次向 SEC 拉取的数据`"
-    >
+    <PageHeader title="SEC 申报事实" :subtitle="`苹果 AAPL · CIK ${CIK} · 观察日之前已申报的 XBRL 科目`">
       <template #filters>
         <form class="filters-form" @submit.prevent="load">
           <label class="field">
             观察日
             <input v-model="asOf" name="sec-as-of" type="date" />
           </label>
-          <button class="retry" type="submit" :disabled="phase === 'loading'">查看来源</button>
+          <button class="retry" type="submit" :disabled="phase === 'loading'">查询</button>
         </form>
       </template>
     </PageHeader>
@@ -124,52 +111,38 @@ function parseFact(value: unknown): SecFactLine[] {
       <p v-if="requestId" class="muted request-line">请求号 {{ requestId }}</p>
     </template>
 
-    <template v-else>
-      <PanelCard title="样例说明" :info="`as_of ${asOf || '—'}`">
-        <p class="notice">{{ notice }}</p>
-        <p class="muted">
-          CIK {{ CIK }} 写死在本页，不提供其它公司；事实条目来自仓库内的解析样例，
-          金额、单位、申报日、accession 与来源链接都按后端返回原样展示。
-        </p>
-      </PanelCard>
+    <PanelCard v-else title="已申报事实" :info="facts.length ? `共 ${facts.length} 条` : '该观察日没有可用事实'" flush>
+      <div v-if="!facts.length" class="facts-empty">
+        <StateBlock state="empty" title="该日期还看不到已申报的事实" message="可以把观察日调晚后再查询。" />
+      </div>
+      <div v-else class="facts-scroll">
+        <el-table :data="rows" size="small" stripe row-key="key">
+          <el-table-column label="指标" min-width="170" fixed>
+            <template #default="{ row }">
+              <div class="concept-cell">
+                <span>{{ row.label }}</span>
+                <small v-if="row.label !== row.concept">{{ row.concept }}</small>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="数值" width="150" align="right">
+            <template #default="{ row }"><span class="tabular">{{ row.value }}</span></template>
+          </el-table-column>
+          <el-table-column prop="kind" label="口径" width="110" />
+          <el-table-column prop="periodEnd" label="期末" width="110" class-name="tabular" />
+          <el-table-column prop="form" label="申报表" width="90" />
+          <el-table-column prop="filed" label="申报日" width="110" class-name="tabular" />
+          <el-table-column prop="accessionNo" label="申报号" min-width="190" class-name="tabular" />
+          <el-table-column label="来源" width="150">
+            <template #default="{ row }">
+              <a :href="row.sourceUrl" target="_blank" rel="noreferrer noopener">{{ hostOf(row.sourceUrl) }}</a>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </PanelCard>
 
-      <PanelCard
-        title="已申报事实"
-        :info="facts.length ? `共 ${facts.length} 条` : '该观察日没有可用事实'"
-        flush
-      >
-        <div v-if="!facts.length" class="facts-empty">
-          <StatusPill tone="warn" text="无可用事实" />
-          <StateBlock state="empty" :message="emptyMessage" />
-        </div>
-        <div v-else class="facts-scroll">
-          <el-table :data="facts" size="small" stripe row-key="accessionNo">
-            <el-table-column prop="concept" label="概念（concept）" min-width="180" fixed />
-            <el-table-column label="金额" width="150">
-              <template #default="{ row }">
-                <span class="tabular">{{ row.value }} {{ row.unit }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="form" label="申报表" width="100" />
-            <el-table-column prop="filed" label="申报日" width="120" class-name="tabular" />
-            <el-table-column prop="accessionNo" label="accession" min-width="200" />
-            <el-table-column label="来源" width="160">
-              <template #default="{ row }">
-                <a :href="row.sourceUrl" target="_blank" rel="noreferrer noopener">
-                  {{ hostOf(row.sourceUrl) }}
-                </a>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </PanelCard>
-
-      <SourceFooter
-        :as-of="asOf || '—'"
-        :sources="['仓库内 SEC 解析样例', 'CIK ' + CIK]"
-        note="样例数据用于验证解析链路，不等于 SEC 实时申报；观察日之后的事实不会出现"
-      />
-    </template>
+    <SourceFooter :as-of="asOf || '—'" :sources="['SEC EDGAR']" note="按申报日入库，观察日之后的申报不会出现" />
   </main>
 </template>
 
@@ -183,7 +156,7 @@ function parseFact(value: unknown): SecFactLine[] {
 .field {
   display: grid;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -196,28 +169,42 @@ function parseFact(value: unknown): SecFactLine[] {
   font-size: 13px;
 }
 
-.notice {
-  margin: 0 0 8px;
+.retry {
+  appearance: none;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 13px;
+  padding: 6px 14px;
+  cursor: pointer;
 }
 
 .facts-empty {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
+  padding: 0 16px 10px;
 }
 
 .facts-scroll {
   overflow-x: auto;
 }
 
+.concept-cell {
+  display: grid;
+  line-height: 1.4;
+}
+
+.concept-cell small {
+  color: var(--faint);
+  font-size: 12px;
+}
+
 .request-line {
   margin: 8px 0 0;
-  font-size: 12px;
 }
 
 a {
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13px;
+  text-decoration: none;
 }
 </style>

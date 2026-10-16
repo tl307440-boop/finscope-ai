@@ -1,18 +1,38 @@
-"""调用已安装的 TradingAgents 图。Mock 模型不访问外部语言模型。"""
+"""调用已安装的 TradingAgents 原版图（git pin 见 vendor.PINNED_UPSTREAM）。
 
+- 工具层：注册 finscope vendor，所有工具经 FinScopeDataBridge 读库，并把模型请求的日期
+  一律截断到本次推演的 as_of（模型即使要未来数据也拿不到）。
+- 模型层：配置了 LLM_API_KEY / LLM_MODEL 时走 openai_compatible；否则用不访问外网的 Mock，
+  Mock 只服务于离线测试，接口层不会在未配置模型时把它当成「AI 结论」返回。
+"""
+
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 
+from app.core.config import get_settings
+from app.trading_agents.analysts import (
+    fundamental_analyst,
+    macro_news_analyst,
+    technical_analyst,
+)
+from app.trading_agents.bridge import DataStore, FinScopeDataBridge, Subject
 from app.trading_agents.graph import DebateRound, RiskNote, SimulationResult, Trace
-from app.trading_agents.vendor import PINNED_UPSTREAM, bars_note, income_visible, insider_note
+from app.trading_agents.vendor import PINNED_UPSTREAM
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from sqlalchemy import Engine
 from tradingagents.dataflows.router import VENDOR_METHODS
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
 _REGISTERED = False
 _MOCK_TEXT = "Rating: Hold\n这是研究评级，不是下单指令。"
+_RUN_LOCK = threading.Lock()
+_CONTEXT: dict[str, object] = {}
+NO_DATA = "NO_DATA_AVAILABLE"
 
 
 class _MockChat(BaseChatModel):
@@ -53,14 +73,14 @@ def register_finscope_vendor() -> None:
     methods = {
         "get_stock_data": _stock,
         "get_indicators": _indicators,
-        "get_fundamentals": _income,
-        "get_balance_sheet": _missing,
-        "get_cashflow": _missing,
-        "get_income_statement": _income,
+        "get_fundamentals": _fundamentals,
+        "get_balance_sheet": _fundamentals,
+        "get_cashflow": _fundamentals,
+        "get_income_statement": _fundamentals,
         "get_news": _news,
-        "get_global_news": _news,
-        "get_insider_transactions": _insider,
-        "get_macro_indicators": _missing,
+        "get_global_news": _global_news,
+        "get_insider_transactions": _missing,
+        "get_macro_indicators": _global_news,
         "get_prediction_markets": _missing,
     }
     for name, func in methods.items():
@@ -69,11 +89,18 @@ def register_finscope_vendor() -> None:
     _REGISTERED = True
 
 
-def finscope_config() -> dict[str, object]:
+def finscope_config(use_llm: bool = False) -> dict[str, object]:
     config = dict(DEFAULT_CONFIG)
-    config["llm_provider"] = "openai"
-    config["quick_think_llm"] = "mock"
-    config["deep_think_llm"] = "mock"
+    settings = get_settings()
+    if use_llm:
+        config["llm_provider"] = "openai_compatible"
+        config["backend_url"] = settings.llm_api_base_url or None
+        config["quick_think_llm"] = settings.llm_model
+        config["deep_think_llm"] = settings.llm_model
+    else:
+        config["llm_provider"] = "openai"
+        config["quick_think_llm"] = "mock"
+        config["deep_think_llm"] = "mock"
     config["checkpoint_enabled"] = False
     config["output_language"] = "Chinese"
     config["max_debate_rounds"] = 1
@@ -91,8 +118,14 @@ def finscope_config() -> dict[str, object]:
     return config
 
 
-def run_upstream(symbol: str, trade_date: date, max_debate_rounds: int = 1) -> SimulationResult:
-    state, rating = propagate_with_mock(symbol, trade_date, max_debate_rounds)
+def run_upstream(
+    symbol: str,
+    trade_date: date,
+    max_debate_rounds: int = 1,
+    engine: Engine | None = None,
+) -> SimulationResult:
+    use_llm = bool(get_settings().llm_api_key and get_settings().llm_model)
+    state, rating = propagate(symbol, trade_date, max_debate_rounds, engine=engine, use_llm=use_llm)
     traces = _reports(state)
     debate = state.get("investment_debate_state")
     risk = state.get("risk_debate_state")
@@ -136,6 +169,17 @@ def run_upstream(symbol: str, trade_date: date, max_debate_rounds: int = 1) -> S
         tuple(rounds),
         tuple(notes),
         events,
+        config={
+            "engine": "tradingagents" if use_llm else "tradingagents-mock",
+            "engine_label": "TradingAgents 原版图（语言模型）"
+            if use_llm
+            else "TradingAgents 原版图（离线 Mock，仅测试用）",
+            "llm": use_llm,
+            "model": get_settings().llm_model if use_llm else "mock",
+            "upstream_commit": PINNED_UPSTREAM,
+            "max_debate_rounds": max_debate_rounds,
+            "orders": False,
+        },
     )
 
 
@@ -153,31 +197,77 @@ def _reports(state: dict[str, object]) -> list[Trace]:
     return traces
 
 
-def propagate_with_mock(
+def propagate(
     symbol: str,
     trade_date: date,
     max_debate_rounds: int = 1,
+    *,
+    engine: Engine | None = None,
+    use_llm: bool = False,
 ) -> tuple[dict[str, object], str]:
     register_finscope_vendor()
     import tradingagents.graph.trading_graph as graph_module
 
     original = graph_module.create_tier_client
-    graph_module.create_tier_client = lambda config, tier, **extra: _MockClient()
-    _block_social_feeds()
-    config = finscope_config()
-    config["max_debate_rounds"] = max_debate_rounds
-    try:
-        graph = TradingAgentsGraph(
-            selected_analysts=("market", "social", "news", "fundamentals"),
-            debug=False,
-            config=config,
+    if use_llm:
+        key = get_settings().llm_api_key
+        graph_module.create_tier_client = lambda config, tier, **extra: original(
+            config, tier, api_key=key, **extra
         )
-        state, rating = graph.propagate(symbol, trade_date.isoformat())
-    finally:
-        graph_module.create_tier_client = original
+    else:
+        graph_module.create_tier_client = lambda config, tier, **extra: _MockClient()
+    _block_social_feeds()
+    config = finscope_config(use_llm)
+    config["max_debate_rounds"] = max_debate_rounds
+    with _RUN_LOCK, _bound(engine, trade_date):
+        try:
+            graph = TradingAgentsGraph(
+                selected_analysts=("market", "social", "news", "fundamentals"),
+                debug=False,
+                config=config,
+            )
+            state, rating = graph.propagate(symbol, trade_date.isoformat())
+        finally:
+            graph_module.create_tier_client = original
     if not isinstance(state, dict):
         state = dict(state)
     return state, str(rating)
+
+
+def propagate_with_mock(
+    symbol: str, trade_date: date, max_debate_rounds: int = 1
+) -> tuple[dict[str, object], str]:
+    return propagate(symbol, trade_date, max_debate_rounds, use_llm=False)
+
+
+@contextmanager
+def _bound(engine: Engine | None, as_of: date) -> Iterator[None]:
+    _CONTEXT.clear()
+    if engine is not None:
+        _CONTEXT["store"] = DataStore(engine)
+    _CONTEXT["as_of"] = as_of
+    try:
+        yield
+    finally:
+        _CONTEXT.clear()
+
+
+def _bridge(requested: str | None) -> FinScopeDataBridge | None:
+    store = _CONTEXT.get("store")
+    as_of = _CONTEXT.get("as_of")
+    if not isinstance(store, DataStore) or not isinstance(as_of, date):
+        return None
+    day = as_of
+    if requested:
+        try:
+            day = min(date.fromisoformat(requested[:10]), as_of)
+        except ValueError:
+            day = as_of
+    return FinScopeDataBridge(store, day)
+
+
+def _subject(bridge: FinScopeDataBridge | None, symbol: str) -> Subject | None:
+    return None if bridge is None else bridge.subject(symbol)
 
 
 def _block_social_feeds() -> None:
@@ -189,33 +279,82 @@ def _block_social_feeds() -> None:
 
 def _no_social(*args: object, **kwargs: object) -> str:
     del args, kwargs
-    return "NO_DATA_AVAILABLE: 不读取 StockTwits 或 Reddit。情绪只看巨潮标题，当前没有标题。"
+    return f"{NO_DATA}: 不读取 StockTwits 或 Reddit。情绪只看市场温度、行业强弱与相对强弱。"
 
 
 def _stock(symbol: str, start_date: str, end_date: str) -> str:
-    del start_date
-    return bars_note(symbol, date.fromisoformat(end_date))
+    bridge = _bridge(end_date)
+    subject = _subject(bridge, symbol)
+    if bridge is None or subject is None:
+        return f"{NO_DATA}: {symbol} 不在已收录的证券列表里"
+    start = date.fromisoformat(start_date[:10]) if start_date else date.min
+    rows = [bar for bar in bridge.bars(subject, limit=400) if bar.trade_date >= start]
+    if not rows:
+        return f"{NO_DATA}: {symbol} 在 {start_date}~{bridge.as_of} 没有已入库日线"
+    lines = ["Date,Open,High,Low,Close,Volume"]
+    lines.extend(
+        f"{bar.trade_date},{bar.open},{bar.high},{bar.low},{bar.close},{bar.volume}" for bar in rows
+    )
+    return "\n".join(lines)
 
 
 def _indicators(symbol: str, indicator: str, curr_date: str, look_back_days: int = 30) -> str:
     del indicator, look_back_days
-    return bars_note(symbol, date.fromisoformat(curr_date))
+    bridge = _bridge(curr_date)
+    subject = _subject(bridge, symbol)
+    if bridge is None or subject is None:
+        return f"{NO_DATA}: {symbol} 不在已收录的证券列表里"
+    return _render(technical_analyst(subject, bridge.bars(subject)).as_dict())
 
 
-def _income(ticker: str, freq: str = "quarterly", as_of_date: str | None = None) -> str:
+def _fundamentals(ticker: str, freq: str = "quarterly", curr_date: str | None = None) -> str:
     del freq
-    day = date.fromisoformat(as_of_date) if as_of_date else date.today()
-    return income_visible(ticker, day)
+    bridge = _bridge(curr_date)
+    subject = _subject(bridge, ticker)
+    if bridge is None or subject is None:
+        return f"{NO_DATA}: {ticker} 不在已收录的证券列表里"
+    return _render(fundamental_analyst(subject, bridge.facts(subject)).as_dict())
 
 
 def _news(ticker: str, start_date: str, end_date: str) -> str:
-    del ticker, start_date, end_date
-    return "NO_DATA_AVAILABLE: 没有不晚于 as_of 的巨潮标题"
+    del start_date
+    bridge = _bridge(end_date)
+    subject = _subject(bridge, ticker)
+    if bridge is None or subject is None:
+        return f"{NO_DATA}: {ticker} 不在已收录的证券列表里"
+    report = macro_news_analyst(
+        subject, bridge.macro(), bridge.announcements(subject), bridge.as_of
+    )
+    return _render(report.as_dict())
 
 
-def _insider(ticker: str) -> str:
-    del ticker
-    return insider_note()
+def _global_news(curr_date: str, *args: object, **kwargs: object) -> str:
+    del args, kwargs
+    bridge = _bridge(curr_date)
+    if bridge is None:
+        return f"{NO_DATA}: 没有绑定数据库"
+    macro = bridge.macro()
+    if macro.regime_code == "insufficient_data":
+        return f"{NO_DATA}: {bridge.as_of} 没有已发布的 FRED vintage"
+    scores = (macro.growth, macro.inflation, macro.liquidity)
+    return "\n".join(f"{item.code}: {item.value} ({'; '.join(item.evidence)})" for item in scores)
+
+
+def _render(report: dict[str, object]) -> str:
+    if report.get("coverage") == "unavailable":
+        return f"{NO_DATA}: {report.get('summary')}"
+    lines = [str(report.get("summary", ""))]
+    findings = report.get("findings")
+    if isinstance(findings, list):
+        for item in findings:
+            if not isinstance(item, dict):
+                continue
+            refs = item.get("citations")
+            label = ""
+            if isinstance(refs, list) and refs and isinstance(refs[0], dict):
+                label = f" [source: {refs[0].get('label')}]"
+            lines.append(f"- {item.get('text')}{label}")
+    return "\n".join(lines)
 
 
 def _missing(*args: object, **kwargs: object) -> str:

@@ -1,8 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.services.financial_metrics import MetricResult, year_over_year
+
+CHANGE_SCALE = Decimal("0.000001")
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,18 @@ class SourcedAmount:
     form: str
     accession_no: str
     source_url: str
+    period_start: date | None = None
+
+    @property
+    def span(self) -> int | None:
+        return None if self.period_start is None else (self.period_end - self.period_start).days
+
+
+def comparable(left: SourcedAmount, right: SourcedAmount) -> bool:
+    """同为时点，或期间长度相差不超过 20 天（单季对单季、全年对全年）。"""
+    if left.span is None or right.span is None:
+        return left.span == right.span
+    return abs(left.span - right.span) <= 20
 
 
 @dataclass(frozen=True)
@@ -43,6 +57,16 @@ class ResearchComparison:
     unevaluated: tuple[ResearchRule, ...]
 
 
+REVENUE_NAMES = frozenset(
+    {
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+    }
+)
+
+
 def compare_periods(
     facts: tuple[SourcedAmount, ...] | list[SourcedAmount],
     period_a: date,
@@ -54,7 +78,11 @@ def compare_periods(
     )
     metrics = tuple(_compare(facts, key[0], key[1], earlier, later) for key in keys)
     revenue = next(
-        (item for item in metrics if item.unit == "USD" and item.concept.endswith("Revenues")),
+        (
+            item
+            for item in metrics
+            if item.unit in {"USD", "CNY"} and item.concept.split(":")[-1] in REVENUE_NAMES
+        ),
         None,
     )
     return ResearchComparison(
@@ -74,39 +102,47 @@ def _compare(
     earlier: date,
     later: date,
 ) -> ComparedMetric:
-    left = _one(facts, concept, unit, earlier)
-    right = _one(facts, concept, unit, later)
-    change = _change(left, right, unit, concept)
+    lefts = _candidates(facts, concept, unit, earlier)
+    rights = _candidates(facts, concept, unit, later)
+    pairs = [(left, right) for right in rights for left in lefts if comparable(left, right)]
+    left: SourcedAmount | None
+    right: SourcedAmount | None
+    if pairs:
+        left, right = max(pairs, key=lambda pair: (_short_first(pair[1]), pair[1].filed))
+    else:
+        left = max(lefts, key=lambda item: item.filed) if lefts else None
+        right = max(rights, key=lambda item: item.filed) if rights else None
+    change = _change(left, right)
     return ComparedMetric(concept=concept, unit=unit, earlier=left, later=right, change=change)
 
 
-def _one(
+def _candidates(
     facts: tuple[SourcedAmount, ...] | list[SourcedAmount],
     concept: str,
     unit: str,
     period_end: date,
-) -> SourcedAmount | None:
-    matches = [
+) -> list[SourcedAmount]:
+    return [
         item
         for item in facts
         if item.concept == concept and item.unit == unit and item.period_end == period_end
     ]
-    if not matches:
-        return None
-    return max(matches, key=lambda item: item.filed)
 
 
-def _change(
-    earlier: SourcedAmount | None,
-    later: SourcedAmount | None,
-    unit: str,
-    concept: str,
-) -> MetricResult:
+def _short_first(item: SourcedAmount) -> int:
+    """同一期末既有单季又有累计时优先单季，时点数排在最前。"""
+    return -(item.span or 0)
+
+
+def _change(earlier: SourcedAmount | None, later: SourcedAmount | None) -> MetricResult:
     if earlier is None or later is None:
         return MetricResult(value=None, reason="insufficient_data", display=None)
-    if unit != "USD" or not concept.endswith("Revenues"):
-        return MetricResult(value=None, reason="not_a_flow", display=None)
-    return year_over_year(later.value, earlier.value)
+    if not comparable(earlier, later):
+        return MetricResult(value=None, reason="incomparable_period", display=None)
+    result = year_over_year(later.value, earlier.value)
+    if result.value is None:
+        return result
+    return replace(result, value=result.value.quantize(CHANGE_SCALE, rounding=ROUND_HALF_UP))
 
 
 def _highlights(revenue: ComparedMetric | None) -> tuple[ResearchRule, ...]:

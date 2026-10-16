@@ -1,0 +1,46 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://127.0.0.1:8080/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "gradientText",
+        "label": "渐变文字",
+        "count": 1,
+        "examples": [
+          "b「AI」"
+        ]
+      },
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 1,
+        "examples": [
+          "div.state.denied「登录后可以查看每日研究摘要」（外层 section.card.tone-violet）"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 1,
+        "examples": [
+          "a.skip-link「跳到主要内容」（3.68:1）"
+        ]
+      },
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "p.caption「数据库 延迟 103 毫秒 · 后台 Worke」（12px）"
+        ]
+      }
+    ]
+  }
+]

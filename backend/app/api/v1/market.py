@@ -40,7 +40,7 @@ def read_daily_bars(
     if instrument is None:
         raise AppError(code="NOT_FOUND", message="暂无该证券", status_code=404)
     pit = _parse_as_of(as_of)
-    provider_id = MarketBarRepository(engine).ensure_akshare_provider()
+    provider_id = MarketBarRepository(engine).provider_id_for_market(instrument.market)
     rows, truncated = MarketBarRepository(engine).list_daily(
         instrument_id=instrument.id,
         provider_id=provider_id,

@@ -40,12 +40,18 @@ withDefaults(
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 20px;
-  padding: 10px 4px 0;
-  border-top: 1px solid var(--line);
+  gap: 8px 18px;
+  margin-top: var(--gap);
+  padding: 9px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgb(96 140 220 / 4%);
   font-size: 12px;
   color: var(--muted);
+}
+
+.as-of {
+  font-variant-numeric: tabular-nums;
 }
 
 .sources em {
@@ -86,5 +92,6 @@ withDefaults(
 
 .ok i {
   background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
 }
 </style>

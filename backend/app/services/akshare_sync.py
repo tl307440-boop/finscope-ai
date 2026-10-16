@@ -114,15 +114,25 @@ async def fetch_bars(
             status_code=422,
         )
     problems: list[str] = []
+    failed = 0
     for name, fetcher in _SOURCES:
         try:
             bars = await fetcher(target, start, end, adjustment)
         except (ProviderError, ProviderDisconnected) as exc:
             problems.append(f"{name}：{_problem_text(exc)}")
+            failed += 1
             continue
         if bars:
             return bars
         problems.append(f"{name}：区间内没有返回任何交易日")
+    if failed == 0:
+        # 每个源都正常应答、只是区间里没有交易日（周末、休市，或还没收盘）。
+        # 这不是故障；若是源站长期不更新，新鲜度监控会按「最后一根日线」报过期。
+        raise ProviderError(
+            code="NO_ROWS",
+            message="区间内没有新的交易日",
+            status_code=200,
+        )
     raise ProviderError(
         code="UPSTREAM_UNAVAILABLE",
         message="所有行情源都没取到日线（" + "；".join(problems) + "）",

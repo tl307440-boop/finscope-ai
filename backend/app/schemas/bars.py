@@ -9,6 +9,7 @@ from app.repositories.market_bars import StoredDailyBar
 from app.services.bar_indicators import moving_average, simple_return
 
 EMPTY_BARS = "暂无已同步的日线。未同步的日期不会用演示价格填补。"
+RETURN_WINDOWS = (22, 66, 130, 250)
 
 
 class DailyBarItem(BaseModel):
@@ -42,6 +43,9 @@ class DailyBarPage(BaseModel):
     delay: Literal["eod"]
     pit_date: date
     bars: list[DailyBarItem]
+    # 近 N 个交易日的区间收益率（键为 N）：最后一根收盘 ÷ 倒数第 N+1 根收盘 − 1。
+    # 本页不足 N+1 根时没有该键，不拿更短的区间顶替。
+    window_returns: dict[str, str] = Field(default_factory=dict)
     empty_message: str | None = None
     truncated: bool
 
@@ -81,6 +85,7 @@ def build_bar_page(
         delay="eod",
         pit_date=pit,
         bars=[_item(row, rows, index, adjustment) for index, row in enumerate(rows)],
+        window_returns=_window_returns(rows),
         empty_message=EMPTY_BARS if not rows else None,
         truncated=truncated,
     )
@@ -112,6 +117,17 @@ def _item(
         ma60=_text(moving_average(closes, 60)),
         simple_return=_text(simple_return(previous, row.close)),
     )
+
+
+def _window_returns(rows: list[StoredDailyBar]) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for window in RETURN_WINDOWS:
+        if len(rows) < window + 1:
+            continue
+        value = simple_return(rows[-(window + 1)].close, rows[-1].close)
+        if value is not None:
+            found[str(window)] = decimal_text(value)
+    return found
 
 
 def _text(value: Decimal | None) -> str | None:

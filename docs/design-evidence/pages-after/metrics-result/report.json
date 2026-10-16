@@ -1,0 +1,24 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 4,
+        "examples": [
+          "div.tile「Q2 单季 120 本期累计 − 上期累计」（外层 section.card.tone-accent）",
+          "div.tile「市盈率 16.67 市值 ÷ 利润」（外层 section.card.tone-accent）",
+          "div.tile「Q3 单季 130 本期累计 − 上期累计」（外层 section.card.tone-accent）"
+        ]
+      }
+    ]
+  }
+]

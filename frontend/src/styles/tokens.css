@@ -1,61 +1,84 @@
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b1220;
-  --panel: #121e30;
-  --panel-soft: #16233a;
-  --panel-deep: #0e1729;
-  --panel-raise: #1d2c46;
-  --text: #e7edf8;
-  --muted: #95a6be;
+  --bg: #070d19;
+  --bg-glow: rgb(37 99 235 / 14%);
+  --panel: #0d1729;
+  --panel-top: #111f37;
+  --panel-soft: #13213a;
+  --panel-deep: #091222;
+  --panel-raise: #1a2b49;
+  --text: #e6edf8;
+  --text-strong: #f5f8fd;
+  --muted: #94a4be;
+  --faint: #5d6d88;
   --accent: #3b82f6;
+  --accent-strong: #2563eb;
   --accent-soft: rgb(59 130 246 / 14%);
+  --cyan: #22d3ee;
+  --violet: #a78bfa;
+  --orange: #fb923c;
   --ok: #34d399;
   --warn: #fbbf24;
   --danger: #f87171;
-  --rise: #f87171;
-  --fall: #34d399;
-  --line: rgb(231 237 248 / 12%);
-  --line-soft: rgb(231 237 248 / 6%);
-  --shadow-card: none;
+  --rise: #f6465d;
+  --fall: #1fc37d;
+  --line: rgb(96 140 220 / 16%);
+  --line-soft: rgb(96 140 220 / 8%);
+  --edge-light: rgb(120 170 255 / 34%);
+  --shadow-card: 0 1px 0 rgb(255 255 255 / 3%) inset, 0 12px 32px -18px rgb(0 0 0 / 70%);
+  --grid-dot: rgb(96 140 220 / 7%);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f7fb;
+  --bg: #f2f5fa;
+  --bg-glow: rgb(37 99 235 / 6%);
   --panel: #ffffff;
-  --panel-soft: #f7f9fd;
-  --panel-deep: #eef2f9;
-  --panel-raise: #e8eef8;
+  --panel-top: #ffffff;
+  --panel-soft: #f5f8fd;
+  --panel-deep: #eaf0f8;
+  --panel-raise: #e3eaf6;
   --text: #122033;
+  --text-strong: #0a1626;
   --muted: #5c6b80;
+  --faint: #8a97aa;
   --accent: #1d4ed8;
-  --accent-soft: rgb(29 78 216 / 10%);
+  --accent-strong: #1e40af;
+  --accent-soft: rgb(29 78 216 / 9%);
+  --cyan: #0891b2;
+  --violet: #7c3aed;
+  --orange: #ea580c;
   --ok: #047857;
   --warn: #a16207;
   --danger: #b91c1c;
   --rise: #dc2626;
   --fall: #15803d;
-  --line: rgb(18 32 51 / 12%);
-  --line-soft: rgb(18 32 51 / 7%);
+  --line: rgb(18 32 51 / 11%);
+  --line-soft: rgb(18 32 51 / 6%);
+  --edge-light: rgb(29 78 216 / 18%);
   --shadow-card: 0 1px 2px rgb(18 32 51 / 6%);
+  --grid-dot: rgb(18 32 51 / 4%);
 }
 
 :root {
-  /* 效果图的骨架尺寸，页面不得自行发明 */
-  --rail: 240px;
+  --rail: 232px;
   --rail-collapsed: 72px;
-  --topbar: 64px;
-  --gap: 16px;
-  --radius: 12px;
-  --radius-sm: 8px;
+  --topbar: 60px;
+  --gap: 14px;
+  --radius: 10px;
+  --radius-sm: 6px;
 
-  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* 数字用窄体等宽字形：Windows 自带 Bahnschrift，macOS 用 DIN Alternate */
+  --font-num: "Bahnschrift", "DIN Alternate", "DIN Pro", "Roboto Mono", "Segoe UI", sans-serif;
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+
+  font-family: var(--font-ui);
   line-height: 1.5;
   background: var(--bg);
   color: var(--text);
+  -webkit-font-smoothing: antialiased;
 }
-
 
 * {
   box-sizing: border-box;
@@ -64,7 +87,11 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(1200px 520px at 70% -10%, var(--bg-glow), transparent 70%),
+    radial-gradient(800px 400px at -10% 110%, rgb(34 211 238 / 5%), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
 }
 
 a {
@@ -81,14 +108,37 @@ a {
   font: inherit;
 }
 
+::selection {
+  background: rgb(59 130 246 / 35%);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(96 140 220 / 22%);
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(96 140 220 / 38%);
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 .skip-link {
   position: absolute;
   left: 12px;
   top: -40px;
-  background: var(--accent);
+  background: #1d4ed8;
   color: white;
   padding: 8px 12px;
-  z-index: 2;
+  border-radius: 6px;
+  z-index: 20;
 }
 
 .skip-link:focus {

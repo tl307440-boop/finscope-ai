@@ -12,6 +12,13 @@ from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_bars, fetch_bars
+from app.services.data_sync import (
+    sync_cn_statements,
+    sync_cn_universe,
+    sync_sec_facts,
+    sync_us_bars,
+    sync_us_universe,
+)
 from app.services.document_index import index_document_by_id
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.utils.time import utc_now
@@ -27,6 +34,32 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return _fred(engine, job.scope)
     if job.job_type == "parse_document":
         return _parse_document(engine, job.scope)
+    if job.job_type == "sec_filings":
+        return asyncio.run(
+            sync_sec_facts(
+                engine,
+                cik=_text(job.scope, "cik"),
+                user_agent=get_settings().sec_user_agent,
+            )
+        )
+    if job.job_type == "cn_statements":
+        return asyncio.run(
+            sync_cn_statements(engine, display_symbol=_text(job.scope, "display_symbol"))
+        )
+    if job.job_type == "tiingo_daily":
+        return asyncio.run(
+            sync_us_bars(
+                engine,
+                display_symbol=_text(job.scope, "display_symbol"),
+                start=_day(job.scope, "observation_start"),
+                end=_day(job.scope, "observation_end"),
+                token=get_settings().tiingo_api_key,
+            )
+        )
+    if job.job_type == "us_universe":
+        return asyncio.run(sync_us_universe(engine, user_agent=get_settings().sec_user_agent))
+    if job.job_type == "cn_universe":
+        return asyncio.run(sync_cn_universe(engine))
     raise ProviderError(code="VALIDATION_ERROR", message="不认识的任务类型", status_code=422)
 
 
@@ -41,7 +74,12 @@ def _akshare(engine: Engine, scope: dict[str, object]) -> int:
             message=UNSUPPORTED_SYMBOL_MESSAGE,
             status_code=422,
         )
-    payload = asyncio.run(fetch_bars(symbol, start, end, adjustment))
+    try:
+        payload = asyncio.run(fetch_bars(symbol, start, end, adjustment))
+    except ProviderError as exc:
+        if exc.code == "NO_ROWS":
+            return 0
+        raise
     outcome = apply_bars(
         engine,
         payload,
@@ -73,7 +111,6 @@ def _fred(engine: Engine, scope: dict[str, object]) -> int:
     return asyncio.run(
         sync_fred_series(
             repository,
-            api_key=settings.fred_api_key,
             series_code=series_code,
             observation_start=start,
             observation_end=end,

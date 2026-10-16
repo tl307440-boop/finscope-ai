@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.market import Instrument
@@ -42,13 +42,20 @@ class FactRecord:
     filed: date
     accession_no: str
     source_url: str
+    filing_status: str = "fixture"
 
 
 class FilingRepository:
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
 
-    def upsert_facts(self, facts: tuple[ParsedFact, ...] | list[ParsedFact], sha256: str) -> int:
+    def upsert_facts(
+        self,
+        facts: tuple[ParsedFact, ...] | list[ParsedFact],
+        sha256: str,
+        *,
+        status: str = "fixture",
+    ) -> int:
         if not facts:
             return 0
         written = 0
@@ -59,7 +66,7 @@ class FilingRepository:
             for fact in facts:
                 filing = filings.get(fact.accession_no)
                 if filing is None:
-                    filing = _filing(session, fact, sha256, instrument_id, now)
+                    filing = _filing(session, fact, sha256, instrument_id, now, status)
                     filings[fact.accession_no] = filing
                 if _fact_exists(session, filing.id, fact):
                     continue
@@ -92,8 +99,34 @@ class FilingRepository:
             for row in chosen.values():
                 filing = session.get(Filing, row.filing_id)
                 accession = filing.accession_no if filing is not None else ""
-                records.append(_fact_record(row, accession))
+                status = filing.status if filing is not None else "fixture"
+                records.append(_fact_record(row, accession, status))
             return records
+
+    def latest_edgar_period_end(self, cik: str) -> date | None:
+        with Session(self.engine) as session:
+            return session.scalar(
+                select(func.max(Filing.period_end)).where(
+                    Filing.cik == cik, Filing.status == "edgar"
+                )
+            )
+
+    def last_edgar_recorded_at(self, cik: str) -> datetime | None:
+        """最近一次真实入库一份 EDGAR 申报的时间，作为「从没走过任务队列」时的同步时间下限。"""
+
+        with Session(self.engine) as session:
+            return session.scalar(
+                select(func.max(Filing.created_at)).where(
+                    Filing.cik == cik, Filing.status == "edgar"
+                )
+            )
+
+    def has_live_filings(self, cik: str) -> bool:
+        with Session(self.engine) as session:
+            row = session.scalars(
+                select(Filing.id).where(Filing.cik == cik, Filing.status == "edgar").limit(1)
+            ).first()
+            return row is not None
 
 
 def _instrument_id(session: Session, cik: str) -> UUID | None:
@@ -109,11 +142,15 @@ def _filing(
     sha256: str,
     instrument_id: UUID | None,
     now: datetime,
+    status: str,
 ) -> Filing:
     existing = session.scalars(
         select(Filing).where(Filing.accession_no == fact.accession_no)
     ).one_or_none()
     if existing is not None:
+        if status == "edgar" and existing.status != "edgar":
+            existing.status = "edgar"
+            existing.sha256 = sha256
         return existing
     filing = Filing(
         id=uuid.uuid4(),
@@ -129,7 +166,7 @@ def _filing(
         source_url=fact.source_url,
         sha256=sha256,
         currency=fact.unit,
-        status="fixture",
+        status=status,
         created_at=now,
     )
     session.add(filing)
@@ -182,7 +219,7 @@ def _filing_record(row: Filing) -> FilingRecord:
     )
 
 
-def _fact_record(row: SecFact, accession_no: str) -> FactRecord:
+def _fact_record(row: SecFact, accession_no: str, filing_status: str) -> FactRecord:
     return FactRecord(
         id=row.id,
         concept=row.concept,
@@ -197,4 +234,5 @@ def _fact_record(row: SecFact, accession_no: str) -> FactRecord:
         filed=row.filed,
         accession_no=accession_no,
         source_url=row.source_url,
+        filing_status=filing_status,
     )

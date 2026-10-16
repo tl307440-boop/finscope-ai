@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from decimal import Decimal
 
 RATINGS = ("Buy", "Overweight", "Hold", "Underweight", "Sell")
 ANALYSTS = (
@@ -17,6 +18,9 @@ RISK_SPEAKERS = ("Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"
 class Trace:
     node_name: str
     content: str
+    role: str = ""
+    structured: dict[str, object] | None = None
+    citations: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -24,12 +28,23 @@ class DebateRound:
     round_no: int
     bull_claim: str
     bear_claim: str
+    bull_citations: tuple[dict[str, str], ...] = ()
+    bear_citations: tuple[dict[str, str], ...] = ()
+    arbitration: str = ""
+    unsupported: tuple[str, ...] = ()
+    converged: bool = False
 
 
 @dataclass(frozen=True)
 class RiskNote:
     profile: str
     content: str
+    approved: bool | None = None
+    veto_reason: str | None = None
+    scenario: str | None = None
+    drawdown: Decimal | None = None
+    mitigations: tuple[str, ...] = ()
+    revision: int = 0
 
 
 @dataclass(frozen=True)
@@ -40,6 +55,9 @@ class SimulationResult:
     debates: tuple[DebateRound, ...]
     risks: tuple[RiskNote, ...]
     events: tuple[str, ...]
+    status: str = "succeeded"
+    config: dict[str, object] = field(default_factory=dict)
+    detail: dict[str, object] = field(default_factory=dict)
 
 
 def parse_rating(text: str) -> str:

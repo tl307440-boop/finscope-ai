@@ -1,0 +1,34 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5180/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 3,
+        "examples": [
+          "article.critique.pass「激进风控 通过 上行弹性与催化剂可跟踪，接受提案」（外层 section.card.tone-accent）",
+          "article.critique.pass「中性风控 通过 收益与波动大体平衡 压力情景 6」（外层 section.card.tone-accent）",
+          "article.critique.pass「保守风控 通过 未触及硬性风险阈值 压力情景 近」（外层 section.card.tone-accent）"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 3,
+        "examples": [
+          "p.lead「主导研究员 第 1 轮核验：2 条论点附带可查验」（每行约 61 字）",
+          "p.lead「主导研究员 第 2 轮核验：1 条论点附带可查验」（每行约 61 字）",
+          "p.memo「多空辩论共 2 轮：多方采信 3 条论据（权重 」（每行约 61 字）"
+        ]
+      }
+    ]
+  }
+]

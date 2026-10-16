@@ -2,32 +2,35 @@
 /**
  * 货币与流动性（/macro/liquidity，效果图 2 的「货币与流动性」页签内容）。
  *
- * 真实接口（与 backend/app/api/v1/macro.py、backend/app/schemas/macro.py 一致；原有取数逻辑保持不变）：
+ * 真实接口（与 backend/app/api/v1/macro.py、backend/app/schemas/macro.py 一致）：
  *  - GET /api/v1/macro/series
  *      data = { provider_code, availability, notice, series[] }
  *      series[] = { series_code, name_cn, name_en, category, frequency, base_unit, seasonal_adjustment }
  *      category 实测取值：rates / output / labor / inflation
  *  - GET /api/v1/macro/series/{series_code}/observations?limit=&as_of=
  *      data = { series_code, pit_date, time_precision, observations[], empty_message, truncated }
- *  - GET /api/v1/macro/assessments（**这条不传 as_of**，与原实现一致：分数永远是今天时点的快照）
+ *      observations 按观测日升序，limit 保留最近 N 条（truncated=true 表示更早的被截掉）。
+ *  - GET /api/v1/macro/assessments?as_of=
  *      data = { pit_date, regime_code, growth|inflation|liquidity: { code, value, reason, evidence[] },
  *               notice, version }
  *
- * 口径说明（如实反映后端，不硬凑概念）：
- *  - 后端序列目录里**没有**「货币供应量 / 流动性总量」这一分类，唯一与资金价格直接相关的
- *    是 category === "rates"（实测 4 条）。本页用它作为流动性的观测对象，并明确标注这只是
- *    利率类，不代表货币供应量；货币供应量缺口在「口径说明」里如实列出。
- *  - **后端没有 POST /api/v1/macro/assessments**（唯一的 POST 是仅管理员的
- *    /macro/china/observations 导入），本页只读展示，分数与理由原样转发。
- *
- * 不编造数据：指标带只显示目录里真实存在的利率类序列；取不到观测值时显示 —— 与真实空态。
+ * 口径：后端目录里没有「货币供应量」分类，流动性只用 category === "rates" 的利率类序列观测；
+ * 不把利率冒充货币供应量。本页只读展示，分数与依据原样转发。
  */
 import { computed, onMounted, ref } from "vue"
 import type { EChartsCoreOption } from "echarts/core"
 import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { asNumber, asRecord, asString, listOf } from "../api/json"
-import { describeObservations, type MacroObservation } from "../api/macro"
+import {
+  adjustmentLabel,
+  cssColor,
+  frequencyLabel,
+  macroSourceLabel,
+  parseEvidence,
+  regimeText,
+  unitLabel,
+} from "../api/macro"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
@@ -39,6 +42,7 @@ import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 
 type Phase = "loading" | "ready" | "error"
+type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
 
 interface SeriesRow {
   code: string
@@ -48,6 +52,11 @@ interface SeriesRow {
   frequency: string
   unit: string
   seasonalAdjustment: string
+}
+
+interface Observation {
+  date: string
+  value: number
 }
 
 interface DimensionScore {
@@ -64,7 +73,6 @@ interface Assessment {
   inflation: DimensionScore | null
   liquidity: DimensionScore | null
   notice: string
-  version: string
 }
 
 const TABS = [
@@ -74,11 +82,21 @@ const TABS = [
   { key: "scenarios", label: "宏观综合判断", to: "/macro/scenarios" },
 ]
 
+const CATEGORY_LABELS: Record<string, string> = {
+  rates: "利率",
+  output: "产出",
+  labor: "就业",
+  inflation: "通胀",
+}
+
+/** limit 保留最近 N 条：日频约两年交易日，月/季频 10 年。 */
+function limitFor(row: SeriesRow | null): number {
+  return row?.frequency === "Daily" ? 520 : 120
+}
+
 const phase = ref<Phase>("loading")
 const failure = ref("")
-const providerCode = ref("")
 const availability = ref("")
-const catalogNotice = ref("")
 const series = ref<SeriesRow[]>([])
 const assessment = ref<Assessment | null>(null)
 const assessmentFailed = ref(false)
@@ -87,112 +105,164 @@ const asOf = ref("")
 
 const detailPhase = ref<"idle" | "loading" | "ready" | "error">("idle")
 const detailError = ref("")
-const observations = ref<MacroObservation[]>([])
+const observations = ref<Observation[]>([])
 const pitDate = ref("")
-const emptyMessage = ref("")
 const truncated = ref(false)
-const rateObservations = ref<Record<string, MacroObservation[]>>({})
-const rateEmpty = ref<Record<string, string>>({})
+const rateObservations = ref<Record<string, Observation[]>>({})
+
+const today = new Date()
+const pad = (part: number): string => String(part).padStart(2, "0")
+const browserToday = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+
+const sourceLabel = computed<string>(() => macroSourceLabel(availability.value))
 
 /** 后端自己给出的分类 "rates"：与资金价格直接相关的序列。 */
 const rateSeries = computed<SeriesRow[]>(() => series.value.filter((row) => row.category === "rates"))
-
-const otherSeries = computed<SeriesRow[]>(() => series.value.filter((row) => row.category !== "rates"))
-
-const categoryLegend = computed<string>(() => {
-  const counted = new Map<string, number>()
-  for (const row of series.value) {
-    counted.set(row.category, (counted.get(row.category) ?? 0) + 1)
-  }
-  return [...counted.entries()].map(([category, count]) => `${category} ${count}`).join(" · ")
-})
-
-const availabilityLabel = computed<string>(() => {
-  if (availability.value === "configured") {
-    return "外部数据源已配置"
-  }
-  if (availability.value === "unavailable") {
-    return "外部数据源未配置（序列定义仍在，观测值需同步或导入）"
-  }
-  return availability.value || "—"
-})
 
 const selectedRow = computed<SeriesRow | null>(
   () => series.value.find((row) => row.code === selectedCode.value) ?? null,
 )
 
-const detailBusy = computed<boolean>(() => detailPhase.value === "loading")
+const pastDateUnsupported = computed<boolean>(
+  () => availability.value === "public_csv" && Boolean(asOf.value) && asOf.value < browserToday,
+)
+
+const emptyText = computed<string>(() =>
+  pastDateUnsupported.value
+    ? "公开数据只有最新修订值，无法回看所选观察日当时已公布的数据，请清空观察日。"
+    : "该观察日还没有已公布的数据",
+)
+
+function formatValue(value: number | null): string {
+  if (value === null) {
+    return "—"
+  }
+  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function periodText(date: string, frequency: string): string {
+  return frequency === "Monthly" ? date.slice(0, 7) : date
+}
 
 /** 利率类指标带：每条序列一格，值/较上期/迷你走势都来自真实观测值。 */
 const rateTiles = computed(() =>
   rateSeries.value.map((row) => {
     const rows = rateObservations.value[row.code] ?? []
-    const latest = rows.length ? rows[rows.length - 1] ?? null : null
-    const previous = rows.length > 1 ? rows[rows.length - 2] ?? null : null
-    const latestValue = latest ? asNumber(latest.value) : null
-    const previousValue = previous ? asNumber(previous.value) : null
+    const latest = rows.length ? (rows[rows.length - 1] ?? null) : null
+    const previous = rows.length > 1 ? (rows[rows.length - 2] ?? null) : null
     return {
       row,
       latest,
-      delta: latestValue !== null && previousValue !== null ? latestValue - previousValue : null,
-      spark: rows.flatMap((item) => {
-        const parsed = asNumber(item.value)
-        return parsed === null ? [] : [parsed]
-      }),
+      delta: latest && previous ? latest.value - previous.value : null,
+      spark: rows.slice(-60).map((item) => item.value),
     }
   }),
 )
 
-const chartOption = computed<EChartsCoreOption | null>(() => buildTrendOption(observations.value))
-
-const observationLines = computed<string[]>(() =>
-  describeObservations({ emptyMessage: emptyMessage.value || null, observations: observations.value }),
-)
-
-function formatValue(value: number | null, unit: string): string {
-  if (value === null) {
-    return "—"
+const observationSummary = computed<string>(() => {
+  const rows = observations.value
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  if (!first || !last || !selectedRow.value) {
+    return ""
   }
-  if (unit === "Percent") {
-    return value.toFixed(2)
+  const unit = unitLabel(selectedRow.value.unit)
+  const recent = truncated.value ? `最近 ${rows.length} 期` : `共 ${rows.length} 期`
+  return `${recent}，${first.date} 至 ${last.date}；最新 ${formatValue(last.value)}${unit === "%" ? "%" : ` ${unit}`}`
+})
+
+const chartOption = computed<EChartsCoreOption | null>(() => {
+  const points = observations.value
+  if (points.length < 2) {
+    return null
   }
-  return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })
-}
+  const accent = cssColor("--accent", "#3b82f6")
+  const unit = selectedRow.value?.unit ?? ""
+  const suffix = unit === "Percent" ? "%" : ""
+  const zoom = points.length > 120
+  return {
+    grid: { left: 8, right: 16, top: 16, bottom: zoom ? 44 : 4, containLabel: true },
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (value: unknown): string =>
+        typeof value === "number" ? `${formatValue(value)}${suffix}` : "—",
+    },
+    xAxis: {
+      type: "category",
+      data: points.map((point) => point.date),
+      boundaryGap: false,
+      axisLabel: { hideOverlap: true },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      axisLabel: { formatter: suffix ? `{value}${suffix}` : "{value}" },
+    },
+    series: [
+      {
+        type: "line",
+        name: selectedRow.value?.name ?? selectedCode.value,
+        data: points.map((point) => point.value),
+        showSymbol: false,
+        step: selectedRow.value?.code === "FEDFUNDS" ? "end" : undefined,
+        lineStyle: { color: accent, width: 2 },
+        itemStyle: { color: accent },
+        areaStyle: { opacity: 0.1, color: accent },
+      },
+    ],
+    ...(zoom
+      ? {
+          dataZoom: [
+            { type: "inside", start: 50, end: 100 },
+            { type: "slider", start: 50, end: 100, height: 18, bottom: 6 },
+          ],
+        }
+      : {}),
+  }
+})
 
 /**
- * 后端只回分数不回文案；分数含义由 backend/app/services/macro_rules.py 决定：
- * 70=该序列下行（流动性维度 tighter_when_rising，故为偏松），30=上行（偏紧），
- * 50=持平，value 缺省=不足两个已公布观测值。
- * 分数不是价格，所以状态标签用 tonal 底色（scorePill），涨红跌绿只用在下面走势图的价格方向上。
+ * 分数含义由 backend/app/services/macro_rules.py 决定：
+ * 流动性 70=利率下行（偏松），30=利率上行（偏紧），50=持平；value 缺省=数据不足。
+ * 宏观指标不是涨跌，配色用中性色。
  */
-function scorePill(score: DimensionScore | null): { text: string; tone: "ok" | "warn" | "danger" | "muted" } {
+function scorePill(score: DimensionScore | null): { text: string; tone: Tone } {
   if (!score || score.value === null) {
     return { text: "数据不足", tone: "muted" }
   }
   if (score.code === "liquidity") {
     return score.value >= 70
-      ? { text: "偏松", tone: "ok" }
+      ? { text: "偏松", tone: "accent" }
       : score.value <= 30
-        ? { text: "偏紧", tone: "danger" }
-        : { text: "持平", tone: "warn" }
+        ? { text: "偏紧", tone: "warn" }
+        : { text: "持平", tone: "muted" }
   }
   return score.value >= 70
-    ? { text: "上行", tone: "ok" }
+    ? { text: "上行", tone: "accent" }
     : score.value <= 30
-      ? { text: "下行", tone: "danger" }
-      : { text: "持平", tone: "warn" }
+      ? { text: "下行", tone: "warn" }
+      : { text: "持平", tone: "muted" }
 }
 
-/** 后端 reason 是枚举值，这里只做展示翻译；未收录的取值原样显示。 */
-function reasonView(reason: string | null): string {
-  if (!reason) {
-    return ""
-  }
-  if (reason === "insufficient_data") {
-    return "不足两个已公布观测值，规则无法给出方向"
-  }
-  return reason
+function seriesName(code: string): string {
+  return series.value.find((row) => row.code === code)?.name ?? code
 }
+
+const liquidityEvidence = computed<{ date: string; value: string; published: string }[]>(() =>
+  (assessment.value?.liquidity?.evidence ?? []).map((line) => {
+    const point = parseEvidence(line)
+    return {
+      date: point.date ? point.date.slice(0, 7) : line,
+      value: point.value === null ? "" : `${point.value.toFixed(2)}%`,
+      published: point.published,
+    }
+  }),
+)
+
+const liquiditySeriesName = computed<string>(() => {
+  const line = assessment.value?.liquidity?.evidence[0]
+  return line ? seriesName(parseEvidence(line).code || "FEDFUNDS") : seriesName("FEDFUNDS")
+})
 
 function parseSeries(value: unknown): SeriesRow[] {
   return listOf(value).flatMap((item) => {
@@ -206,10 +276,10 @@ function parseSeries(value: unknown): SeriesRow[] {
         code,
         name,
         nameEn: asString(item.name_en) ?? "",
-        category: asString(item.category) ?? "—",
-        frequency: asString(item.frequency) ?? "—",
-        unit: asString(item.base_unit) ?? "—",
-        seasonalAdjustment: asString(item.seasonal_adjustment) ?? "—",
+        category: asString(item.category) ?? "",
+        frequency: asString(item.frequency) ?? "",
+        unit: asString(item.base_unit) ?? "",
+        seasonalAdjustment: asString(item.seasonal_adjustment) ?? "",
       },
     ]
   })
@@ -235,29 +305,21 @@ function parseScore(value: unknown): DimensionScore | null {
   }
 }
 
-function parseObservation(value: unknown): MacroObservation[] {
+function parseObservation(value: unknown): Observation[] {
   const record = asRecord(value)
-  const observationDate = asString(record?.observation_date)
-  const amount = asString(record?.value)
-  const unit = asString(record?.unit)
-  const realtimeStart = asString(record?.realtime_start)
-  const revision = asNumber(record?.revision_no)
-  if (!observationDate || amount === null || !unit || !realtimeStart || revision === null) {
+  const date = asString(record?.observation_date)
+  const amount = asNumber(record?.value)
+  if (!date || amount === null) {
     return []
   }
-  return [
-    {
-      observation_date: observationDate,
-      value: amount,
-      unit,
-      realtime_start: realtimeStart,
-      revision_no: revision,
-    },
-  ]
+  return [{ date, value: amount }]
 }
 
-async function fetchObservations(code: string): Promise<{ rows: MacroObservation[]; empty: string }> {
-  const params = new URLSearchParams({ limit: "500" })
+async function fetchObservations(
+  row: SeriesRow | null,
+  code: string,
+): Promise<{ rows: Observation[]; pitDate: string; truncated: boolean }> {
+  const params = new URLSearchParams({ limit: String(limitFor(row)) })
   if (asOf.value) {
     params.set("as_of", asOf.value)
   }
@@ -269,88 +331,78 @@ async function fetchObservations(code: string): Promise<{ rows: MacroObservation
     throw errorFrom(body, response.headers.get("X-Request-ID"))
   }
   const data = asRecord(asRecord(body)?.data)
-  return {
-    rows: Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : [],
-    empty: asString(data?.empty_message) ?? "",
-  }
+  const rows = Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : []
+  rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+  return { rows, pitDate: asString(data?.pit_date) ?? "", truncated: data?.truncated === true }
 }
 
-/** 指标带：并发取利率类序列的观测值；失败的序列按「无可见观测值」如实呈现。 */
+/** 指标带：并发取利率类序列的观测值；失败的序列按「暂无数据」如实呈现。 */
 async function loadRateObservations(): Promise<void> {
-  const rows = rateSeries.value
-  if (!rows.length) {
-    rateObservations.value = {}
-    rateEmpty.value = {}
-    return
-  }
   const results = await Promise.all(
-    rows.map(async (row) => {
+    rateSeries.value.map(async (row) => {
       try {
-        const result = await fetchObservations(row.code)
-        return { code: row.code, rows: result.rows, empty: result.empty }
+        const result = await fetchObservations(row, row.code)
+        return { code: row.code, rows: result.rows }
       } catch {
-        return { code: row.code, rows: [] as MacroObservation[], empty: "本次未能取到该序列的观测值" }
+        return { code: row.code, rows: [] as Observation[] }
       }
     }),
   )
-  const nextRows: Record<string, MacroObservation[]> = {}
-  const nextEmpty: Record<string, string> = {}
+  const next: Record<string, Observation[]> = {}
   for (const item of results) {
-    nextRows[item.code] = item.rows
-    if (item.empty) {
-      nextEmpty[item.code] = item.empty
-    }
+    next[item.code] = item.rows
   }
-  rateObservations.value = nextRows
-  rateEmpty.value = nextEmpty
+  rateObservations.value = next
+}
+
+async function loadAssessment(): Promise<void> {
+  assessmentFailed.value = false
+  try {
+    const params = new URLSearchParams()
+    if (asOf.value) {
+      params.set("as_of", asOf.value)
+    }
+    const query = params.toString()
+    const response = await fetch(apiUrl(`/api/v1/macro/assessments${query ? `?${query}` : ""}`))
+    const body = await readJson(response)
+    if (!response.ok) {
+      throw errorFrom(body, response.headers.get("X-Request-ID"))
+    }
+    const data = asRecord(asRecord(body)?.data)
+    assessment.value = {
+      pitDate: asString(data?.pit_date) ?? "",
+      regimeCode: asString(data?.regime_code) ?? "",
+      growth: parseScore(data?.growth),
+      inflation: parseScore(data?.inflation),
+      liquidity: parseScore(data?.liquidity),
+      notice: asString(data?.notice) ?? "",
+    }
+  } catch {
+    // 规则判断失败不让整页失败，但要如实标注「未取到」，不编造结论。
+    assessment.value = null
+    assessmentFailed.value = true
+  }
 }
 
 async function load(): Promise<void> {
   phase.value = "loading"
   failure.value = ""
-  assessmentFailed.value = false
   try {
-    const [seriesResponse, assessmentResponse] = await Promise.all([
-      fetch(apiUrl("/api/v1/macro/series")),
-      fetch(apiUrl("/api/v1/macro/assessments")),
-    ])
+    const seriesResponse = await fetch(apiUrl("/api/v1/macro/series"))
     const seriesBody = await readJson(seriesResponse)
     if (!seriesResponse.ok) {
       throw errorFrom(seriesBody, seriesResponse.headers.get("X-Request-ID"))
     }
     const seriesData = asRecord(asRecord(seriesBody)?.data)
-    providerCode.value = asString(seriesData?.provider_code) ?? ""
     availability.value = asString(seriesData?.availability) ?? ""
-    catalogNotice.value = asString(seriesData?.notice) ?? ""
     series.value = parseSeries(seriesData?.series)
-
-    // 评估接口失败不让整页失败，但要如实标注「未取到」，不编造结论。
-    assessment.value = null
-    if (assessmentResponse.ok) {
-      const assessmentBody = await readJson(assessmentResponse)
-      const data = asRecord(asRecord(assessmentBody)?.data)
-      assessment.value = {
-        pitDate: asString(data?.pit_date) ?? "",
-        regimeCode: asString(data?.regime_code) ?? "",
-        growth: parseScore(data?.growth),
-        inflation: parseScore(data?.inflation),
-        liquidity: parseScore(data?.liquidity),
-        notice: asString(data?.notice) ?? "",
-        version: asString(data?.version) ?? "",
-      }
-    } else {
-      assessmentFailed.value = true
-    }
-
     if (!selectedCode.value) {
-      selectedCode.value = (rateSeries.value[0] ?? series.value[0])?.code ?? ""
+      selectedCode.value = (rateSeries.value.find((row) => row.code === "FEDFUNDS") ?? rateSeries.value[0] ?? series.value[0])?.code ?? ""
     }
     phase.value = "ready"
-    if (selectedCode.value) {
-      await Promise.all([loadObservations(), loadRateObservations()])
-    }
+    await Promise.all([loadObservations(), loadRateObservations(), loadAssessment()])
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   }
 }
@@ -366,30 +418,15 @@ async function loadObservations(): Promise<void> {
   detailError.value = ""
   observations.value = []
   pitDate.value = ""
-  emptyMessage.value = ""
   truncated.value = false
   try {
-    const params = new URLSearchParams({ limit: "500" })
-    if (asOf.value) {
-      params.set("as_of", asOf.value)
-    }
-    const response = await fetch(
-      apiUrl(`/api/v1/macro/series/${encodeURIComponent(code)}/observations?${params.toString()}`),
-    )
-    const body = await readJson(response)
-    if (!response.ok) {
-      throw errorFrom(body, response.headers.get("X-Request-ID"))
-    }
-    const data = asRecord(asRecord(body)?.data)
-    observations.value = Array.isArray(data?.observations)
-      ? data.observations.flatMap(parseObservation)
-      : []
-    pitDate.value = asString(data?.pit_date) ?? ""
-    emptyMessage.value = asString(data?.empty_message) ?? ""
-    truncated.value = data?.truncated === true
+    const result = await fetchObservations(selectedRow.value, code)
+    observations.value = result.rows
+    pitDate.value = result.pitDate
+    truncated.value = result.truncated
     detailPhase.value = "ready"
   } catch (caught) {
-    detailError.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    detailError.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     detailPhase.value = "error"
   }
 }
@@ -399,84 +436,9 @@ function selectSeries(code: string): void {
   void loadObservations()
 }
 
-/** 应用观察日：指标带与走势图一起刷新，保持同一时点。 */
+/** 应用观察日：指标带、走势图与规则判断一起刷新，保持同一时点。 */
 async function applyAsOf(): Promise<void> {
-  await Promise.all([loadObservations(), loadRateObservations()])
-}
-
-function trendColor(values: number[]): string {
-  if (values.length < 2) {
-    return "var(--accent)"
-  }
-  const last = values[values.length - 1]
-  const previous = values[values.length - 2]
-  if (last === undefined || previous === undefined || last === previous) {
-    return "var(--accent)"
-  }
-  return last > previous ? "var(--rise)" : "var(--fall)"
-}
-
-function buildTrendOption(rows: MacroObservation[]): EChartsCoreOption | null {
-  const points = rows.flatMap((row) => {
-    const parsed = asNumber(row.value)
-    return parsed === null ? [] : [{ date: row.observation_date, value: parsed, raw: row.value }]
-  })
-  if (points.length < 2) {
-    return null
-  }
-  const values = points.map((point) => point.value)
-  const color = trendColor(values)
-  const zoom = points.length > 40
-  return {
-    grid: { left: 8, right: 16, top: 24, bottom: zoom ? 48 : 8, containLabel: true },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
-      formatter: (params: unknown): string => {
-        const first = Array.isArray(params) ? asRecord(params[0]) : asRecord(params)
-        const index = asNumber(first?.dataIndex)
-        const point = index === null ? undefined : points[index]
-        if (!point) {
-          return ""
-        }
-        return `${point.date} · ${point.raw}`
-      },
-    },
-    xAxis: {
-      type: "category",
-      data: points.map((point) => point.date),
-      axisLabel: { color: "var(--muted)", fontSize: 11, hideOverlap: true },
-      axisLine: { lineStyle: { color: "var(--line)" } },
-    },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-      splitLine: { lineStyle: { color: "var(--line)" } },
-    },
-    series: [
-      {
-        type: "line",
-        name: selectedCode.value,
-        data: values,
-        showSymbol: points.length <= 60,
-        smooth: false,
-        lineStyle: { color, width: 2 },
-        itemStyle: { color },
-        areaStyle: { opacity: 0.08, color },
-      },
-    ],
-    ...(zoom
-      ? {
-          dataZoom: [
-            { type: "inside", start: 60, end: 100 },
-            { type: "slider", start: 60, end: 100, height: 18, bottom: 8 },
-          ],
-        }
-      : {}),
-  }
+  await Promise.all([loadObservations(), loadRateObservations(), loadAssessment()])
 }
 
 onMounted(() => {
@@ -486,16 +448,13 @@ onMounted(() => {
 
 <template>
   <main class="page">
-    <PageHeader
-      title="全球宏观分析"
-      subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会"
-    >
+    <PageHeader title="全球宏观分析" subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会">
       <template #actions>
         <el-date-picker
           v-model="asOf"
           type="date"
           value-format="YYYY-MM-DD"
-          placeholder="观察日（留空＝今天）"
+          placeholder="观察日（留空为今天）"
           class="asof-select"
           @change="applyAsOf"
         />
@@ -504,257 +463,166 @@ onMounted(() => {
       <template #tabs>
         <SectionTabs :tabs="TABS" model-value="liquidity" />
       </template>
+      <template #filters>
+        <span class="source-hint"><i aria-hidden="true" />数据来源：{{ sourceLabel }}</span>
+      </template>
     </PageHeader>
 
     <div class="stack">
-      <StateBlock
-        v-if="phase === 'loading'"
-        state="loading"
-        message="正在读取货币流动性数据"
-      />
+      <StateBlock v-if="phase === 'loading'" state="loading" message="正在读取货币与流动性数据" />
 
-      <StateBlock
-        v-else-if="phase === 'error'"
-        state="error"
-        :message="failure"
-        @retry="load"
-      />
+      <StateBlock v-else-if="phase === 'error'" state="error" :message="failure" @retry="load" />
 
       <template v-else>
-        <StateBlock
-          v-if="!rateSeries.length"
-          state="empty"
-          message="后端序列目录里没有 category = rates 的序列，指标带无内容可展示。"
-        />
+        <StateBlock v-if="!rateSeries.length" state="empty" message="暂无利率类数据" />
 
-        <div v-else class="grid-8">
+        <div v-else class="grid-4">
           <MetricTile
             v-for="tile in rateTiles"
             :key="tile.row.code"
             :label="tile.row.name"
-            :value="tile.latest ? formatValue(asNumber(tile.latest.value), tile.row.unit) : '—'"
-            :period="tile.latest ? `${tile.latest.observation_date} · ${tile.row.frequency}` : '暂无可见观测值'"
-            :info="`${tile.row.code} · ${tile.row.nameEn || tile.row.name} · 单位 ${tile.row.unit} · ${tile.row.seasonalAdjustment}${rateEmpty[tile.row.code] ? ` · ${rateEmpty[tile.row.code]}` : ''}`"
+            :value="tile.latest ? formatValue(tile.latest.value) : '—'"
+            :unit="tile.latest ? unitLabel(tile.row.unit) : ''"
+            :period="
+              tile.latest
+                ? `${periodText(tile.latest.date, tile.row.frequency)} · ${frequencyLabel(tile.row.frequency)}`
+                : '暂无数据'
+            "
+            :info="`${tile.row.nameEn || tile.row.name} · FRED 代码 ${tile.row.code} · ${adjustmentLabel(tile.row.seasonalAdjustment)}`"
             delta-label="较上期"
           >
             <template #chart>
               <MiniSpark
                 v-if="tile.spark.length > 1"
                 :points="tile.spark"
-                kind="line"
-                tone="muted"
+                kind="area"
+                tone="accent"
                 :width="104"
                 :height="34"
               />
-              <span v-else class="tile-empty">无可见观测值</span>
             </template>
             <template #delta>
-              <DeltaValue v-if="tile.delta !== null" :value="tile.delta" suffix=" pct" />
-              <DeltaValue v-else :value="null" />
+              <DeltaValue :value="tile.delta" suffix=" pct" :colored="false" signed size="sm" />
             </template>
           </MetricTile>
         </div>
 
         <div class="grid-2-1">
-          <PanelCard
-            title="利率类序列走势"
-            :info="`观察日按后端时点过滤：只显示当天已经公布的观测值（realtime_start 早于观察日）。留空表示截止今天。`"
-          >
+          <PanelCard title="利率走势" info="只显示所选观察日已经公布的观测值；观察日留空表示截至今天">
             <template #icon><span class="panel-icon">◠</span></template>
-            <div class="filter-row">
-              <el-select v-model="selectedCode" class="filter-select" @change="selectSeries">
-                <el-option
-                  v-for="item in series"
-                  :key="item.code"
-                  :value="item.code"
-                  :label="`${item.code} ${item.name}`"
-                />
+            <template #actions>
+              <el-select v-model="selectedCode" class="filter-select" size="small" @change="selectSeries">
+                <el-option v-for="item in series" :key="item.code" :value="item.code" :label="item.name" />
               </el-select>
-              <el-button type="primary" :loading="detailBusy" @click="loadObservations">
-                查询
-              </el-button>
-            </div>
-
-            <div v-if="detailPhase === 'loading'">
-              <StateBlock state="loading" message="正在查询观测值" />
-            </div>
-
-            <div v-else-if="detailPhase === 'error'">
-              <StateBlock state="error" :message="detailError" @retry="loadObservations" />
-            </div>
-
-            <template v-else-if="detailPhase === 'ready'">
-              <StateBlock
-                v-if="truncated"
-                state="stale"
-                :as-of="pitDate"
-                message="观测值多于本次上限，图表只画出了返回的部分。"
-              />
-              <VChart v-if="chartOption" class="chart chart-trend" :option="chartOption" autoresize />
-              <StateBlock
-                v-else
-                state="empty"
-                :message="emptyMessage || '该观察日没有可见的观测值，或少于两个可解析观测值'"
-                :as-of="pitDate"
-              />
-
-              <template v-if="observations.length">
-                <p class="muted">
-                  序列 {{ selectedRow?.code || "—" }} · {{ selectedRow?.name || "—" }} ·
-                  后端时点 {{ pitDate || "—" }} · 共 {{ observations.length }} 条观测值。
-                </p>
-                <ul class="line-list">
-                  <li v-for="line in observationLines" :key="line">{{ line }}</li>
-                </ul>
-              </template>
             </template>
 
+            <StateBlock v-if="detailPhase === 'loading'" state="loading" message="正在查询观测值" />
+            <StateBlock
+              v-else-if="detailPhase === 'error'"
+              state="error"
+              :message="detailError"
+              @retry="loadObservations"
+            />
+            <template v-else-if="detailPhase === 'ready'">
+              <VChart v-if="chartOption" class="chart chart-trend" :option="chartOption" autoresize />
+              <StateBlock v-else state="empty" :message="emptyText" />
+              <p v-if="observationSummary" class="chart-note">
+                {{ selectedRow?.name }}：{{ observationSummary }}
+              </p>
+            </template>
             <StateBlock v-else state="empty" message="请选择一条序列查看走势" />
           </PanelCard>
 
-          <PanelCard
-            title="规则口径的流动性判断"
-            info="分数与理由全部来自后端 macro-rules-v1，本页只做文案翻译，不改口也不外推"
-          >
+          <PanelCard title="流动性判断" info="按规则比较联邦基金利率最近两期：上行记 30（偏紧）、下行记 70（偏松）、持平记 50">
             <template #icon><span class="panel-icon">◎</span></template>
 
             <StateBlock
               v-if="assessmentFailed"
               state="error"
-              message="评估接口本次未返回可用结果，本页不编造结论。"
-              @retry="load"
+              message="规则判断暂时不可用"
+              @retry="loadAssessment"
             />
-            <StateBlock
-              v-else-if="!assessment"
-              state="empty"
-              message="未取到评估结果，本页不编造结论。"
-            />
+            <StateBlock v-else-if="!assessment" state="loading" :rows="2" />
             <template v-else>
-              <div class="readout-head">
+              <div class="verdict">
                 <StatusPill :text="scorePill(assessment.liquidity).text" :tone="scorePill(assessment.liquidity).tone" dot />
-                <span class="muted">
-                  后端时点 {{ assessment.pitDate || "—" }} · 组合状态
-                  <code>{{ assessment.regimeCode || "—" }}</code>
-                  <template v-if="assessment.version"> · 规则版本 {{ assessment.version }}</template>
-                </span>
+                <span class="verdict-score tabular">{{ assessment.liquidity?.value ?? "—" }}</span>
+                <span class="muted">/ 100 · 判断日 {{ assessment.pitDate || "—" }}</span>
               </div>
 
-              <div class="grid-3">
-                <MetricTile
-                  label="流动性维度"
-                  :value="assessment.liquidity?.value ?? '—'"
-                  period="70 偏松 / 30 偏紧 / 50 持平"
-                >
-                  <template #delta>
-                    <span class="muted">{{ reasonView(assessment.liquidity?.reason ?? null) || "已取到分数" }}</span>
-                  </template>
-                </MetricTile>
-                <MetricTile
-                  label="增长维度"
-                  :value="assessment.growth?.value ?? '—'"
-                  period="70 上行 / 30 下行 / 50 持平"
-                >
-                  <template #delta>
-                    <span class="muted">{{ reasonView(assessment.growth?.reason ?? null) || "已取到分数" }}</span>
-                  </template>
-                </MetricTile>
-                <MetricTile
-                  label="通胀维度"
-                  :value="assessment.inflation?.value ?? '—'"
-                  period="70 上行 / 30 下行 / 50 持平"
-                >
-                  <template #delta>
-                    <span class="muted">{{ reasonView(assessment.inflation?.reason ?? null) || "已取到分数" }}</span>
-                  </template>
-                </MetricTile>
-              </div>
-
-              <h3 class="doc-section">流动性判定依据</h3>
-              <p v-if="!assessment.liquidity?.evidence.length" class="muted">
-                本次没有返回可用依据行。
+              <template v-if="liquidityEvidence.length">
+                <h3 class="doc-section">判断依据：{{ liquiditySeriesName }}</h3>
+                <ul class="evidence-list">
+                  <li v-for="item in liquidityEvidence" :key="item.date + item.value">
+                    <span class="tabular">{{ item.date }}</span>
+                    <strong class="tabular">{{ item.value }}</strong>
+                    <span v-if="item.published" class="muted">公布于 {{ item.published }}</span>
+                  </li>
+                </ul>
+              </template>
+              <p v-else class="doc-text muted">
+                {{ pastDateUnsupported ? "公开数据无法回看历史观察日。" : "已公布数据不足两期，暂不判断。" }}
               </p>
-              <ul v-else class="line-list">
-                <li v-for="line in assessment.liquidity.evidence" :key="line">{{ line }}</li>
-              </ul>
-              <p class="muted">依据行格式为「序列代码 观测日 数值 公布日」，用于核对时点可见性。</p>
-              <p v-if="assessment.notice" class="muted">{{ assessment.notice }}</p>
-              <p class="muted">
-                分数口径：联邦基金利率（FEDFUNDS）上行＝30 偏紧、下行＝70 偏松、持平＝50；
-                以上分数与理由全部来自后端，本页不改口也不外推。
+
+              <h3 class="doc-section">其他维度</h3>
+              <div class="dims">
+                <div class="dim">
+                  <span class="muted">增长</span>
+                  <StatusPill :text="scorePill(assessment.growth).text" :tone="scorePill(assessment.growth).tone" />
+                </div>
+                <div class="dim">
+                  <span class="muted">通胀</span>
+                  <StatusPill :text="scorePill(assessment.inflation).text" :tone="scorePill(assessment.inflation).tone" />
+                </div>
+                <div class="dim">
+                  <span class="muted">组合</span>
+                  <span class="dim-text">{{ regimeText(assessment.regimeCode) || "—" }}</span>
+                </div>
+              </div>
+              <p class="note">
+                {{ assessment.notice || "这是规则计算，不是经济定论。" }}
+                目前流动性只用利率类指标衡量，暂无货币供应量数据。
               </p>
             </template>
           </PanelCard>
         </div>
 
-        <PanelCard title="口径说明（不硬凑概念）" info="流动性观测对象的选取依据">
-          <template #icon><span class="panel-icon">ⓘ</span></template>
-          <p class="doc-text">
-            序列目录共 {{ series.length }} 条（数据源 {{ providerCode || "—" }}，{{ availabilityLabel }}），
-            按后端分类：{{ categoryLegend || "—" }}。
-          </p>
-          <p class="doc-text">
-            后端序列目录里没有「货币供应量 / 流动性总量」这一独立分类，唯一与资金价格直接相关的分类是
-            <strong>rates（利率类，共 {{ rateSeries.length }} 条）</strong>。本页把利率类序列作为流动性的
-            观测对象，只展示后端真实存在的分类与序列，不把利率冒充货币供应量；货币供应量缺口需先在
-            <code>catalog/macro_series.py</code> 登记序列并同步后才可能展示。
-          </p>
-          <p v-if="catalogNotice" class="muted">目录说明：{{ catalogNotice }}</p>
+        <PanelCard title="宏观序列一览" :info="`共 ${series.length} 条，点击行查看走势`">
+          <template #icon><span class="panel-icon">▤</span></template>
+          <el-table :data="series" @row-click="(row: SeriesRow) => selectSeries(row.code)">
+            <el-table-column label="名称" min-width="200">
+              <template #default="scope">
+                <span :class="{ 'row-active': scope.row.code === selectedCode }">{{ scope.row.name }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="code" label="FRED 代码" width="130" />
+            <el-table-column label="分类" width="90">
+              <template #default="scope">{{ CATEGORY_LABELS[scope.row.category] ?? scope.row.category }}</template>
+            </el-table-column>
+            <el-table-column label="频率" width="90">
+              <template #default="scope">{{ frequencyLabel(scope.row.frequency) }}</template>
+            </el-table-column>
+            <el-table-column label="单位" min-width="150">
+              <template #default="scope">{{ unitLabel(scope.row.unit) }}</template>
+            </el-table-column>
+            <el-table-column label="调整" width="100">
+              <template #default="scope">{{ adjustmentLabel(scope.row.seasonalAdjustment) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="scope">
+                <el-button link type="primary" size="small" @click.stop="selectSeries(scope.row.code)">
+                  查看走势
+                </el-button>
+              </template>
+            </el-table-column>
+          </el-table>
         </PanelCard>
 
-        <div class="grid-2">
-          <PanelCard title="利率类序列（category = rates）" :info="`共 ${rateSeries.length} 条，点击行可查看走势`">
-            <template #icon><span class="panel-icon">▤</span></template>
-            <StateBlock
-              v-if="!rateSeries.length"
-              state="empty"
-              message="后端没有返回任何利率类序列"
-            />
-            <el-table v-else :data="rateSeries" stripe @row-click="(row: SeriesRow) => selectSeries(row.code)">
-              <el-table-column prop="code" label="代码" width="130" />
-              <el-table-column prop="name" label="名称" min-width="170" />
-              <el-table-column prop="unit" label="单位" min-width="140" />
-              <el-table-column prop="frequency" label="频率" width="100" />
-              <el-table-column label="操作" width="100">
-                <template #default="scope">
-                  <el-button link type="primary" size="small" @click.stop="selectSeries(scope.row.code)">
-                    查看走势
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </PanelCard>
-
-          <PanelCard
-            title="其余序列（非利率类）"
-            :info="`共 ${otherSeries.length} 条；不属于流动性口径，不参与本页判断`"
-          >
-            <template #icon><span class="panel-icon">▤</span></template>
-            <StateBlock
-              v-if="!otherSeries.length"
-              state="empty"
-              message="没有其他分类的序列"
-            />
-            <el-table v-else :data="otherSeries" stripe @row-click="(row: SeriesRow) => selectSeries(row.code)">
-              <el-table-column prop="code" label="代码" width="130" />
-              <el-table-column prop="name" label="名称" min-width="170" />
-              <el-table-column prop="category" label="分类" width="100" />
-              <el-table-column prop="frequency" label="频率" width="100" />
-              <el-table-column label="操作" width="100">
-                <template #default="scope">
-                  <el-button link type="primary" size="small" @click.stop="selectSeries(scope.row.code)">
-                    查看走势
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </PanelCard>
-        </div>
-
         <SourceFooter
-          :as-of="pitDate || '—'"
-          :sources="['FRED（圣路易斯联储）']"
+          :as-of="pitDate || asOf || browserToday"
+          :sources="[sourceLabel]"
           :stale="availability === 'unavailable'"
-          note="观察日留空表示截止今天；分数永远取后端今天时点的规则快照，不随观察日回放。"
+          note="观察日留空表示截至今天；利率「较上期」单位为百分点（pct）。"
         />
       </template>
     </div>
@@ -771,51 +639,105 @@ onMounted(() => {
   font-size: 16px;
 }
 
-.tile-empty {
+.source-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   color: var(--muted);
-  font-size: 11px;
+}
+
+.source-hint i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.filter-select {
+  width: 200px;
 }
 
 .chart {
   width: 100%;
-  background: var(--bg);
-  border-radius: 12px;
 }
 
 .chart-trend {
-  height: 300px;
-  margin-top: 12px;
+  height: 320px;
 }
 
-.readout-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.filter-select {
-  width: min(360px, 100%);
-}
-
-.line-list {
+.chart-note {
   margin: 8px 0 0;
-  padding-left: 18px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
 }
 
+.verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.verdict-score {
+  font-family: var(--font-num);
+  font-size: 30px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.evidence-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+
+.evidence-list strong {
+  color: var(--text-strong);
+}
+
+.evidence-list .muted {
+  margin-left: auto;
+}
+
+.dims {
+  display: grid;
+  gap: 8px;
+}
+
+.dim {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.dim-text {
+  color: var(--text);
+}
+
+.note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.row-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .el-table {
-  margin-top: 8px;
   cursor: pointer;
   --el-table-border-color: var(--line);
   --el-table-bg-color: transparent;

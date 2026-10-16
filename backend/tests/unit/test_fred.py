@@ -7,9 +7,11 @@ import pytest
 from app.catalog.macro_series import fred_series_catalog
 from app.providers.errors import ProviderError
 from app.providers.fred import FredAdapter, FredVintage, parse_observations
+from app.providers.fred_public import fetch_public_csv, parse_graph_csv, public_realtime_start
 from app.providers.http_client import OutboundRequest, RawResponse, ResilientHttpClient, Transport
 from app.providers.vintage import VintagePoint, pit_date, select_visible, vintage_visible
 from app.repositories.macro import MacroRepository
+from app.schemas.macro import build_observations
 from app.services.fred_sync import sync_fred_series
 
 
@@ -111,6 +113,23 @@ def test_bad_payload_does_not_echo_the_body() -> None:
     assert "super-secret-fred" not in caught.value.message
 
 
+def test_observation_limit_keeps_most_recent_points() -> None:
+    rows = [
+        VintagePoint(
+            observation_date=date(2020, 1, day),
+            value=Decimal(day),
+            unit="Percent",
+            realtime_start=date(2020, 2, 1),
+            realtime_end=date(9999, 12, 31),
+            revision_no=1,
+        )
+        for day in range(1, 6)
+    ]
+    page = build_observations(series_code="DGS10", pit=date(2020, 3, 1), rows=rows, limit=2)
+    assert [item.observation_date.day for item in page.observations] == [4, 5]
+    assert page.truncated is True
+
+
 def test_release_day_is_not_visible_and_later_revision_replaces_it() -> None:
     first = VintagePoint(
         observation_date=date(1899, 1, 1),
@@ -179,7 +198,7 @@ def test_adapter_redacts_the_key_from_upstream_errors() -> None:
     assert caught.value.message == "上游请求失败"
 
 
-def test_sync_without_key_does_not_write() -> None:
+def test_sync_rejects_unknown_series_before_fetching() -> None:
     guard = GuardRepository()
 
     async def fetch(
@@ -193,16 +212,59 @@ def test_sync_without_key_does_not_write() -> None:
         asyncio.run(
             sync_fred_series(
                 guard,
-                api_key="",
-                series_code="UNRATE",
-                observation_start=date(1899, 1, 1),
-                observation_end=date(1899, 2, 1),
+                series_code="NOT_A_SERIES",
+                observation_start=date(2020, 1, 1),
+                observation_end=date(2020, 2, 1),
                 fetch=fetch,
                 fetched_at=datetime(2020, 2, 8, tzinfo=UTC),
             )
         )
-    assert caught.value.code == "DATA_UNAVAILABLE"
+    assert caught.value.code == "VALIDATION_ERROR"
     assert guard.writes == 0
+
+
+def test_public_csv_parses_values_and_skips_blanks() -> None:
+    payload = b"observation_date,DGS10\n2026-10-09,5.24\n2026-10-12,\n2026-10-13,5.21\n"
+    rows = parse_graph_csv(payload, series_id="DGS10", realtime_start=date(2026, 10, 15))
+    assert [(row.observation_date, row.value) for row in rows] == [
+        (date(2026, 10, 9), Decimal("5.24")),
+        (date(2026, 10, 13), Decimal("5.21")),
+    ]
+    assert all(row.realtime_start == date(2026, 10, 15) for row in rows)
+    assert all(row.realtime_end == date(9999, 12, 31) for row in rows)
+
+
+def test_public_csv_rejects_a_different_series_header() -> None:
+    with pytest.raises(ProviderError) as caught:
+        parse_graph_csv(
+            b"observation_date,UNRATE\n2026-01-01,4.3\n",
+            series_id="DGS10",
+            realtime_start=date(2026, 10, 15),
+        )
+    assert caught.value.code == "UPSTREAM_PAYLOAD"
+
+
+def test_public_csv_never_backdates_past_the_new_york_quiet_hours() -> None:
+    # 纽约 02:00 抓取：FRED 夜间不发布，CSV 里的数在前一纽约日已公开
+    assert public_realtime_start(datetime(2026, 10, 16, 6, 0, tzinfo=UTC)) == date(2026, 10, 15)
+    # 纽约 10:00 抓取：当天可能刚发布，记为当天，次日才可见
+    assert public_realtime_start(datetime(2026, 10, 16, 14, 0, tzinfo=UTC)) == date(2026, 10, 16)
+
+
+def test_public_csv_fetch_does_not_send_any_key() -> None:
+    transport = ScriptTransport(b"observation_date,UNRATE\n2026-09-01,4.2\n")
+    client = ResilientHttpClient(transport, sleeper=_sleep, max_attempts=1)
+    rows = asyncio.run(
+        fetch_public_csv(
+            client,
+            "UNRATE",
+            date(2026, 1, 1),
+            date(2026, 10, 1),
+            fetched_at=datetime(2026, 10, 16, 6, 0, tzinfo=UTC),
+        )
+    )
+    assert transport.calls == 1
+    assert [row.value for row in rows] == [Decimal("4.2")]
 
 
 async def _sleep(_: float) -> None:

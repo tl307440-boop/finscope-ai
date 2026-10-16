@@ -1,0 +1,41 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 4,
+        "examples": [
+          "div.tile「趋势 30.0 较上期」（外层 section.card.tone-accent）",
+          "div.tile「广度 37.5 较上期」（外层 section.card.tone-accent）",
+          "div.tile「活跃 30.0 较上期」（外层 section.card.tone-accent）"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 1,
+        "examples": [
+          "button.retry「重新计算」（3.68:1）"
+        ]
+      },
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 2,
+        "examples": [
+          "p.factor-raw「收盘 4142.130000，MA20 4384」（12px）",
+          "p.factor-raw「成交额 / 20日中位 0.7680551819」（12px）"
+        ]
+      }
+    ]
+  }
+]

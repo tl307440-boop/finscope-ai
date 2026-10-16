@@ -67,20 +67,18 @@ class ProviderList(BaseModel):
     providers: list[ProviderCredential]
 
 
-def fred_availability(settings: Settings) -> Literal["unavailable", "configured"]:
+def fred_availability(settings: Settings) -> Literal["configured", "public_csv"]:
+    """有密钥走带修订历史的接口；没有密钥退到公开 CSV，仍是 FRED 官方数据。"""
     if settings.fred_api_key.strip():
         return "configured"
-    return "unavailable"
+    return "public_csv"
 
 
 def list_provider_credentials(settings: Settings) -> ProviderList:
+    fred_key = bool(settings.fred_api_key.strip())
     return ProviderList(
         providers=[
-            _provider(
-                code="fred",
-                required=True,
-                present=bool(settings.fred_api_key.strip()),
-            ),
+            _provider(code="fred", required=fred_key, present=fred_key),
             _provider(
                 code="sec_edgar",
                 required=True,

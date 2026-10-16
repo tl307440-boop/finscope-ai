@@ -3,6 +3,7 @@ from app.catalog.reference_data import reference_instruments
 from app.core.config import get_settings
 from app.db.session import create_db_engine
 from app.main import create_app
+from app.repositories.filings import FilingRepository
 from app.repositories.instruments import InstrumentRepository
 from app.utils.identifiers import parse_search_key
 from fastapi.testclient import TestClient
@@ -35,6 +36,9 @@ def test_two_periods_show_sources_without_inventing_risks() -> None:
     if not _ready():
         pytest.skip("PostgreSQL 不可用")
     engine = create_db_engine(get_settings().database_url)
+    if FilingRepository(engine).has_live_filings("0000320193"):
+        engine.dispose()
+        pytest.skip("库里已有 AAPL 的真实 EDGAR 财报，样例断言需要干净的 CIK")
     matches = InstrumentRepository(engine).search(parse_search_key("AAPL"), market="US", limit=5)
     instrument_id = next(item.id for item in matches if item.symbol == "AAPL")
     engine.dispose()

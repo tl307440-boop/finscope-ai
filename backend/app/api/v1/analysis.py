@@ -9,7 +9,7 @@ from sqlalchemy import Engine
 
 from app.api.deps import get_current_user
 from app.api.responses import success_response
-from app.api.v1.companies import visible_sample_facts
+from app.api.v1.companies import facts_for_instrument
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.repositories.document_chunks import ChunkRepository
@@ -20,7 +20,6 @@ from app.services.auth_types import UserRecord
 from app.services.document_index import search_owned_documents
 from app.services.filing_report import compose_filing_report
 from app.services.llm_gateway import LanguageModel, model_availability
-from app.utils.identifiers import normalize_cik
 
 router = APIRouter(prefix="/analysis", tags=["分析"])
 
@@ -57,6 +56,7 @@ class AnalysisRunData(BaseModel):
     message: str
     body: str
     notice: str
+    as_of: date
 
 
 def _run_data(saved: SavedReport) -> AnalysisRunData:
@@ -68,6 +68,7 @@ def _run_data(saved: SavedReport) -> AnalysisRunData:
         message=saved.message,
         body=saved.body,
         notice=RESEARCH_NOTICE,
+        as_of=saved.as_of,
     )
 
 
@@ -98,9 +99,9 @@ def create_filing_analysis(
         raise AppError(code="VALIDATION_ERROR", message="请选择两个不同的报告期", status_code=422)
     engine = cast(Engine, request.app.state.engine)
     instrument = InstrumentRepository(engine).get(body.instrument_id)
-    if instrument is None or not instrument.cik:
+    if instrument is None:
         raise AppError(code="NOT_FOUND", message="暂无该证券", status_code=404)
-    facts = visible_sample_facts(engine, normalize_cik(instrument.cik), body.as_of)
+    facts = facts_for_instrument(engine, instrument, body.as_of)
     chunks = search_owned_documents(
         ChunkRepository(engine),
         owner_id=user.id,

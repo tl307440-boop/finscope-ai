@@ -3,27 +3,24 @@
  * 宏观综合判断（/macro/scenarios，效果图 2 的「宏观综合判断」页签内容）。
  *
  * 真实接口（与 backend/app/schemas/macro.py 的 AssessmentData、
- * backend/app/services/macro_rules.py 一致；原有取数逻辑保持不变）：
+ * backend/app/services/macro_rules.py 一致）：
  *  - GET /api/v1/macro/assessments?as_of=
  *      data = { pit_date, regime_code, growth|inflation|liquidity: { code, value,
  *               reason, evidence[] }, notice, version }
- *      · value 为 int，但**取不到两个已公布观测值时字段缺省**（实测 null）
+ *      · 取不到两个已公布观测值时 value 缺省、reason="insufficient_data"
  *      · 打分规则 macro-rules-v1：比较该序列最近两个已公布观测值，
  *        上行→增长/通胀记 70、流动性（联邦基金利率，tighter_when_rising）记 30；
- *        下行→70/30 互换；持平→50；不足两点→value=null、reason="insufficient_data"
- *      · 组合状态 regime_code = "<增长>-<通胀>-<流动性>"，≥50 记 up、流动性记 easy，
- *        否则 down / tight；任一维度取不到值时为 "insufficient_data"
+ *        下行→70/30 互换；持平→50
+ *      · regime_code = "<增长>-<通胀>-<流动性>"，任一维度取不到值时为 "insufficient_data"
+ *  - GET /api/v1/macro/series：只取 availability，用来说明公开 CSV 不能回看历史观察日
  *
- * 只读边界（如实说明，不伪造结论）：
- *  - **后端的宏观接口里没有 POST /api/v1/macro/assessments**（openapi.json 与
- *    backend/app/api/v1/macro.py 都只有 GET；唯一的 POST 是仅管理员的
- *    /api/v1/macro/china/observations 中国宏观 CSV 导入）。因此本页以只读展示为主，
- *    效果图里的情景输入表单在这里没有可用的写入端，改为「情景矩阵 + 证据抽屉」：
- *    情景矩阵只是把当前 regime_code 的取值位置与切换条件摆出来，不生成任何前端自造结论。
+ * 只读边界：后端没有 POST /api/v1/macro/assessments，本页不提供情景输入表单；
+ * 情景只描述「下一期方向如何改变哪一维」，不生成概率或前端自造结论。
  */
 import { computed, onMounted, ref } from "vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
-import { asNumber, asRecord, asString } from "../api/json"
+import { asNumber, asRecord, asString, scaleAmount } from "../api/json"
+import { macroSourceLabel, parseEvidence, regimeText } from "../api/macro"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
@@ -33,6 +30,7 @@ import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 
 type Phase = "loading" | "ready" | "error"
+type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
 
 interface DimensionScore {
   code: string
@@ -48,10 +46,9 @@ interface Assessment {
   inflation: DimensionScore | null
   liquidity: DimensionScore | null
   notice: string
-  version: string
 }
 
-/** 规则口径引用的序列；与 backend/app/services/macro_rules.py 第 36-38 行一致。 */
+/** 规则口径引用的序列；与 backend/app/services/macro_rules.py 一致。 */
 interface RuleSeries {
   code: string
   name: string
@@ -70,6 +67,12 @@ const RULE_SERIES: RuleSeries[] = [
   },
 ]
 
+const DIMENSION_SERIES: Record<string, RuleSeries | undefined> = {
+  growth: RULE_SERIES[0],
+  inflation: RULE_SERIES[1],
+  liquidity: RULE_SERIES[2],
+}
+
 const TABS = [
   { key: "us", label: "美国经济", to: "/macro/us" },
   { key: "liquidity", label: "货币与流动性", to: "/macro/liquidity" },
@@ -82,54 +85,40 @@ const phase = ref<Phase>("loading")
 const busy = ref(false)
 const failure = ref("")
 const assessment = ref<Assessment | null>(null)
+const availability = ref("")
 const asOf = ref("")
 const appliedAsOf = ref("")
+
+const today = new Date()
+const pad = (part: number): string => String(part).padStart(2, "0")
+const browserToday = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+
+const sourceLabel = computed<string>(() => macroSourceLabel(availability.value))
+
+const pastDateUnsupported = computed<boolean>(
+  () => availability.value === "public_csv" && Boolean(appliedAsOf.value) && appliedAsOf.value < browserToday,
+)
 
 const dimensions = computed<DimensionScore[]>(() => {
   const current = assessment.value
   if (!current) {
     return []
   }
-  return [current.growth, current.inflation, current.liquidity].flatMap((item) =>
-    item ? [item] : [],
-  )
+  return [current.growth, current.inflation, current.liquidity].flatMap((item) => (item ? [item] : []))
 })
-
-const hasAnyScore = computed<boolean>(() => dimensions.value.some((item) => item.value !== null))
 
 const allInsufficient = computed<boolean>(
   () => dimensions.value.length > 0 && dimensions.value.every((item) => item.value === null),
 )
 
-const regimeLabel = computed<string>(() => {
-  const code = assessment.value?.regimeCode ?? ""
-  if (!code) {
-    return "—"
-  }
-  if (code === "insufficient_data") {
-    return "数据不足，无法给出组合状态"
-  }
-  const [growth, inflation, liquidity] = code.split("-")
-  const words: Record<string, string> = {
-    up: "上行",
-    down: "下行",
-    easy: "偏松",
-    tight: "偏紧",
-  }
-  const parts: string[] = []
-  if (growth) {
-    parts.push(`增长${words[growth] ?? growth}`)
-  }
-  if (inflation) {
-    parts.push(`通胀${words[inflation] ?? inflation}`)
-  }
-  if (liquidity) {
-    parts.push(`流动性${words[liquidity] ?? liquidity}`)
-  }
-  return parts.join(" · ")
-})
+const regimeLabel = computed<string>(() => regimeText(assessment.value?.regimeCode ?? "") || "—")
 
-const regimePill = computed<{ text: string; tone: "ok" | "warn" | "danger" | "muted" | "accent" }>(() => {
+/** 指标卡里放不下完整中文，按「增长 / 通胀 / 流动性」顺序只留方向词。 */
+const regimeShort = computed<string>(() =>
+  dimensions.value.map((score) => scorePill(score).text).join(" / ") || "—",
+)
+
+const regimePill = computed<{ text: string; tone: Tone }>(() => {
   const current = assessment.value
   if (!current || !current.regimeCode) {
     return { text: "未取到", tone: "muted" }
@@ -137,57 +126,75 @@ const regimePill = computed<{ text: string; tone: "ok" | "warn" | "danger" | "mu
   if (current.regimeCode === "insufficient_data" || allInsufficient.value) {
     return { text: "数据不足", tone: "muted" }
   }
-  return { text: current.regimeCode, tone: "accent" }
+  return { text: "规则判断", tone: "accent" }
 })
 
-/**
- * 情景矩阵：把「当前 regime_code 落在哪一格、什么条件下切到另一格」摆出来。
- * 这里的描述只引用后端分数的取值域（≥50 / <50、≥70 / ≤30），不预测未来数值。
- */
-const SCENARIO_ROWS = [
-  {
-    key: "base",
-    label: "基准",
-    tone: "accent" as const,
-    title: "沿用当前组合状态",
-    basis: "以本次请求的 regime_code 作为基准情形，不做外推、不给概率。",
-  },
-  {
-    key: "reflation",
-    label: "增长走强",
-    tone: "ok" as const,
-    title: "增长分数上到 ≥50（up）",
-    basis: "需要后续观测值把增长维度推到上行档；届时 regime_code 的第一段会从 down 变为 up。",
-  },
-  {
-    key: "tightening",
-    label: "流动性转紧",
-    tone: "warn" as const,
-    title: "流动性分数落到 ≤30（tight）",
-    basis: "联邦基金利率上行时该维度记 30；届时 regime_code 的第三段会从 easy 变为 tight。",
-  },
-  {
-    key: "deflation",
-    label: "通胀回落",
-    tone: "danger" as const,
-    title: "通胀分数落到 ≤30（down）",
-    basis: "需要后续观测值把通胀维度压到下行档；届时 regime_code 的第二段会从 up 变为 down。",
-  },
-]
+const latestPublished = computed<string>(() => {
+  const dates = dimensions.value.flatMap((row) => row.evidence.map((line) => parseEvidence(line).published))
+  return dates.filter(Boolean).sort().pop() ?? ""
+})
 
-/** 证据抽屉：哪一个维度展开在右侧，默认打开第一个拿到分数的维度。 */
+function dimensionLabel(code: string): string {
+  return code === "growth" ? "增长" : code === "inflation" ? "通胀" : code === "liquidity" ? "流动性" : code
+}
+
+/** 情景切换条件：只按规则写「下一期往哪个方向走会改变哪一维」。 */
+const scenarioRows = computed<{ key: string; label: string; tone: Tone; title: string; basis: string }[]>(() => {
+  if (!assessment.value || allInsufficient.value) {
+    return []
+  }
+  const rows: { key: string; label: string; tone: Tone; title: string; basis: string }[] = [
+    {
+      key: "base",
+      label: "基准",
+      tone: "accent",
+      title: `延续「${regimeLabel.value}」`,
+      basis: "三条序列下一期公布值的方向与本期相同，组合状态不变。",
+    },
+  ]
+  for (const score of dimensions.value) {
+    if (score.value === null) {
+      continue
+    }
+    const series = DIMENSION_SERIES[score.code]
+    const name = series?.name ?? score.code
+    if (score.code === "liquidity") {
+      const tight = score.value <= 30
+      rows.push({
+        key: score.code,
+        label: tight ? "流动性转松" : "流动性转紧",
+        tone: "warn",
+        title: tight ? "流动性由偏紧转为偏松" : "流动性由偏松转为偏紧",
+        basis: tight ? `${name}下一期低于本期（降息）。` : `${name}下一期高于本期（加息）。`,
+      })
+      continue
+    }
+    const dim = dimensionLabel(score.code)
+    const rising = score.value >= 50
+    rows.push({
+      key: score.code,
+      label: rising ? `${dim}转弱` : `${dim}回升`,
+      tone: "muted",
+      title: rising ? `${dim}由上行转为下行` : `${dim}由下行转为上行`,
+      basis: rising ? `${name}下一期公布值低于本期。` : `${name}下一期公布值高于本期。`,
+    })
+  }
+  return rows
+})
+
+/** 证据抽屉：哪一个维度展开在右侧，默认打开第一个拿到依据的维度。 */
 const activeDimension = ref<string>("")
 
 const evidenceRows = computed<{ code: string; label: string; score: DimensionScore | null }[]>(() =>
   ["growth", "inflation", "liquidity"].map((code) => ({
     code,
-    label: code === "growth" ? "增长" : code === "inflation" ? "通胀" : "流动性",
+    label: dimensionLabel(code),
     score:
       code === "growth"
-        ? assessment.value?.growth ?? null
+        ? (assessment.value?.growth ?? null)
         : code === "inflation"
-          ? assessment.value?.inflation ?? null
-          : assessment.value?.liquidity ?? null,
+          ? (assessment.value?.inflation ?? null)
+          : (assessment.value?.liquidity ?? null),
   })),
 )
 
@@ -197,67 +204,48 @@ const activeEvidence = computed(() => {
 })
 
 /**
- * 后端只回分数不回文案。方向词按维度区分（流动性是 tighter_when_rising）：
  * 增长/通胀 70=上行、30=下行；流动性 30=利率上行＝偏紧、70=利率下行＝偏松。
- * 配色沿用全站「涨红跌绿」：方向向上（增长/通胀上行、流动性收紧）用 --rise，
- * 方向向下用 --fall，持平用正文色。
+ * 宏观维度不是涨跌，配色用中性色。
  */
-function scoreView(score: DimensionScore | null): { label: string; tone: string } {
-  if (!score || score.value === null) {
-    return { label: "数据不足（value 缺省）", tone: "var(--muted)" }
-  }
-  const liquidity = score.code === "liquidity"
-  if (score.value === 70) {
-    return {
-      label: liquidity ? "偏松（70，利率下行）" : "上行（70）",
-      tone: "var(--rise)",
-    }
-  }
-  if (score.value === 30) {
-    return {
-      label: liquidity ? "偏紧（30，利率上行）" : "下行（30）",
-      tone: "var(--fall)",
-    }
-  }
-  if (score.value === 50) {
-    return { label: "持平（50）", tone: "var(--text)" }
-  }
-  return { label: `分数 ${score.value}`, tone: "var(--text)" }
-}
-
-function scorePill(score: DimensionScore | null): { text: string; tone: "ok" | "warn" | "danger" | "muted" } {
+function scorePill(score: DimensionScore | null): { text: string; tone: Tone } {
   if (!score || score.value === null) {
     return { text: "数据不足", tone: "muted" }
   }
   const liquidity = score.code === "liquidity"
-  if (score.value === 70) {
-    return { text: liquidity ? "偏松" : "上行", tone: liquidity ? "ok" : "danger" }
+  if (score.value >= 70) {
+    return { text: liquidity ? "偏松" : "上行", tone: "accent" }
   }
-  if (score.value === 30) {
-    return { text: liquidity ? "偏紧" : "下行", tone: liquidity ? "danger" : "ok" }
+  if (score.value <= 30) {
+    return { text: liquidity ? "偏紧" : "下行", tone: "warn" }
   }
-  return { text: "持平", tone: "warn" }
+  return { text: "持平", tone: "muted" }
 }
 
-function reasonView(reason: string | null): string {
-  if (!reason) {
-    return ""
+function evidenceLine(code: string, line: string): { period: string; value: string; published: string } {
+  const point = parseEvidence(line)
+  if (!point.date) {
+    return { period: line, value: "", published: "" }
   }
-  if (reason === "insufficient_data") {
-    return "不足两个已公布观测值"
+  let value = point.value === null ? "" : point.value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })
+  if (point.value !== null && code === "GDP") {
+    const scaled = scaleAmount(point.value * 1e9)
+    value = `${scaled.text} ${scaled.scale}美元`
+  } else if (point.value !== null && code === "FEDFUNDS") {
+    value = `${point.value.toFixed(2)}%`
   }
-  return reason
+  let period = point.date.slice(0, 7)
+  if (code === "GDP") {
+    const month = Number(point.date.slice(5, 7))
+    period = `${point.date.slice(0, 4)} Q${Math.floor((month - 1) / 3) + 1}`
+  }
+  return { period, value, published: point.published }
 }
 
-/** 依据行来自后端 _evidence()："<序列代码> <观测日> <数值> 公布日 <公布日>"。 */
-function evidenceParts(line: string): { headline: string; published: string } {
-  const marker = " 公布日 "
-  const index = line.indexOf(marker)
-  if (index < 0) {
-    return { headline: line, published: "" }
-  }
-  return { headline: line.slice(0, index), published: line.slice(index + marker.length) }
-}
+const insufficientText = computed<string>(() =>
+  pastDateUnsupported.value
+    ? "当前数据来自 FRED 公开 CSV，只有最新修订值，无法回看所选观察日当时已公布的数据。请回到今天。"
+    : "所选观察日每个维度的已公布数据都不足两期，暂不判断。",
+)
 
 function parseScore(value: unknown): DimensionScore | null {
   const record = asRecord(value)
@@ -276,6 +264,19 @@ function parseScore(value: unknown): DimensionScore | null {
     value: asNumber(record?.value),
     reason: asString(record?.reason),
     evidence,
+  }
+}
+
+async function loadAvailability(): Promise<void> {
+  try {
+    const response = await fetch(apiUrl("/api/v1/macro/series"))
+    if (!response.ok) {
+      return
+    }
+    const body = await readJson(response)
+    availability.value = asString(asRecord(asRecord(body)?.data)?.availability) ?? ""
+  } catch {
+    // 只用于数据来源说明，取不到时不影响判断展示。
   }
 }
 
@@ -303,7 +304,6 @@ async function load(): Promise<void> {
       inflation: parseScore(data?.inflation),
       liquidity: parseScore(data?.liquidity),
       notice: asString(data?.notice) ?? "",
-      version: asString(data?.version) ?? "",
     }
     appliedAsOf.value = asOf.value
     if (!activeDimension.value) {
@@ -312,7 +312,7 @@ async function load(): Promise<void> {
     }
     phase.value = "ready"
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   } finally {
     busy.value = false
@@ -325,66 +325,51 @@ function resetAsOf(): void {
 }
 
 onMounted(() => {
+  void loadAvailability()
   void load()
 })
 </script>
 
 <template>
   <main class="page">
-    <PageHeader
-      title="全球宏观分析"
-      subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会"
-    >
+    <PageHeader title="全球宏观分析" subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会">
       <template #actions>
         <el-date-picker
           v-model="asOf"
           type="date"
           value-format="YYYY-MM-DD"
-          placeholder="观察日（留空＝今天）"
+          placeholder="观察日（留空为今天）"
           class="asof-select"
         />
-        <el-button type="primary" :loading="busy" @click="load">按该观察日重新计算</el-button>
+        <el-button type="primary" :loading="busy" @click="load">按观察日重新判断</el-button>
         <el-button v-if="appliedAsOf" @click="resetAsOf">回到今天</el-button>
       </template>
       <template #tabs>
         <SectionTabs :tabs="TABS" model-value="scenarios" />
       </template>
+      <template #filters>
+        <span class="source-hint"><i aria-hidden="true" />数据来源：{{ sourceLabel }}</span>
+      </template>
     </PageHeader>
 
     <div class="stack">
-      <StateBlock
-        v-if="phase === 'loading'"
-        state="loading"
-        message="正在计算宏观情景规则分数"
-      />
+      <StateBlock v-if="phase === 'loading'" state="loading" message="正在计算宏观规则判断" />
 
-      <StateBlock
-        v-else-if="phase === 'error'"
-        state="error"
-        :message="failure"
-        @retry="load"
-      />
+      <StateBlock v-else-if="phase === 'error'" state="error" :message="failure" @retry="load" />
 
       <template v-else>
-        <p class="muted lead">
-          本页展示的是后端规则口径（macro-rules-v1）在指定观察日算出的分数，不是经济预测，也不是投资建议。
-          观察日按后端时点过滤：只使用当天已经公布的观测值（realtime_start 早于观察日），避免用到未来数据。
-          当前请求观察日：{{ appliedAsOf || "今天" }}。
-        </p>
-
-        <StateBlock
-          v-if="!assessment"
-          state="empty"
-          message="未取到评估结果，本页不编造结论。"
-        />
+        <StateBlock v-if="!assessment" state="empty" message="暂无规则判断结果" />
 
         <template v-else>
+          <StateBlock v-if="allInsufficient" state="empty" :message="insufficientText" />
+
           <div class="grid-4">
             <MetricTile
-              label="组合状态 regime_code"
-              :value="assessment.regimeCode || '—'"
-              :period="`后端时点 ${assessment.pitDate || '—'}`"
-              info="regime_code = &lt;增长&gt;-&lt;通胀&gt;-&lt;流动性&gt;，任一维度取不到值时为 insufficient_data"
+              label="组合状态"
+              :value="allInsufficient ? '数据不足' : regimeShort"
+              :period="`增长 / 通胀 / 流动性 · 判断日 ${assessment.pitDate || '—'}`"
+              :info="`由增长、通胀、流动性三个维度的方向组合而成：${regimeLabel}`"
+              delta-label="口径"
             >
               <template #delta>
                 <StatusPill :text="regimePill.text" :tone="regimePill.tone" />
@@ -395,8 +380,10 @@ onMounted(() => {
               :key="row.code"
               :label="`${row.label}维度`"
               :value="row.score?.value ?? '—'"
-              :period="row.score?.reason ? reasonView(row.score.reason) : '已取到分数'"
-              info="70 = 上行/偏松，30 = 下行/偏紧，50 = 持平；value 缺省表示不足两个已公布观测值"
+              :unit="row.score?.value !== null && row.score?.value !== undefined ? '分' : ''"
+              :period="DIMENSION_SERIES[row.code]?.name ?? ''"
+              info="70 = 上行/偏松，30 = 下行/偏紧，50 = 持平"
+              delta-label="方向"
             >
               <template #delta>
                 <StatusPill :text="scorePill(row.score).text" :tone="scorePill(row.score).tone" />
@@ -404,37 +391,27 @@ onMounted(() => {
             </MetricTile>
           </div>
 
-          <p class="muted">
-            中文解读：{{ regimeLabel }} · 规则版本 {{ assessment.version || "—" }}。
-          </p>
-
           <div class="grid-2-1">
-            <PanelCard
-              title="情景矩阵（按当前分数位置与切换条件）"
-              info="情景只描述规则分数的取值域与切换条件，不给概率、不预测数值"
-            >
+            <PanelCard title="情景推演" info="按规则列出每个维度的切换条件，不给概率、不预测数值">
               <template #icon><span class="panel-icon">◎</span></template>
-              <ul class="scenario-list">
-                <li v-for="item in SCENARIO_ROWS" :key="item.key" class="scenario-row">
+              <ul v-if="scenarioRows.length" class="scenario-list">
+                <li v-for="item in scenarioRows" :key="item.key" class="scenario-row">
                   <StatusPill :text="item.label" :tone="item.tone" />
                   <div class="scenario-body">
-                    <p class="scenario-title">
-                      {{ item.title }}
-                      <span class="muted">· 概率：后端未提供概率字段</span>
-                    </p>
-                    <p class="muted">{{ item.basis }}</p>
+                    <p class="scenario-title">{{ item.title }}</p>
+                    <p class="scenario-basis">触发条件：{{ item.basis }}</p>
                   </div>
                 </li>
               </ul>
-              <p class="muted">
-                效果图里的「基准/乐观/悲观 概率」需要模型或人工情景输入；后端
-                <code>/api/v1/macro/assessments</code> 只有 GET，没有该写入口，所以这里不填概率。
+              <StateBlock v-else state="empty" message="数据不足，暂无情景推演" />
+              <p class="note">
+                {{ assessment.notice || "这是规则计算，不是经济定论。" }} 情景只描述切换条件，不给概率，不构成投资建议。
               </p>
             </PanelCard>
 
-            <PanelCard title="证据抽屉" info="每个维度的 reason 与 evidence 原样来自后端">
+            <PanelCard title="判断依据" info="每个维度使用的最近两期已公布数据">
               <template #icon><span class="panel-icon">✦</span></template>
-              <div class="grid-3 evidence-tabs">
+              <div class="evidence-tabs">
                 <button
                   v-for="row in evidenceRows"
                   :key="row.code"
@@ -451,28 +428,30 @@ onMounted(() => {
               <StateBlock
                 v-if="!activeEvidence || !activeEvidence.score"
                 state="empty"
-                message="该维度没有返回分数与依据"
+                message="该维度暂无判断"
               />
               <template v-else>
-                <p class="doc-text">
-                  {{ activeEvidence.label }}：<span :style="{ color: scoreView(activeEvidence.score).tone }">
-                    {{ scoreView(activeEvidence.score).label }}
-                  </span>
-                </p>
-                <p class="muted">
-                  reason：<code>{{ activeEvidence.score.reason ?? "（后端未返回）" }}</code>
-                  <template v-if="reasonView(activeEvidence.score.reason)">
-                    · {{ reasonView(activeEvidence.score.reason) }}
-                  </template>
-                </p>
-                <p v-if="!activeEvidence.score.evidence.length" class="muted">
-                  本次没有返回可用依据行。
-                </p>
+                <div class="evidence-head">
+                  <span>{{ DIMENSION_SERIES[activeEvidence.code]?.name ?? activeEvidence.label }}</span>
+                  <StatusPill
+                    :text="scorePill(activeEvidence.score).text"
+                    :tone="scorePill(activeEvidence.score).tone"
+                  />
+                </div>
+                <p v-if="!activeEvidence.score.evidence.length" class="muted body">已公布数据不足两期。</p>
                 <ul v-else class="evidence">
                   <li v-for="line in activeEvidence.score.evidence" :key="line">
-                    {{ evidenceParts(line).headline }}
-                    <span v-if="evidenceParts(line).published" class="muted">
-                      （公布日 {{ evidenceParts(line).published }}）
+                    <span class="tabular">
+                      {{ evidenceLine(DIMENSION_SERIES[activeEvidence.code]?.code ?? "", line).period }}
+                    </span>
+                    <strong class="tabular">
+                      {{ evidenceLine(DIMENSION_SERIES[activeEvidence.code]?.code ?? "", line).value }}
+                    </strong>
+                    <span
+                      v-if="evidenceLine(DIMENSION_SERIES[activeEvidence.code]?.code ?? '', line).published"
+                      class="muted"
+                    >
+                      公布于 {{ evidenceLine(DIMENSION_SERIES[activeEvidence.code]?.code ?? "", line).published }}
                     </span>
                   </li>
                 </ul>
@@ -480,70 +459,40 @@ onMounted(() => {
             </PanelCard>
           </div>
 
-          <StateBlock
-            v-if="allInsufficient"
-            state="stale"
-            :as-of="assessment.pitDate"
-            message="三个维度都取不到分数：逐条列出的序列当前没有足够的已公布观测值（每个维度至少需要两个）。"
-            @retry="load"
-          />
-          <StateBlock
-            v-else-if="!hasAnyScore"
-            state="empty"
-            message="本次没有任何维度拿到分数。"
-          />
-          <StateBlock
-            v-if="assessment.notice"
-            state="stale"
-            :as-of="assessment.pitDate"
-            :message="assessment.notice"
-            @retry="load"
-          />
-
           <div class="grid-2">
             <PanelCard title="规则引用的序列" info="打分只用下面三条序列">
               <template #icon><span class="panel-icon">▤</span></template>
-              <p class="muted">
-                它们在库里的真实观测值可以在
-                <router-link to="/macro/liquidity">货币与流动性</router-link> 与
-                <router-link to="/macro/china">中国经济宏观</router-link> 页按同一观察日查看。
-              </p>
-              <el-table :data="RULE_SERIES" stripe>
-                <el-table-column prop="dimension" label="维度" width="88" />
-                <el-table-column prop="code" label="序列代码" width="130" />
-                <el-table-column prop="name" label="名称" min-width="160" />
-                <el-table-column prop="rule" label="规则口径" min-width="200" />
+              <el-table :data="RULE_SERIES">
+                <el-table-column prop="dimension" label="维度" width="80" />
+                <el-table-column prop="name" label="序列" min-width="150" />
+                <el-table-column prop="code" label="FRED 代码" width="110" />
+                <el-table-column prop="rule" label="打分规则" min-width="200" />
               </el-table>
+              <p class="note">
+                各序列的完整走势见 <router-link to="/macro/us">美国经济</router-link> 与
+                <router-link to="/macro/liquidity">货币与流动性</router-link>。
+              </p>
             </PanelCard>
 
-            <PanelCard title="只读说明（判断边界）" info="写入口缺失，如实说明">
+            <PanelCard title="判断口径" info="规则判断的适用范围">
               <template #icon><span class="panel-icon">ⓘ</span></template>
               <ul class="doc-list">
-                <li>
-                  后端宏观接口没有提供「创建情景评估」的写入口（openapi.json 里
-                  <code>/api/v1/macro/assessments</code> 只有 GET），所以本页不提供提交表单。
+                <li>比较每条序列最近两期已公布值的方向：上行、下行或持平，不做幅度外推。</li>
+                <li>只使用观察日当天已经公布的数据，避免用到未来信息。</li>
+                <li v-if="availability === 'public_csv'">
+                  当前数据为 FRED 公开 CSV 的最新修订值，选择过去的观察日将无法得到判断。
                 </li>
-                <li>
-                  页面不在浏览器端自造结论：分数、理由与依据全部原样来自后端；取不到时显示
-                  <code>insufficient_data</code> 与真实原因。
-                </li>
-                <li>
-                  中国宏观序列需管理员 POST <code>/api/v1/macro/china/observations</code> 导入 CSV
-                  后才有观测值，导入前相关维度会一直是数据不足。
-                </li>
+                <li>中国宏观数据尚未纳入规则；导入后可在 <router-link to="/macro/china">中国经济</router-link> 页查看。</li>
+                <li>本页不给概率、不预测点位，不构成投资建议。</li>
               </ul>
-              <p class="muted">
-                本页不给概率、不预测点位、不构成投资建议；所有数值可在
-                <router-link to="/macro/us">美国经济</router-link> 页核对同一观察日口径。
-              </p>
             </PanelCard>
           </div>
 
           <SourceFooter
-            :as-of="assessment.pitDate || '—'"
-            :sources="['FRED（圣路易斯联储）', 'macro-rules-v1']"
+            :as-of="latestPublished || assessment.pitDate || '—'"
+            :sources="[sourceLabel]"
             :stale="allInsufficient"
-            note="分数与理由全部来自后端规则；观察日留空表示截止今天。"
+            :note="`判断日 ${assessment.pitDate || '—'}；观察日留空表示截至今天。`"
           />
         </template>
       </template>
@@ -556,14 +505,24 @@ onMounted(() => {
   width: 200px;
 }
 
-.lead {
-  margin: 0;
-  line-height: 1.7;
-}
-
 .panel-icon {
   color: var(--accent);
   font-size: 16px;
+}
+
+.source-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.source-hint i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
 }
 
 .scenario-list {
@@ -575,9 +534,9 @@ onMounted(() => {
 .scenario-row {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .scenario-row:last-child {
@@ -590,11 +549,33 @@ onMounted(() => {
 
 .scenario-title {
   margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.scenario-basis {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.body {
   font-size: 13px;
 }
 
 .evidence-tabs {
-  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .evidence-tab {
@@ -616,16 +597,40 @@ onMounted(() => {
   color: var(--text);
 }
 
-.evidence {
-  margin: 6px 0 0;
-  padding-left: 18px;
+.evidence-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text);
-  font-size: 12px;
-  line-height: 1.7;
+}
+
+.evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+
+.evidence strong {
+  color: var(--text-strong);
+}
+
+.evidence .muted {
+  margin-left: auto;
 }
 
 .el-table {
-  margin-top: 8px;
   --el-table-border-color: var(--line);
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;

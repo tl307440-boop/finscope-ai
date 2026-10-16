@@ -14,6 +14,7 @@ from app.providers.quality import CheckedBar
 from app.utils.time import utc_now
 
 AKSHARE_PROVIDER_ID = uuid.uuid5(uuid.NAMESPACE_URL, "https://finscope.local/providers/akshare")
+TIINGO_PROVIDER_ID = uuid.uuid5(uuid.NAMESPACE_URL, "https://finscope.local/providers/tiingo")
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,35 @@ class MarketBarRepository:
             session.add(provider)
             session.commit()
             return provider.id
+
+    def ensure_tiingo_provider(self) -> UUID:
+        """美股日线用的 provider 行（Tiingo 官方 EOD 接口，需要个人 API key）。"""
+
+        with Session(self.engine) as session, session.begin():
+            found = session.scalars(
+                select(DataProvider).where(DataProvider.code == "tiingo")
+            ).one_or_none()
+            if found is not None:
+                return found.id
+            provider = DataProvider(
+                id=TIINGO_PROVIDER_ID,
+                code="tiingo",
+                name="美股日线（Tiingo EOD）",
+                enabled=False,
+                config_public={
+                    "upstream": "https://api.tiingo.com",
+                    "credential": "api_key",
+                    "adjustment": "none",
+                },
+            )
+            session.add(provider)
+            session.flush()
+            return provider.id
+
+    def provider_id_for_market(self, market: str) -> UUID:
+        """行情接口按市场选来源：A 股读 akshare 行（东方财富/腾讯），美股读 Tiingo 行。"""
+
+        return self.ensure_tiingo_provider() if market == "US" else self.ensure_akshare_provider()
 
     def list_daily(
         self,

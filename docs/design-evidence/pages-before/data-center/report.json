@@ -1,0 +1,50 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 4,
+        "examples": [
+          "article.src-card「FR FRED 尚未探测 美国宏观经济序列 凭证」（外层 section.card.tone-accent）",
+          "article.src-card「SE SEC EDGAR 尚未探测 美国上市公司」（外层 section.card.tone-accent）",
+          "article.src-card「TU Tushare 未配置密钥 A 股行情与基」（外层 section.card.tone-accent）"
+        ]
+      },
+      {
+        "rule": "englishLabel",
+        "label": "中文界面里的英文大写标签",
+        "count": 2,
+        "examples": [
+          "span.src-name「SEC EDGAR」",
+          "span.fresh-name「SEC EDGAR」"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 2,
+        "examples": [
+          "span.pill.tone-muted「尚未探测」（4.41:1）",
+          "span.pill.tone-muted「尚未探测」（4.41:1）"
+        ]
+      },
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "p.card-note「参照点：当前记录里最久的一次探测是 1443 分」（12px）"
+        ]
+      }
+    ]
+  }
+]
