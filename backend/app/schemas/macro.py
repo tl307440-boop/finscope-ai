@@ -8,7 +8,7 @@ from app.providers.vintage import VintagePoint
 from app.repositories.macro import decimal_text
 from app.services.macro_rules import MacroAssessment, RuleScore
 
-Availability = Literal["unavailable", "configured"]
+Availability = Literal["unavailable", "configured", "public_csv"]
 CATALOG_NOTICE = "这里只列出序列定义。没有同步到的观测值不会用演示数字填补。"
 EMPTY_OBSERVATIONS = "该日期还看不到已公布的数值"
 
@@ -89,7 +89,8 @@ def build_observations(
     rows: list[VintagePoint],
     limit: int,
 ) -> ObservationPage:
-    visible = rows[:limit]
+    # 与日线一致：limit 保留最近的 N 条，被截掉的是更早的观测。
+    visible = sorted(rows, key=lambda row: row.observation_date)[-limit:]
     return ObservationPage(
         series_code=series_code,
         pit_date=pit,

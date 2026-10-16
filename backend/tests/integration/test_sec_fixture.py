@@ -39,21 +39,47 @@ def _cleanup() -> None:
         connection.execute(
             text(
                 """
-                DELETE FROM sec_facts
-                WHERE filing_id IN (
-                    SELECT id FROM filings WHERE accession_no LIKE '0000320193-%'
+                DELETE FROM thesis_evidence
+                WHERE fact_id IN (
+                    SELECT s.id FROM sec_facts s JOIN filings f ON f.id = s.filing_id
+                    WHERE f.accession_no LIKE '0000320193-%' AND f.status = 'fixture'
                 )
                 """
             )
         )
-        connection.execute(text("DELETE FROM filings WHERE accession_no LIKE '0000320193-%'"))
+        connection.execute(
+            text(
+                """
+                DELETE FROM sec_facts
+                WHERE filing_id IN (
+                    SELECT id FROM filings
+                    WHERE accession_no LIKE '0000320193-%' AND status = 'fixture'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                "DELETE FROM filings WHERE accession_no LIKE '0000320193-%' AND status = 'fixture'"
+            )
+        )
     engine.dispose()
+
+
+def _has_live_filings() -> bool:
+    engine = create_db_engine(get_settings().database_url)
+    try:
+        return FilingRepository(engine).has_live_filings("0000320193")
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.integration
 def test_fixture_is_idempotent_and_visible_with_its_source() -> None:
     if not _ready():
         pytest.skip("PostgreSQL 不可用")
+    if _has_live_filings():
+        pytest.skip("库里已有 AAPL 的真实 EDGAR 财报，样例断言需要干净的 CIK")
     engine = create_db_engine(get_settings().database_url)
     repository = FilingRepository(engine)
     payload = load_fixture()

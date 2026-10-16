@@ -4,7 +4,7 @@ from uuid import UUID
 
 from app.repositories.filings import FactRecord
 from app.repositories.macro import decimal_text
-from app.schemas.research import RESEARCH_NOTICE
+from app.schemas.research import research_notice
 from app.services.company_research import ComparedMetric, SourcedAmount, compare_periods
 from app.services.document_index import SearchHit
 from app.services.llm_gateway import EvidenceItem, LanguageModel, run_analysis
@@ -70,7 +70,7 @@ def compose_filing_report(
     body = "\n".join(
         [
             f"{name_cn} 研究记录",
-            RESEARCH_NOTICE,
+            research_notice(facts),
             message,
             (
                 f"报告期 {comparison.earlier_period.isoformat()} "
@@ -102,12 +102,13 @@ def _sourced(fact: FactRecord) -> SourcedAmount:
         form=fact.form,
         accession_no=fact.accession_no,
         source_url=fact.source_url,
+        period_start=fact.period_start,
     )
 
 
 def _used_facts(facts: list[FactRecord], metrics: tuple[ComparedMetric, ...]) -> list[FactRecord]:
     wanted = {
-        (side.concept, side.unit, side.period_end, side.accession_no)
+        (side.concept, side.unit, side.period_start, side.period_end, side.accession_no)
         for metric in metrics
         for side in (metric.earlier, metric.later)
         if side is not None
@@ -115,7 +116,8 @@ def _used_facts(facts: list[FactRecord], metrics: tuple[ComparedMetric, ...]) ->
     return [
         fact
         for fact in facts
-        if (fact.concept, fact.unit, fact.period_end, fact.accession_no) in wanted
+        if (fact.concept, fact.unit, fact.period_start, fact.period_end, fact.accession_no)
+        in wanted
     ]
 
 
@@ -134,8 +136,10 @@ def _side(label: str, amount: SourcedAmount | None, facts: list[FactRecord]) -> 
             fact.id
             for fact in facts
             if fact.accession_no == amount.accession_no
+            and fact.period_start == amount.period_start
             and fact.period_end == amount.period_end
             and fact.concept == amount.concept
+            and fact.unit == amount.unit
         ),
         None,
     )

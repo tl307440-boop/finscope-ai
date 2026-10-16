@@ -8,6 +8,13 @@ from app.repositories.macro import decimal_text
 from app.services.company_research import ResearchComparison, SourcedAmount, compare_periods
 
 RESEARCH_NOTICE = "本地样例，不是本次从 SEC 拉取。没有数据时不会编造财务数字。"
+EDGAR_NOTICE = "数据来自 SEC EDGAR companyfacts，按申报日做时点过滤。没有数据时不会编造财务数字。"
+
+
+def research_notice(facts: list[FactRecord]) -> str:
+    if facts and all(fact.filing_status == "edgar" for fact in facts):
+        return EDGAR_NOTICE
+    return RESEARCH_NOTICE
 
 
 class SourceRef(BaseModel):
@@ -62,7 +69,7 @@ def build_research(
     return ResearchData(
         instrument_id=instrument_id,
         name_cn=name_cn,
-        notice=RESEARCH_NOTICE,
+        notice=research_notice(facts),
         available_periods=periods,
         earlier_period=None if comparison is None else comparison.earlier_period,
         later_period=None if comparison is None else comparison.later_period,
@@ -84,6 +91,7 @@ def _sourced(facts: list[FactRecord]) -> list[SourcedAmount]:
             form=fact.form,
             accession_no=fact.accession_no,
             source_url=fact.source_url,
+            period_start=fact.period_start,
         )
         for fact in facts
     ]

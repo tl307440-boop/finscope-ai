@@ -30,6 +30,10 @@ services:
       LOG_LEVEL: INFO
       WORKER_HEARTBEAT_INTERVAL_SECONDS: "5"
       WORKER_HEARTBEAT_TTL_SECONDS: "30"
+      # 只读已入库的官方披露公告（巨潮资讯 / SEC），不接入媒体新闻
+      ENABLE_NEWS: "true"
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FinScopeAI research-admin@example.com}
     ports:
       - "${FINSCOPE_API_PORT:-8000}:8000"
     volumes:
@@ -61,6 +65,8 @@ services:
       LOG_LEVEL: INFO
       WORKER_HEARTBEAT_INTERVAL_SECONDS: "5"
       WORKER_HEARTBEAT_TTL_SECONDS: "30"
+      FRED_API_KEY: ${FRED_API_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FinScopeAI research-admin@example.com}
     depends_on:
       api:
         condition: service_healthy

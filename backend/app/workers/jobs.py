@@ -73,7 +73,6 @@ def _fred(engine: Engine, scope: dict[str, object]) -> int:
     return asyncio.run(
         sync_fred_series(
             repository,
-            api_key=settings.fred_api_key,
             series_code=series_code,
             observation_start=start,
             observation_end=end,

@@ -363,20 +363,8 @@ def enqueue_built(
 
 
 def build_fred_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """每天 1 次宏观序列同步；未配置 FRED 密钥时标 unavailable。"""
+    """每天 1 次宏观序列同步；没有密钥时执行器走 FRED 公开 CSV（只有最新修订）。"""
 
-    if not settings.fred_api_key.strip():
-        return [
-            ScheduledTask(
-                task_name="sync_fred_series",
-                job_type="fred_series",
-                dedupe_key="fred:unavailable",
-                scope={},
-                provider_id=FRED_PROVIDER_ID,
-                failure_policy="超时/429 退避",
-                unavailable_reason="未配置 FRED_API_KEY，数据源不可用",
-            )
-        ]
     MacroRepository(engine).ensure_catalog()
     provider_id = _provider_id(engine, code="fred", name="FRED")
     end = now.date()

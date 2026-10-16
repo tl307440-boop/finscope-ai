@@ -1,11 +1,9 @@
-from collections.abc import Iterator
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
 from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine
 
@@ -16,7 +14,6 @@ from app.core.exceptions import AppError
 from app.repositories.macro_china import MacroChinaRepository
 from app.repositories.news_events import NewsEventRecord, NewsEventRepository
 from app.repositories.reports import ReportRepository
-from app.repositories.simulations import SimulationRepository
 from app.services.auth_types import UserRecord
 from app.services.china_macro import CHINA_SERIES, public_status
 from app.services.daily_digest import build_digest
@@ -29,8 +26,6 @@ from app.services.disclosure_events import (
     group_by_type,
     heat_label,
 )
-from app.trading_agents.backtest import window_return
-from app.trading_agents.upstream import run_upstream
 from app.utils.time import utc_now
 
 router = APIRouter(tags=["研究板"])
@@ -63,24 +58,6 @@ def _as_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=UTC)
     return moment.astimezone(UTC)
-
-
-class SimulationCreate(BaseModel):
-    symbol: str = Field(pattern=r"^600519\.SH$")
-    as_of: date
-    max_debate_rounds: int = Field(default=1, ge=1, le=3)
-
-
-class SimulationData(BaseModel):
-    run_id: UUID
-    status: str
-    symbol: str
-    rating: str
-    decision: str
-    nodes: list[str]
-    bull: str = ""
-    bear: str = ""
-    disclaimer: str
 
 
 class ChinaSeriesItem(BaseModel):
@@ -163,12 +140,6 @@ class NewsEventImportResult(BaseModel):
     errors: list[str]
     events: list[HotspotEventItem]
     notice: str
-
-
-class BacktestData(BaseModel):
-    quality_flag: str
-    actual_return: str | None = None
-    note: str
 
 
 class DigestLine(BaseModel):
@@ -358,146 +329,3 @@ def read_digest(
             ),
         ),
     )
-
-
-@router.post("/simulation/runs", summary="用 Mock 跑一轮研究推演")
-def create_simulation(
-    body: SimulationCreate,
-    request: Request,
-    user: Annotated[UserRecord, Depends(get_current_user)],
-) -> JSONResponse:
-    # 规格书 §14.2 要求集成测试用录制的 fixture、不依赖外网。TradingAgents 图会走
-    # 外部行情，因此这里留一个与 admin.py 的 akshare_fetch 同样的注入点：
-    # 测试用 app.state.simulation_runner 换成确定性桩，生产环境仍然是 run_upstream。
-    runner = getattr(request.app.state, "simulation_runner", None) or run_upstream
-    result = runner(body.symbol, body.as_of, body.max_debate_rounds)
-    saved = SimulationRepository(_engine(request)).save(
-        user_id=user.id,
-        symbol=body.symbol,
-        as_of=body.as_of,
-        result=result,
-        rounds=body.max_debate_rounds,
-    )
-    request.app.state.last_simulation_events = list(result.events)
-    return JSONResponse(
-        status_code=200,
-        content=success_response(
-            request,
-            SimulationData(
-                run_id=saved.id,
-                status=saved.status,
-                symbol=saved.symbol,
-                rating=saved.rating,
-                decision=saved.decision,
-                nodes=list(saved.nodes),
-                bull=saved.bull,
-                bear=saved.bear,
-                disclaimer="仅用于研究与教学，不构成交易建议，也不会发送委托。",
-            ),
-        ),
-    )
-
-
-@router.get("/simulation/runs/{run_id}", summary="查看推演结果")
-def read_simulation(
-    run_id: UUID,
-    request: Request,
-    user: Annotated[UserRecord, Depends(get_current_user)],
-) -> JSONResponse:
-    saved = SimulationRepository(_engine(request)).get_owned(user.id, run_id)
-    if saved is None:
-        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
-    return JSONResponse(
-        status_code=200,
-        content=success_response(
-            request,
-            SimulationData(
-                run_id=saved.id,
-                status=saved.status,
-                symbol=saved.symbol,
-                rating=saved.rating,
-                decision=saved.decision,
-                nodes=list(saved.nodes),
-                bull=saved.bull,
-                bear=saved.bear,
-                disclaimer="仅用于研究与教学，不构成交易建议，也不会发送委托。",
-            ),
-        ),
-    )
-
-
-@router.post("/simulation/runs/{run_id}/backtest", summary="用已入库收盘价核算区间收益")
-def record_simulation_backtest(
-    run_id: UUID,
-    request: Request,
-    user: Annotated[UserRecord, Depends(get_current_user)],
-) -> JSONResponse:
-    saved = SimulationRepository(_engine(request)).get_owned(user.id, run_id)
-    if saved is None:
-        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
-    measured = window_return(_closes(_engine(request), saved.symbol), saved.as_of, 30)
-    if measured is None:
-        note = "已入库日线不足以计算区间收益，没有写入收益率"
-        actual = None
-    else:
-        note = f"{measured.entry_date.isoformat()} 至 {measured.exit_date.isoformat()} 的收盘价变化"
-        actual = measured.actual
-    flag = SimulationRepository(_engine(request)).record_backtest(
-        user.id,
-        run_id,
-        actual=actual,
-        note=note,
-    )
-    if flag is None:
-        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
-    return JSONResponse(
-        status_code=200,
-        content=success_response(
-            request,
-            BacktestData(
-                quality_flag=flag,
-                actual_return=None if actual is None else str(actual),
-                note=note,
-            ),
-        ),
-    )
-
-
-def _closes(engine: Engine, symbol: str) -> list[tuple[date, Decimal]]:
-    from sqlalchemy import select
-    from sqlalchemy.orm import Session
-
-    from app.db.models.market import Instrument, MarketBar
-
-    code, _, suffix = symbol.partition(".")
-    exchange = "SSE" if suffix == "SH" else "SZSE"
-    with Session(engine) as session:
-        instrument = session.scalars(
-            select(Instrument).where(Instrument.exchange == exchange, Instrument.symbol == code)
-        ).one_or_none()
-        if instrument is None:
-            return []
-        rows = session.scalars(
-            select(MarketBar)
-            .where(MarketBar.instrument_id == instrument.id, MarketBar.timeframe == "1d")
-            .order_by(MarketBar.trade_date)
-        ).all()
-        return [(row.trade_date, row.close) for row in rows if isinstance(row.close, Decimal)]
-
-
-@router.get("/simulation/runs/{run_id}/stream", summary="重放推演节点")
-def stream_simulation(
-    run_id: UUID,
-    request: Request,
-    user: Annotated[UserRecord, Depends(get_current_user)],
-) -> StreamingResponse:
-    saved = SimulationRepository(_engine(request)).get_owned(user.id, run_id)
-    if saved is None:
-        raise AppError(code="NOT_FOUND", message="找不到这次推演", status_code=404)
-
-    def events() -> Iterator[str]:
-        for node in saved.nodes:
-            yield f'event: node_started\ndata: {{"node":"{node}"}}\n\n'
-        yield f'event: rating_ready\ndata: {{"final_rating":"{saved.rating}"}}\n\n'
-
-    return StreamingResponse(events(), media_type="text/event-stream")

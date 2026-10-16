@@ -14,6 +14,7 @@ class HttpxTransport(Transport):
                 request.method,
                 request.url,
                 headers=dict(request.headers),
+                content=request.content,
             )
         except httpx.TimeoutException as exc:
             raise ProviderTimeout from exc

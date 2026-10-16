@@ -85,7 +85,9 @@ def _admin_token(client: TestClient, username: str) -> str:
 
 
 @pytest.mark.integration
-def test_series_catalog_is_unavailable_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_series_catalog_falls_back_to_public_csv_without_a_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("FRED_API_KEY", "")
     reset_settings_cache()
     if not _ready():
@@ -95,7 +97,7 @@ def test_series_catalog_is_unavailable_without_a_key(monkeypatch: pytest.MonkeyP
             response = client.get("/api/v1/macro/series")
         assert response.status_code == 200
         body = response.json()["data"]
-        assert body["availability"] == "unavailable"
+        assert body["availability"] == "public_csv"
         assert body["provider_code"] == "fred"
         codes = {item["series_code"] for item in body["series"]}
         assert "UNRATE" in codes
@@ -107,7 +109,7 @@ def test_series_catalog_is_unavailable_without_a_key(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.integration
-def test_missing_key_sync_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_key_sync_still_goes_through_the_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FRED_API_KEY", "")
     reset_settings_cache()
     if not _ready():
@@ -134,11 +136,10 @@ def test_missing_key_sync_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> Non
                     "observation_end": "1899-02-01",
                 },
             )
-        assert response.status_code == 503
-        assert response.json()["error"]["code"] == "DATA_UNAVAILABLE"
-        assert response.json()["error"]["details"]["rows_written"] == 0
-        assert response.json()["error"]["details"]["preserved_existing"] is True
-        assert called is False
+        assert response.status_code == 200
+        assert response.json()["data"]["rows_written"] == 0
+        assert response.json()["data"]["preserved_existing"] is True
+        assert called is True
     finally:
         _cleanup(username)
         reset_settings_cache()

@@ -9,7 +9,6 @@ from sqlalchemy import Engine
 from app.api.deps import require_admin
 from app.api.responses import success_response
 from app.catalog.macro_series import catalog_codes
-from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, target_for
 from app.repositories.macro import MacroRepository
@@ -112,12 +111,6 @@ def _validated_scope(engine: Engine, job_type: str, scope: dict[str, str]) -> di
             "adjustment": adjustment,
         }
     if job_type == "fred_series":
-        if not get_settings().fred_api_key.strip():
-            raise AppError(
-                code="DATA_UNAVAILABLE",
-                message="未配置 FRED 密钥，数据源不可用",
-                status_code=503,
-            )
         series_code = scope.get("series_code", "").upper()
         if series_code not in catalog_codes():
             raise AppError(

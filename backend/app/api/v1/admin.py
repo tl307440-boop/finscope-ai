@@ -79,7 +79,6 @@ async def sync_fred(
     try:
         written = await sync_fred_series(
             repository,
-            api_key=settings.fred_api_key,
             series_code=body.series_code,
             observation_start=body.observation_start,
             observation_end=body.observation_end,

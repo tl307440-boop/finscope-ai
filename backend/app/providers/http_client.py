@@ -11,6 +11,7 @@ class OutboundRequest:
     method: str
     url: str
     headers: Mapping[str, str] = field(default_factory=dict)
+    content: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -47,13 +48,28 @@ class ResilientHttpClient:
         self._last_started = False
 
     async def get(self, url: str, headers: Mapping[str, str] | None = None) -> bytes:
+        return await self._send("GET", url, headers or {}, None)
+
+    async def post(
+        self, url: str, *, content: bytes, headers: Mapping[str, str] | None = None
+    ) -> bytes:
+        return await self._send("POST", url, headers or {}, content)
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        request_headers: Mapping[str, str],
+        content: bytes | None,
+    ) -> bytes:
         await self._pace()
         last_error: ProviderError | None = None
-        request_headers = headers or {}
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = await self.transport.send(
-                    OutboundRequest(method="GET", url=url, headers=request_headers)
+                    OutboundRequest(
+                        method=method, url=url, headers=request_headers, content=content
+                    )
                 )
             except ProviderTimeout:
                 last_error = ProviderError(

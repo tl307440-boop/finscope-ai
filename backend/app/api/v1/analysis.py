@@ -57,6 +57,7 @@ class AnalysisRunData(BaseModel):
     message: str
     body: str
     notice: str
+    as_of: date
 
 
 def _run_data(saved: SavedReport) -> AnalysisRunData:
@@ -68,6 +69,7 @@ def _run_data(saved: SavedReport) -> AnalysisRunData:
         message=saved.message,
         body=saved.body,
         notice=RESEARCH_NOTICE,
+        as_of=saved.as_of,
     )
 
 
