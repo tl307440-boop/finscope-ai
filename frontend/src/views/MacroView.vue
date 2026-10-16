@@ -2,41 +2,49 @@
 /**
  * 全球宏观分析（/macro/us，效果图 2）。
  *
- * 真实接口（与 backend/app/api/v1/macro.py、schemas/macro.py、catalog/macro_series.py 一致；
- * 原有取数逻辑保持不变，本页只重塑版式）：
+ * 真实接口（与 backend/app/api/v1/macro.py、schemas/macro.py、catalog/macro_series.py 一致）：
  *  - GET /api/v1/macro/series
  *      data = { provider_code, availability, notice, series[] }
- *      series[] = { series_code, name_cn, name_en, category, frequency, base_unit, seasonal_adjustment }
+ *      availability：configured / unavailable / not_required / public_csv（无密钥时走 FRED 公开 CSV，只有最新修订值）
  *  - GET /api/v1/macro/series/{series_code}/observations?limit=&as_of=
  *      data = { series_code, pit_date, time_precision, observations[], empty_message, truncated }
+ *      observations 按观测日升序，limit 保留最近 N 条，最后一条即最新值。
  *  - GET /api/v1/macro/assessments?as_of=
  *      data = { pit_date, regime_code, growth|inflation|liquidity: { code, value, reason, evidence[] },
  *               notice, version }
  *
- * 不编造数据（AGENTS.md 硬约束 + docs/UI-设计规范.md §八）：
- *  - 指标带只显示这 8 条序列**真实存在的观测值**与相邻两期差；序列目录里没有的指标
- *    （效果图里的 ISM 制造业 PMI）不凭空补位，而是在「数据说明」里如实列出缺失原因。
- *  - 效果图上的「GDP 实际增速 / CPI 同比」是同比口径，后端没有提供该计算，前端也**不做**同比
- *    换算（前端不算财务/宏观数字）。这里显示序列的原始口径数值，并在数据说明里写明口径差异。
- *  - 宏观象限的「当前位置」只用后端规则分数（macro-rules-v1）定位；分数取不到时画网格与
- *    四象限文字，但不落点、不编造坐标。
- *  - AI 宏观解读的正文来自 assessments 的 regime_code / reason / evidence 原样转发，不是模型生成文案。
+ * 不编造数据（AGENTS.md 硬约束）：
+ *  - 指标带只显示真实观测值；CPI / 核心 PCE 的同比按「12 个月前同月」的观测值计算，找不到就不显示。
+ *  - 宏观象限只用后端规则分数定位；分数取不到时只画坐标系，不落点。
+ *  - 规则解读正文来自 assessments 的 regime_code / evidence，不是模型生成文案。
  */
 import { computed, onMounted, ref, watch } from "vue"
 import type { EChartsCoreOption } from "echarts/core"
 import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
-import { asNumber, asRecord, asString, listOf } from "../api/json"
+import { asNumber, asRecord, asString, listOf, scaleAmount } from "../api/json"
+import {
+  adjustmentLabel,
+  cssColor,
+  frequencyLabel,
+  macroSourceLabel,
+  parseEvidence,
+  regimeText,
+  unitLabel,
+  yearOverYear,
+} from "../api/macro"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
+import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 
 type Phase = "loading" | "ready" | "error"
+type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
 
 interface CatalogItem {
   code: string
@@ -51,8 +59,6 @@ interface CatalogItem {
 interface Observation {
   date: string
   value: number
-  raw: string
-  realtimeStart: string
 }
 
 interface DimensionScore {
@@ -72,31 +78,27 @@ interface Assessment {
   version: string
 }
 
-/** 指标带顺序与效果图一致；name 用后端序列名，label 用后端 name_cn，不自行改名。 */
-const TILE_CODES = [
-  "GDP",
-  "CPIAUCSL",
-  "PCEPILFE",
-  "UNRATE",
-  "FEDFUNDS",
-  "DGS10",
-  "T10Y2Y",
-  "DGS2",
-] as const
+interface TileView {
+  code: string
+  label: string
+  value: string
+  unit: string
+  period: string
+  info: string
+  delta: number | null
+  deltaSuffix: string
+  spark: number[]
+}
 
-/** 收益率曲线横轴口径：效果图 3M…30Y，这里只按目录里真实存在的序列落点。 */
-const CURVE_TENORS: readonly { tenor: string; code: string }[] = [
-  { tenor: "3M", code: "DTB3" },
-  { tenor: "6M", code: "DTB6" },
-  { tenor: "1Y", code: "DGS1" },
-  { tenor: "2Y", code: "DGS2" },
-  { tenor: "3Y", code: "DGS3" },
-  { tenor: "5Y", code: "DGS5" },
-  { tenor: "7Y", code: "DGS7" },
-  { tenor: "10Y", code: "DGS10" },
-  { tenor: "20Y", code: "DGS20" },
-  { tenor: "30Y", code: "DGS30" },
-]
+/** 指标带顺序与效果图一致。 */
+const TILE_CODES = ["GDP", "CPIAUCSL", "PCEPILFE", "UNRATE", "FEDFUNDS", "DGS10", "T10Y2Y", "DGS2"] as const
+
+/** 价格指数在指标带与通胀图里统一换算成同比。 */
+const YOY_CODES = new Set<string>(["CPIAUCSL", "PCEPILFE"])
+const YOY_LABELS: Record<string, string> = { CPIAUCSL: "CPI 同比", PCEPILFE: "核心 PCE 同比" }
+
+/** 规则打分引用的序列（backend/app/services/macro_rules.py）。 */
+const RULE_SERIES: Record<string, string> = { growth: "GDP", inflation: "CPIAUCSL", liquidity: "FEDFUNDS" }
 
 const TABS = [
   { key: "us", label: "美国经济", to: "/macro/us" },
@@ -105,45 +107,11 @@ const TABS = [
   { key: "scenarios", label: "宏观综合判断", to: "/macro/scenarios" },
 ]
 
-/** 数据说明弹窗里的缺失清单：这些指标**不在**本项目序列目录内，不画空壳卡片。 */
-const MISSING_NOTES: readonly string[] = [
-  "ISM 制造业 PMI：后端 FRED 序列目录中不存在该序列代码，需先在 catalog/macro_series.py 登记并同步后才能展示。",
-  "GDP 实际增速 / CPI 同比 / 核心 PCE 同比：目录提供的是 GDP 现价水平（Billions of Dollars）与两个价格指数（Index 2017=100），同比口径由后端规则负责，前端不做换算。",
-]
-
-/** 情景框架：只是效果图里的三条框架位，概率与方向结论都需要后端输入，故不填。 */
-const SCENARIOS = [
-  {
-    key: "base",
-    label: "基准",
-    tone: "accent" as const,
-    title: "沿当前 regime_code 延续",
-    basis: "以后端规则分数在当前观察日的取值作为基准情形，不做外推。",
-  },
-  {
-    key: "optimistic",
-    label: "乐观",
-    tone: "ok" as const,
-    title: "增长维度上行 + 流动性转松",
-    basis: "需要后续观测值把增长分数推到 ≥50、流动性分数推到 ≥70 才会出现，届时以新分数为准。",
-  },
-  {
-    key: "pessimistic",
-    label: "悲观",
-    tone: "danger" as const,
-    title: "增长维度下行 + 流动性转紧",
-    basis: "需要后续观测值把增长分数压到 <50、流动性分数压到 ≤30 才会出现，届时以新分数为准。",
-  },
-]
-
 const phase = ref<Phase>("loading")
 const failure = ref("")
-const providerCode = ref("")
 const availability = ref("")
-const catalogNotice = ref("")
 const catalog = ref<CatalogItem[]>([])
 const observationsByCode = ref<Record<string, Observation[]>>({})
-const emptyMessages = ref<Record<string, string>>({})
 const assessmentFailed = ref(false)
 const assessment = ref<Assessment | null>(null)
 const helpOpen = ref(false)
@@ -153,60 +121,115 @@ const today = new Date()
 const pad = (part: number): string => String(part).padStart(2, "0")
 const browserToday = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
 
-/** 观察日：一次请求同时约束指标带、近端序列与规则判断，避免两块数据对不上时点。 */
+/** 观察日：一次请求同时约束指标带、走势图与规则判断，避免两块数据对不上时点。 */
 const queryAsOf = ref(browserToday)
 const appliedAsOf = ref(browserToday)
 
-const tileRows = computed(() =>
+const sourceLabel = computed<string>(() => macroSourceLabel(availability.value))
+
+function catalogItem(code: string): CatalogItem | null {
+  return catalog.value.find((entry) => entry.code === code) ?? null
+}
+
+function seriesName(code: string): string {
+  return catalogItem(code)?.name ?? code
+}
+
+function rowsOf(code: string): Observation[] {
+  return observationsByCode.value[code] ?? []
+}
+
+const yoyByCode = computed<Record<string, Observation[]>>(() => {
+  const result: Record<string, Observation[]> = {}
+  for (const code of YOY_CODES) {
+    result[code] = yearOverYear(rowsOf(code))
+  }
+  return result
+})
+
+function formatPlain(value: number, digits = 2): string {
+  return value.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })
+}
+
+function monthText(date: string, frequency: string): string {
+  if (frequency === "Quarterly") {
+    const month = Number(date.slice(5, 7))
+    return `${date.slice(0, 4)} Q${Math.floor((month - 1) / 3) + 1}`
+  }
+  if (frequency === "Monthly") {
+    return date.slice(0, 7)
+  }
+  return date
+}
+
+const tiles = computed<TileView[]>(() =>
   TILE_CODES.map((code) => {
-    const item = catalog.value.find((entry) => entry.code === code) ?? null
-    const rows = observationsByCode.value[code] ?? []
-    const latest = rows.length ? rows[rows.length - 1] ?? null : null
-    const previous = rows.length > 1 ? rows[rows.length - 2] ?? null : null
-    const values = rows.map((row) => row.value)
+    const item = catalogItem(code)
+    const rows = rowsOf(code)
+    const frequency = item?.frequency ?? ""
+    const baseInfo = item
+      ? `${item.nameEn || item.name} · FRED 代码 ${code} · 单位 ${unitLabel(item.unit)} · ${adjustmentLabel(item.adjustment)}`
+      : `暂未接入 ${code}`
+    const yoy = YOY_CODES.has(code) ? (yoyByCode.value[code] ?? []) : []
+    if (yoy.length) {
+      const latest = yoy[yoy.length - 1] as Observation
+      const previous = yoy.length > 1 ? (yoy[yoy.length - 2] as Observation) : null
+      const level = rows[rows.length - 1]
+      return {
+        code,
+        label: YOY_LABELS[code] ?? `${item?.name ?? code} 同比`,
+        value: formatPlain(latest.value),
+        unit: "%",
+        period: `${monthText(latest.date, frequency)} · ${frequencyLabel(frequency)}`,
+        info: `${baseInfo}。同比 = 当月指数 ÷ 12 个月前同月指数 − 1${level ? `；最新指数 ${formatPlain(level.value)}` : ""}`,
+        delta: previous ? latest.value - previous.value : null,
+        deltaSuffix: " pct",
+        spark: yoy.slice(-36).map((row) => row.value),
+      }
+    }
+    const latest = rows.length ? (rows[rows.length - 1] as Observation) : null
+    const previous = rows.length > 1 ? (rows[rows.length - 2] as Observation) : null
+    const unit = item?.unit ?? ""
+    let value = "—"
+    let shownUnit = ""
+    if (latest) {
+      if (unit === "Billions of Dollars") {
+        const scaled = scaleAmount(latest.value * 1e9)
+        value = scaled.text
+        shownUnit = `${scaled.scale}美元`
+      } else if (unit === "Percent") {
+        value = formatPlain(latest.value)
+        shownUnit = "%"
+      } else {
+        value = formatPlain(latest.value)
+      }
+    }
+    let delta: number | null = null
+    let deltaSuffix = ""
+    if (latest && previous) {
+      if (unit === "Percent") {
+        delta = latest.value - previous.value
+        deltaSuffix = " pct"
+      } else if (previous.value !== 0) {
+        delta = (latest.value / previous.value - 1) * 100
+        deltaSuffix = "%"
+      }
+    }
     return {
       code,
-      item,
-      rows,
-      latest,
-      delta: latest && previous ? latest.value - previous.value : null,
-      spark: values.length > 1 ? values : [],
+      label: item?.name ?? code,
+      value,
+      unit: shownUnit,
+      period: latest ? `${monthText(latest.date, frequency)} · ${frequencyLabel(frequency)}` : "暂无数据",
+      info: baseInfo,
+      delta,
+      deltaSuffix,
+      spark: rows.slice(-60).map((row) => row.value),
     }
   }),
 )
 
-const missingCodes = computed<string[]>(() =>
-  TILE_CODES.filter((code) => !catalog.value.some((item) => item.code === code)),
-)
-
-const availabilityLabel = computed<string>(() => {
-  if (availability.value === "configured") {
-    return "外部数据源已配置"
-  }
-  if (availability.value === "unavailable") {
-    return "外部数据源未配置（序列定义仍在，观测值需同步或导入）"
-  }
-  return availability.value || "—"
-})
-
-const dataNotices = computed<string[]>(() => {
-  const rows: string[] = []
-  if (catalogNotice.value) {
-    rows.push(`目录说明：${catalogNotice.value}`)
-  }
-  if (availability.value === "unavailable") {
-    rows.push("FRED_API_KEY 未配置：序列定义可见，但不返回观测值；下方指标一律显示真实空态而不是替代数字。")
-  }
-  for (const code of missingCodes.value) {
-    rows.push(`序列目录中没有 ${code}，该指标本次不展示。`)
-  }
-  for (const [code, message] of Object.entries(emptyMessages.value)) {
-    if (message) {
-      rows.push(`${code}：${message}`)
-    }
-  }
-  return rows
-})
+const hasAnyObservation = computed<boolean>(() => Object.values(observationsByCode.value).some((rows) => rows.length))
 
 const latestObservationDate = computed<string>(() => {
   const dates = Object.values(observationsByCode.value)
@@ -215,331 +238,256 @@ const latestObservationDate = computed<string>(() => {
   return dates.length ? dates.reduce((left, right) => (left > right ? left : right)) : ""
 })
 
-const stale = computed<boolean>(() => phase.value === "ready" && !latestObservationDate.value)
-
-/** 效果图右上角「数据说明」：只解释真实取数情况，不做假按钮。 */
-const sourceNote = computed<string>(() =>
-  [
-    "指标带取序列原始口径的观测值，较上期为相邻两个已公布观测值之差（频率随序列，日频即日变动、月频即月变动）。",
-    ...MISSING_NOTES,
-  ].join(" "),
+/** 公开 CSV 只有最新修订值，选历史观察日时看不到「当时已公布」的数据。 */
+const pastDateUnsupported = computed<boolean>(
+  () => availability.value === "public_csv" && appliedAsOf.value < browserToday,
 )
 
-function formatValue(value: number | null, unit: string): string {
-  if (value === null) {
-    return "—"
+const emptyNotice = computed<string>(() => {
+  if (pastDateUnsupported.value) {
+    return "当前数据来自 FRED 公开 CSV，只有最新修订值，无法回看所选观察日当时已公布的数据。请把观察日调回今天。"
   }
-  if (unit === "Percent") {
-    return value.toFixed(2)
+  if (availability.value === "unavailable") {
+    return "美国宏观数据源暂不可用，请稍后重试或联系管理员检查数据同步。"
   }
-  if (Math.abs(value) >= 1000) {
-    return value.toLocaleString("zh-CN", { maximumFractionDigits: 1 })
-  }
-  return value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })
-}
-
-function tilePeriod(row: { latest: Observation | null; item: CatalogItem | null }): string {
-  if (!row.latest) {
-    return row.item ? `${row.item.frequency} · 暂无可见观测值` : "序列目录中不存在"
-  }
-  return `${row.latest.date} · ${row.item?.frequency ?? "—"}`
-}
-
-/** 联邦基金利率：用 step 反映政策利率的阶梯特性。 */
-const fedOption = computed<EChartsCoreOption | null>(() => {
-  const rows = observationsByCode.value["FEDFUNDS"] ?? []
-  if (rows.length < 2) {
-    return null
-  }
-  const points = rows.slice(-48)
-  return {
-    grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
-      valueFormatter: (value: unknown): string => `${String(value)} %`,
-    },
-    xAxis: {
-      type: "category",
-      data: points.map((row) => row.date),
-      axisLine: { lineStyle: { color: "var(--line)" } },
-      axisLabel: { color: "var(--muted)", fontSize: 11, hideOverlap: true },
-    },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLine: { show: false },
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-      splitLine: { lineStyle: { color: "var(--line)" } },
-    },
-    series: [
-      {
-        name: "FEDFUNDS（%）",
-        type: "line",
-        step: "end",
-        symbol: "none",
-        data: points.map((row) => row.value),
-        lineStyle: { color: "var(--accent)", width: 2 },
-        itemStyle: { color: "var(--accent)" },
-        areaStyle: { color: "var(--accent)", opacity: 0.12 },
-      },
-    ],
-  }
+  return "所选观察日还没有已公布的美国宏观数据。"
 })
 
-/** 收益率曲线：只取目录里真实存在的期限，缺的期限不补点。 */
-const curvePoints = computed<{ tenor: string; code: string; value: number; date: string }[]>(() => {
-  const rows: { tenor: string; code: string; value: number; date: string }[] = []
-  for (const item of CURVE_TENORS) {
-    if (!catalog.value.some((entry) => entry.code === item.code)) {
-      continue
-    }
-    const points = observationsByCode.value[item.code] ?? []
-    const latest = points.length ? points[points.length - 1] : null
-    if (!latest) {
-      continue
-    }
-    rows.push({ tenor: item.tenor, code: item.code, value: latest.value, date: latest.date })
-  }
-  return rows
-})
-
-const curveMissing = computed<string[]>(() =>
-  CURVE_TENORS.filter((item) => !catalog.value.some((entry) => entry.code === item.code)).map(
-    (item) => item.tenor,
-  ),
+const stale = computed<boolean>(
+  () => phase.value === "ready" && (availability.value === "unavailable" || !hasAnyObservation.value),
 )
 
-const curveOption = computed<EChartsCoreOption | null>(() => {
-  const rows = curvePoints.value
-  if (rows.length < 2) {
-    return null
-  }
+/** 设计变量 → 实际颜色（ECharts 画在 canvas 上，不认 CSS 变量）。 */
+function palette() {
   return {
-    grid: { left: 8, right: 16, top: 24, bottom: 8, containLabel: true },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
-      valueFormatter: (value: unknown): string => `${String(value)} %`,
-    },
-    xAxis: {
-      type: "category",
-      data: rows.map((row) => row.tenor),
-      axisLine: { lineStyle: { color: "var(--line)" } },
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-    },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLine: { show: false },
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-      splitLine: { lineStyle: { color: "var(--line)" } },
-    },
-    series: [
-      {
-        name: "国债收益率（%）",
-        type: "line",
-        smooth: true,
-        symbolSize: 7,
-        data: rows.map((row) => row.value),
-        lineStyle: { color: "var(--accent)", width: 2 },
-        itemStyle: { color: "var(--accent)" },
-        label: {
-          show: true,
-          position: "top",
-          color: "var(--muted)",
-          fontSize: 11,
-          formatter: (params: { value?: unknown }): string =>
-            typeof params.value === "number" ? params.value.toFixed(2) : "",
-        },
-      },
-    ],
+    accent: cssColor("--accent", "#3b82f6"),
+    cyan: cssColor("--cyan", "#22d3ee"),
+    violet: cssColor("--violet", "#a78bfa"),
+    orange: cssColor("--orange", "#fb923c"),
+    warn: cssColor("--warn", "#fbbf24"),
+    text: cssColor("--text", "#e6edf8"),
+    muted: cssColor("--muted", "#94a4be"),
+    line: cssColor("--line", "rgba(96,140,220,0.16)"),
+    panel: cssColor("--panel", "#0d1729"),
   }
-})
+}
 
-/** 通胀走势：两条指数序列 + 2% 目标虚线（口径差异见卡片下方说明）。 */
+function percentTip(value: unknown): string {
+  return typeof value === "number" ? `${value.toFixed(2)}%` : "—"
+}
+
+/** 通胀走势：CPI 与核心 PCE 的同比（%），和 2% 目标同一口径。 */
 const inflationOption = computed<EChartsCoreOption | null>(() => {
-  const cpi = (observationsByCode.value["CPIAUCSL"] ?? []).slice(-120)
-  const pce = (observationsByCode.value["PCEPILFE"] ?? []).slice(-120)
+  const cpi = (yoyByCode.value["CPIAUCSL"] ?? []).slice(-60)
+  const pce = (yoyByCode.value["PCEPILFE"] ?? []).slice(-60)
   if (cpi.length < 2 && pce.length < 2) {
     return null
   }
+  const colors = palette()
+  const dates = [...new Set([...cpi, ...pce].map((row) => row.date))].sort()
+  const lookup = (rows: Observation[]) => {
+    const map = new Map(rows.map((row) => [row.date, row.value]))
+    return dates.map((date) => map.get(date) ?? null)
+  }
   return {
-    grid: { left: 8, right: 16, top: 32, bottom: 8, containLabel: true },
-    legend: {
-      top: 0,
-      icon: "circle",
-      itemWidth: 8,
-      itemHeight: 8,
-      textStyle: { color: "var(--muted)", fontSize: 11 },
-      data: ["CPI 指数（2017=100）", "核心 PCE 指数（2017=100）", "目标水平 2%"],
-    },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
-    },
+    grid: { left: 8, right: 44, top: 34, bottom: 4, containLabel: true },
+    legend: { top: 0, right: 0, data: ["CPI 同比", "核心 PCE 同比"] },
+    tooltip: { trigger: "axis", valueFormatter: percentTip },
     xAxis: {
       type: "category",
-      data: (cpi.length >= pce.length ? cpi : pce).map((row) => row.date),
-      axisLine: { lineStyle: { color: "var(--line)" } },
-      axisLabel: { color: "var(--muted)", fontSize: 11, hideOverlap: true },
+      data: dates.map((date) => date.slice(0, 7)),
+      boundaryGap: false,
+      axisLabel: { hideOverlap: true },
     },
     yAxis: {
       type: "value",
       scale: true,
-      axisLine: { show: false },
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-      splitLine: { lineStyle: { color: "var(--line)" } },
+      axisLabel: { formatter: "{value}%" },
     },
     series: [
       {
-        name: "CPI 指数（2017=100）",
+        name: "CPI 同比",
         type: "line",
-        symbol: "none",
-        data: cpi.map((row) => row.value),
-        lineStyle: { color: "var(--accent)", width: 2 },
-        itemStyle: { color: "var(--accent)" },
-      },
-      {
-        name: "核心 PCE 指数（2017=100）",
-        type: "line",
-        symbol: "none",
-        data: pce.map((row) => row.value),
-        lineStyle: { color: "var(--warn)", width: 2 },
-        itemStyle: { color: "var(--warn)" },
-      },
-      {
-        name: "目标水平 2%",
-        type: "line",
-        symbol: "none",
-        silent: true,
-        data: [],
+        smooth: true,
+        connectNulls: true,
+        data: lookup(cpi),
+        lineStyle: { color: colors.accent, width: 2 },
+        itemStyle: { color: colors.accent },
+        areaStyle: { color: colors.accent, opacity: 0.08 },
         markLine: {
           silent: true,
           symbol: "none",
-          lineStyle: { color: "var(--muted)", type: "dashed" },
-          label: { color: "var(--muted)", fontSize: 10, formatter: "目标水平 2%" },
+          lineStyle: { color: colors.muted, type: "dashed" },
+          label: { color: colors.muted, fontSize: 11, formatter: "目标 2%", position: "end" },
           data: [{ yAxis: 2 }],
         },
+      },
+      {
+        name: "核心 PCE 同比",
+        type: "line",
+        smooth: true,
+        connectNulls: true,
+        data: lookup(pce),
+        lineStyle: { color: colors.orange, width: 2 },
+        itemStyle: { color: colors.orange },
       },
     ],
   }
 })
 
-/** 象限图的 0–100 网格：四角文字与轴线用 graphic，不依赖未注册的 markArea。 */
-const QUADRANT_GRAPHIC: readonly Record<string, unknown>[] = [
-  {
-    type: "text",
-    left: 24,
-    top: 12,
-    style: { text: "滞胀风险\n（高通胀·低增长）", fill: "var(--muted)", fontSize: 11, lineHeight: 16 },
-  },
-  {
-    type: "text",
-    right: 24,
-    top: 12,
-    style: { text: "过热风险\n（高增长·高通胀）", fill: "var(--muted)", fontSize: 11, lineHeight: 16, align: "right" },
-  },
-  {
-    type: "text",
-    left: 24,
-    bottom: 40,
-    style: { text: "衰退风险\n（低增长·低通胀）", fill: "var(--muted)", fontSize: 11, lineHeight: 16 },
-  },
-  {
-    type: "text",
-    right: 24,
-    bottom: 40,
-    style: { text: "复苏阶段\n（低通胀·高增长）", fill: "var(--muted)", fontSize: 11, lineHeight: 16, align: "right" },
-  },
-  {
-    type: "text",
-    left: "center",
-    top: 8,
-    style: { text: "经济较热（增长动能强）", fill: "var(--muted)", fontSize: 11, align: "center" },
-  },
-  {
-    type: "text",
-    left: "center",
-    bottom: 20,
-    style: { text: "经济较冷（增长动能弱）", fill: "var(--muted)", fontSize: 11, align: "center" },
-  },
-]
+const inflationLatest = computed<string>(() => {
+  const parts: string[] = []
+  const cpi = yoyByCode.value["CPIAUCSL"] ?? []
+  const pce = yoyByCode.value["PCEPILFE"] ?? []
+  const lastCpi = cpi[cpi.length - 1]
+  const lastPce = pce[pce.length - 1]
+  if (lastCpi) {
+    parts.push(`CPI ${lastCpi.date.slice(0, 7)} ${lastCpi.value.toFixed(2)}%`)
+  }
+  if (lastPce) {
+    parts.push(`核心 PCE ${lastPce.date.slice(0, 7)} ${lastPce.value.toFixed(2)}%`)
+  }
+  return parts.join(" · ")
+})
 
+/** 利率：联邦基金利率（月度阶梯）与 2Y / 10Y 美债收益率（日度），用时间轴对齐不同频率。 */
+const ratesOption = computed<EChartsCoreOption | null>(() => {
+  const dgs2 = rowsOf("DGS2")
+  const dgs10 = rowsOf("DGS10")
+  const daily = [...dgs2, ...dgs10]
+  const start = daily.length ? daily.reduce((low, row) => (row.date < low ? row.date : low), daily[0]!.date) : ""
+  const fed = rowsOf("FEDFUNDS").filter((row) => !start || row.date >= start.slice(0, 7))
+  const lines = [
+    { name: "联邦基金利率", rows: start ? fed : fed.slice(-48), step: true },
+    { name: "10 年期美债", rows: dgs10, step: false },
+    { name: "2 年期美债", rows: dgs2, step: false },
+  ].filter((line) => line.rows.length > 1)
+  if (!lines.length) {
+    return null
+  }
+  const colors = palette()
+  const tones: Record<string, string> = {
+    联邦基金利率: colors.warn,
+    "10 年期美债": colors.accent,
+    "2 年期美债": colors.cyan,
+  }
+  return {
+    grid: { left: 8, right: 12, top: 34, bottom: 4, containLabel: true },
+    legend: { top: 0, right: 0, data: lines.map((line) => line.name) },
+    tooltip: { trigger: "axis", valueFormatter: percentTip },
+    xAxis: { type: "time", axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", scale: true, axisLabel: { formatter: "{value}%" } },
+    series: lines.map((line) => ({
+      name: line.name,
+      type: "line",
+      step: line.step ? "end" : undefined,
+      showSymbol: false,
+      data: line.rows.map((row) => [row.date, row.value]),
+      lineStyle: { color: tones[line.name], width: line.step ? 2 : 1.6 },
+      itemStyle: { color: tones[line.name] },
+    })),
+  }
+})
+
+const spreadNote = computed<string>(() => {
+  const rows = rowsOf("T10Y2Y")
+  const last = rows[rows.length - 1]
+  if (!last) {
+    return ""
+  }
+  const shape = last.value >= 0 ? "曲线未倒挂" : "曲线倒挂"
+  return `10Y−2Y 利差 ${last.value.toFixed(2)} pct（${last.date}，${shape}）`
+})
+
+/** 宏观象限：横轴流动性分数、纵轴增长分数，各 0–100，以 50 为界划分四象限。 */
 const quadrantPoint = computed<{ x: number; y: number } | null>(() => {
   const growth = assessment.value?.growth?.value
   const liquidity = assessment.value?.liquidity?.value
   if (growth === null || growth === undefined || liquidity === null || liquidity === undefined) {
     return null
   }
-  return { x: 30 + (liquidity / 100) * 40, y: 30 + (growth / 100) * 40 }
+  return { x: liquidity, y: growth }
 })
 
 const quadrantOption = computed<EChartsCoreOption>(() => {
   const point = quadrantPoint.value
+  const colors = palette()
+  const corner = (text: string, sub: string, color: string, pos: Record<string, number | string>, align: string) => ({
+    type: "text",
+    ...pos,
+    style: {
+      text: `{t|${text}}\n{s|${sub}}`,
+      align,
+      rich: {
+        t: { fill: color, fontSize: 13, fontWeight: 600, lineHeight: 20, align },
+        s: { fill: colors.muted, fontSize: 11, lineHeight: 16, align },
+      },
+    },
+  })
   return {
-    grid: { left: 32, right: 32, top: 36, bottom: 36 },
-    graphic: QUADRANT_GRAPHIC,
+    grid: { left: 64, right: 64, top: 40, bottom: 40 },
+    graphic: [
+      corner("过热风险", "增长强 · 货币紧", colors.warn, { left: 76, top: 52 }, "left"),
+      corner("扩张阶段", "增长强 · 货币松", colors.cyan, { right: 76, top: 52 }, "right"),
+      corner("衰退风险", "增长弱 · 货币紧", colors.violet, { left: 76, bottom: 52 }, "left"),
+      corner("复苏阶段", "增长弱 · 货币松", colors.accent, { right: 76, bottom: 52 }, "right"),
+      {
+        type: "text",
+        left: "center",
+        top: 4,
+        style: { text: "经济较热（增长强）", fill: colors.text, fontSize: 12, align: "center" },
+      },
+      {
+        type: "text",
+        left: "center",
+        bottom: 6,
+        style: { text: "经济较冷（增长弱）", fill: colors.text, fontSize: 12, align: "center" },
+      },
+      {
+        type: "text",
+        left: 4,
+        top: "middle",
+        style: { text: "货币收紧\n（利率上行）", fill: colors.text, fontSize: 12, lineHeight: 17, align: "left" },
+      },
+      {
+        type: "text",
+        right: 4,
+        top: "middle",
+        style: { text: "货币宽松\n（利率下行）", fill: colors.text, fontSize: 12, lineHeight: 17, align: "right" },
+      },
+    ],
     tooltip: {
       trigger: "item",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
       formatter: (params: unknown): string => {
-        const record = asRecord(params)
-        const value = asListValue(record?.value)
+        const value = asListValue(asRecord(params)?.value)
         if (value.length < 2) {
           return ""
         }
-        return `横轴＝流动性分数 ${value[0].toFixed(1)} · 纵轴＝增长分数 ${value[1].toFixed(1)}`
+        return `流动性分数 ${value[0]} · 增长分数 ${value[1]}`
       },
     },
     xAxis: {
       type: "value",
       min: 0,
       max: 100,
-      name: "货币收紧  货币宽松",
-      nameLocation: "middle",
-      nameGap: 24,
-      nameTextStyle: { color: "var(--muted)", fontSize: 11 },
-      axisLine: {
-        onZero: false,
-        lineStyle: { color: "var(--line)" },
-        symbol: ["none", "arrow"],
-        symbolSize: [0, 8],
-      },
+      interval: 50,
+      axisLine: { show: false },
       axisLabel: { show: false },
-      axisTick: { show: false },
-      splitLine: { show: false },
+      splitLine: { lineStyle: { color: colors.line, type: "dashed" } },
     },
     yAxis: {
       type: "value",
       min: 0,
       max: 100,
-      name: "经济冷热",
-      nameLocation: "middle",
-      nameGap: 28,
-      nameTextStyle: { color: "var(--muted)", fontSize: 11 },
-      axisLine: {
-        onZero: false,
-        lineStyle: { color: "var(--line)" },
-        symbol: ["none", "arrow"],
-        symbolSize: [0, 8],
-      },
+      interval: 50,
+      axisLine: { show: false },
       axisLabel: { show: false },
-      axisTick: { show: false },
-      splitLine: { lineStyle: { color: "var(--line)" } },
+      splitLine: { lineStyle: { color: colors.line, type: "dashed" } },
     },
     series: [
       {
         type: "scatter",
-        symbolSize: point ? 16 : 0,
+        symbolSize: 16,
         data: point
           ? [
               {
@@ -547,24 +495,26 @@ const quadrantOption = computed<EChartsCoreOption>(() => {
                 value: [point.x, point.y],
                 label: {
                   show: true,
-                  position: "top",
-                  distance: 8,
-                  backgroundColor: "var(--panel-soft)",
-                  borderColor: "var(--accent)",
+                  position: "right",
+                  distance: 10,
+                  backgroundColor: colors.panel,
+                  borderColor: colors.accent,
                   borderWidth: 1,
                   borderRadius: 6,
                   padding: [4, 8],
-                  color: "var(--text)",
-                  fontSize: 11,
+                  color: colors.text,
+                  fontSize: 12,
                   formatter: "当前位置",
                 },
               },
             ]
           : [],
         itemStyle: {
-          color: "var(--rise)",
-          borderColor: "var(--panel)",
+          color: colors.accent,
+          borderColor: colors.text,
           borderWidth: 2,
+          shadowBlur: 16,
+          shadowColor: colors.accent,
         },
       },
     ],
@@ -593,59 +543,32 @@ const allInsufficient = computed<boolean>(
   () => dimensionRows.value.length > 0 && dimensionRows.value.every((item) => item.value === null),
 )
 
-const regimeLabel = computed<string>(() => {
-  const code = assessment.value?.regimeCode ?? ""
-  if (!code) {
-    return "—"
-  }
-  if (code === "insufficient_data") {
-    return "数据不足，规则无法给出组合状态"
-  }
-  const words: Record<string, string> = { up: "上行", down: "下行", easy: "偏松", tight: "偏紧" }
-  const [growth, inflation, liquidity] = code.split("-")
-  const parts: string[] = []
-  if (growth) {
-    parts.push(`增长${words[growth] ?? growth}`)
-  }
-  if (inflation) {
-    parts.push(`通胀${words[inflation] ?? inflation}`)
-  }
-  if (liquidity) {
-    parts.push(`流动性${words[liquidity] ?? liquidity}`)
-  }
-  return parts.join(" · ")
-})
+const regimeLabel = computed<string>(() => regimeText(assessment.value?.regimeCode ?? "") || "—")
 
-const regimePill = computed<{ text: string; tone: "ok" | "warn" | "danger" | "muted" | "accent" }>(() => {
+const regimePill = computed<{ text: string; tone: Tone }>(() => {
   const current = assessment.value
   if (!current) {
-    return { text: "未取到评估结果", tone: "muted" }
+    return { text: "未取到判断", tone: "muted" }
   }
-  if (current.regimeCode === "insufficient_data" || allInsufficient.value) {
+  if (current.regimeCode === "insufficient_data" || allInsufficient.value || !current.regimeCode) {
     return { text: "数据不足", tone: "muted" }
   }
-  if (!current.regimeCode) {
-    return { text: "—", tone: "muted" }
-  }
-  return { text: current.regimeCode, tone: "accent" }
+  return { text: regimeLabel.value, tone: "accent" }
 })
 
-/** 维度分数：70=上行/偏松、30=下行/偏紧、50=持平，value 缺省＝数据不足。 */
-function scoreView(score: DimensionScore | null): { label: string; tone: string } {
+/** 维度分数：70=上行/偏松、30=下行/偏紧、50=持平；宏观指标不是涨跌，配色用中性色。 */
+function scoreView(score: DimensionScore | null): { label: string; tone: Tone } {
   if (!score || score.value === null) {
-    return { label: "数据不足", tone: "var(--muted)" }
+    return { label: "数据不足", tone: "muted" }
   }
   const liquidity = score.code === "liquidity"
-  if (score.value === 70) {
-    return { label: liquidity ? "偏松（70，利率下行）" : "上行（70）", tone: "var(--rise)" }
+  if (score.value >= 70) {
+    return { label: liquidity ? "偏松" : "上行", tone: "accent" }
   }
-  if (score.value === 30) {
-    return { label: liquidity ? "偏紧（30，利率上行）" : "下行（30）", tone: "var(--fall)" }
+  if (score.value <= 30) {
+    return { label: liquidity ? "偏紧" : "下行", tone: "warn" }
   }
-  if (score.value === 50) {
-    return { label: "持平（50）", tone: "var(--text)" }
-  }
-  return { label: `分数 ${score.value}`, tone: "var(--text)" }
+  return { label: "持平", tone: "muted" }
 }
 
 function dimensionLabel(code: string): string {
@@ -661,25 +584,83 @@ function dimensionLabel(code: string): string {
   return code
 }
 
-function reasonView(reason: string | null): string {
-  if (!reason) {
-    return ""
+function evidenceValue(code: string, value: number | null): string {
+  if (value === null) {
+    return "—"
   }
-  if (reason === "insufficient_data") {
-    return "不足两个已公布观测值，规则无法给出方向"
+  const unit = catalogItem(code)?.unit ?? ""
+  if (unit === "Billions of Dollars") {
+    const scaled = scaleAmount(value * 1e9)
+    return `${scaled.text} ${scaled.scale}美元`
   }
-  return reason
+  if (unit === "Percent") {
+    return `${value.toFixed(2)}%`
+  }
+  return formatPlain(value)
 }
 
-/** 依据行来自后端 _evidence()："<序列代码> <观测日> <数值> 公布日 <公布日>"。 */
-function evidenceParts(line: string): { headline: string; published: string } {
-  const marker = " 公布日 "
-  const index = line.indexOf(marker)
-  if (index < 0) {
-    return { headline: line, published: "" }
+/** 依据行 → 「GDP：2026 Q1 31.91 万亿美元 → 2026 Q2 32.56 万亿美元」。 */
+function evidenceSummary(score: DimensionScore): string {
+  const points = score.evidence.map(parseEvidence)
+  if (!points.length) {
+    return ""
   }
-  return { headline: line.slice(0, index), published: line.slice(index + marker.length) }
+  if (points.some((point) => !point.code)) {
+    return score.evidence.join("；")
+  }
+  const code = points[0]?.code ?? ""
+  const frequency = catalogItem(code)?.frequency ?? ""
+  const steps = points.map((point) => `${monthText(point.date, frequency)} ${evidenceValue(point.code, point.value)}`)
+  return `${seriesName(code)}：${steps.join(" → ")}`
 }
+
+const latestPublished = computed<string>(() => {
+  const dates = dimensionRows.value.flatMap((row) => row.evidence.map((line) => parseEvidence(line).published))
+  return dates.filter(Boolean).sort().pop() ?? ""
+})
+
+/** 情景切换条件：只按规则写「下一期往哪个方向走会改变哪一维」，不给概率、不预测数值。 */
+const scenarioRows = computed<{ key: string; label: string; tone: Tone; text: string }[]>(() => {
+  const rows: { key: string; label: string; tone: Tone; text: string }[] = []
+  if (!assessment.value || allInsufficient.value) {
+    return rows
+  }
+  rows.push({
+    key: "base",
+    label: "延续",
+    tone: "accent",
+    text: `下一期公布值方向不变时，维持「${regimeLabel.value}」。`,
+  })
+  for (const score of dimensionRows.value) {
+    if (score.value === null) {
+      continue
+    }
+    const name = seriesName(RULE_SERIES[score.code] ?? "")
+    const rising = score.value >= 50
+    if (score.code === "liquidity") {
+      rows.push({
+        key: score.code,
+        label: score.value <= 30 ? "转松" : "转紧",
+        tone: "warn",
+        text:
+          score.value <= 30
+            ? `若${name}下一期低于本期，流动性转为偏松。`
+            : `若${name}下一期高于本期，流动性转为偏紧。`,
+      })
+      continue
+    }
+    const dim = dimensionLabel(score.code)
+    rows.push({
+      key: score.code,
+      label: `${dim}${rising ? "转弱" : "回升"}`,
+      tone: "muted",
+      text: rising
+        ? `若${name}下一期低于本期，${dim}维度转为下行。`
+        : `若${name}下一期高于本期，${dim}维度转为上行。`,
+    })
+  }
+  return rows
+})
 
 function parseCatalog(value: unknown): CatalogItem[] {
   return listOf(value).flatMap((item) => {
@@ -693,10 +674,10 @@ function parseCatalog(value: unknown): CatalogItem[] {
         code,
         name,
         nameEn: asString(item.name_en) ?? "",
-        category: asString(item.category) ?? "—",
-        frequency: asString(item.frequency) ?? "—",
-        unit: asString(item.base_unit) ?? "—",
-        adjustment: asString(item.seasonal_adjustment) ?? "—",
+        category: asString(item.category) ?? "",
+        frequency: asString(item.frequency) ?? "",
+        unit: asString(item.base_unit) ?? "",
+        adjustment: asString(item.seasonal_adjustment) ?? "",
       },
     ]
   })
@@ -706,18 +687,10 @@ function parseObservation(value: unknown): Observation[] {
   const record = asRecord(value)
   const date = asString(record?.observation_date)
   const amount = asNumber(record?.value)
-  const raw = asString(record?.value)
   if (!date || amount === null) {
     return []
   }
-  return [
-    {
-      date,
-      value: amount,
-      raw: raw ?? String(amount),
-      realtimeStart: asString(record?.realtime_start) ?? "",
-    },
-  ]
+  return [{ date, value: amount }]
 }
 
 function parseScore(value: unknown): DimensionScore | null {
@@ -740,45 +713,41 @@ function parseScore(value: unknown): DimensionScore | null {
   }
 }
 
+/** limit 保留最近 N 条：日频取约两年交易日，月/季频取 10 年，足够算同比和画走势。 */
+function limitFor(code: string): number {
+  return catalogItem(code)?.frequency === "Daily" ? 520 : 120
+}
+
 async function loadObservations(): Promise<void> {
   observationsBusy.value = true
   const codes = TILE_CODES.filter((code) => catalog.value.some((item) => item.code === code))
   try {
     const results = await Promise.all(
       codes.map(async (code) => {
-        const params = new URLSearchParams({ limit: "60" })
+        const params = new URLSearchParams({ limit: String(limitFor(code)) })
         if (appliedAsOf.value) {
           params.set("as_of", appliedAsOf.value)
         }
         const response = await fetch(
-          apiUrl(
-            `/api/v1/macro/series/${encodeURIComponent(code)}/observations?${params.toString()}`,
-          ),
+          apiUrl(`/api/v1/macro/series/${encodeURIComponent(code)}/observations?${params.toString()}`),
         )
         const body = await readJson(response)
         if (!response.ok) {
           throw errorFrom(body, response.headers.get("X-Request-ID"))
         }
         const data = asRecord(asRecord(body)?.data)
-        return {
-          code,
-          rows: Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : [],
-          emptyMessage: asString(data?.empty_message) ?? "",
-        }
+        const rows = Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : []
+        rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+        return { code, rows }
       }),
     )
-    const nextObs: Record<string, Observation[]> = {}
-    const nextEmpty: Record<string, string> = {}
+    const next: Record<string, Observation[]> = {}
     for (const item of results) {
-      nextObs[item.code] = item.rows
-      if (item.emptyMessage) {
-        nextEmpty[item.code] = item.emptyMessage
-      }
+      next[item.code] = item.rows
     }
-    observationsByCode.value = nextObs
-    emptyMessages.value = nextEmpty
+    observationsByCode.value = next
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   } finally {
     observationsBusy.value = false
@@ -810,7 +779,7 @@ async function loadAssessment(): Promise<void> {
       version: asString(data?.version) ?? "",
     }
   } catch {
-    // 评估接口失败不让整页失败，但如实标注「未取到」，不编造结论。
+    // 规则判断失败不让整页失败，但如实标注「未取到」，不编造结论。
     assessmentFailed.value = true
   }
 }
@@ -825,24 +794,26 @@ async function load(): Promise<void> {
       throw errorFrom(seriesBody, seriesResponse.headers.get("X-Request-ID"))
     }
     const seriesData = asRecord(asRecord(seriesBody)?.data)
-    providerCode.value = asString(seriesData?.provider_code) ?? ""
     availability.value = asString(seriesData?.availability) ?? ""
-    catalogNotice.value = asString(seriesData?.notice) ?? ""
     catalog.value = parseCatalog(seriesData?.series)
     phase.value = "ready"
     await Promise.all([loadObservations(), loadAssessment()])
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   }
 }
 
-/** 应用观察日：指标带、近端序列与规则判断一起刷新，保持同一时点。 */
+/** 应用观察日：指标带、走势图与规则判断一起刷新，保持同一时点。 */
 async function applyAsOf(): Promise<void> {
-  // 必须先把观察日落到 appliedAsOf 再发请求：
-  // loadObservations() 是用 appliedAsOf 拼 as_of 的，否则改观察日只会重发同一个时点。
+  // 必须先把观察日落到 appliedAsOf 再发请求：两个 load 函数都用 appliedAsOf 拼 as_of。
   appliedAsOf.value = queryAsOf.value || browserToday
   await Promise.all([loadObservations(), loadAssessment()])
+}
+
+function resetAsOf(): void {
+  queryAsOf.value = browserToday
+  void applyAsOf()
 }
 
 watch(queryAsOf, (value) => {
@@ -858,10 +829,7 @@ onMounted(() => {
 
 <template>
   <main class="page">
-    <PageHeader
-      title="全球宏观分析"
-      subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会"
-    >
+    <PageHeader title="全球宏观分析" subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会">
       <template #actions>
         <el-date-picker
           v-model="queryAsOf"
@@ -869,6 +837,7 @@ onMounted(() => {
           value-format="YYYY-MM-DD"
           placeholder="观察日"
           class="asof-select"
+          :disabled="observationsBusy"
           @change="applyAsOf"
         />
         <el-button @click="helpOpen = true">数据说明</el-button>
@@ -876,240 +845,167 @@ onMounted(() => {
       <template #tabs>
         <SectionTabs :tabs="TABS" model-value="us" />
       </template>
+      <template #filters>
+        <span class="source-hint">
+          <i aria-hidden="true" />数据来源：{{ sourceLabel }}<template v-if="latestObservationDate">
+            · 最新观测 {{ latestObservationDate }}</template
+          >
+        </span>
+      </template>
     </PageHeader>
 
     <div class="stack">
-      <StateBlock
-        v-if="phase === 'loading'"
-        state="loading"
-        message="正在读取 FRED 序列目录与观测值"
-      />
+      <StateBlock v-if="phase === 'loading'" state="loading" message="正在读取美国宏观数据" />
 
-      <StateBlock
-        v-else-if="phase === 'error'"
-        state="error"
-        :message="failure"
-        @retry="load"
-      />
+      <StateBlock v-else-if="phase === 'error'" state="error" :message="failure" @retry="load" />
 
       <template v-else>
-        <StateBlock
-          v-if="dataNotices.length"
-          state="stale"
-          :as-of="appliedAsOf"
-          :message="dataNotices[0]"
-          @retry="load"
-        />
+        <StateBlock v-if="!hasAnyObservation && !observationsBusy" state="empty" :message="emptyNotice" />
+        <div v-if="!hasAnyObservation && pastDateUnsupported" class="reset-row">
+          <el-button size="small" type="primary" @click="resetAsOf">回到今天</el-button>
+        </div>
 
         <div class="grid-8">
           <MetricTile
-            v-for="row in tileRows"
-            :key="row.code"
-            :label="row.item?.name ?? row.code"
-            :value="row.latest ? formatValue(row.latest.value, row.item?.unit ?? '') : '—'"
-            :period="tilePeriod(row)"
-            :info="
-              row.item
-                ? `${row.item.nameEn || row.item.name} · 单位 ${row.item.unit} · ${row.item.adjustment} · 分类 ${row.item.category}`
-                : '该序列代码不在后端序列目录中'
-            "
+            v-for="tile in tiles"
+            :key="tile.code"
+            :label="tile.label"
+            :value="tile.value"
+            :unit="tile.unit"
+            :period="tile.period"
+            :info="tile.info"
             delta-label="较上期"
           >
             <template #chart>
               <MiniSpark
-                v-if="row.spark.length > 1"
-                :points="row.spark"
-                kind="line"
-                tone="muted"
-                :width="104"
-                :height="34"
+                v-if="tile.spark.length > 1"
+                :points="tile.spark"
+                kind="area"
+                tone="accent"
+                :width="96"
+                :height="30"
               />
-              <span v-else class="tile-empty">无可见观测值</span>
             </template>
             <template #delta>
-              <DeltaValue
-                v-if="row.delta !== null"
-                :value="row.delta"
-                :suffix="row.item?.unit === 'Percent' ? ' pct' : ''"
-              />
-              <DeltaValue v-else :value="null" />
+              <DeltaValue :value="tile.delta" :suffix="tile.deltaSuffix" :colored="false" signed size="sm" />
             </template>
           </MetricTile>
         </div>
 
-        <div class="grid-2-1">
+        <div class="macro-main">
           <PanelCard
             title="宏观象限：经济冷热 × 货币松紧"
-            :info="`后端规则分数定位（macro-rules-v1）：横轴流动性、纵轴增长，各 0–100。最新时点 ${assessment?.pitDate || '—'}`"
+            :info="`按规则分数定位：横轴流动性、纵轴增长，各 0–100，以 50 为界。判断日 ${assessment?.pitDate || '—'}`"
           >
             <template #icon><span class="panel-icon">◎</span></template>
-            <div class="chart-box">
-              <VChart class="chart chart-quadrant" :option="quadrantOption" autoresize />
-              <p v-if="!quadrantPoint" class="chart-note">
-                <template v-if="assessmentFailed">
-                  评估接口本次未返回可用结果，象限只画网格与风险区名称，不落点、不编造坐标。
-                </template>
-                <template v-else>
-                  增长或流动性维度取不到分数（reason：{{ assessment?.growth?.reason ?? '—' }} /
-                  {{ assessment?.liquidity?.reason ?? '—' }}），象限暂不落点。
-                </template>
+            <template #actions>
+              <span v-if="latestPublished" class="muted small">数据截至 {{ latestPublished }}</span>
+            </template>
+            <VChart class="chart chart-quadrant" :option="quadrantOption" autoresize />
+            <p v-if="!quadrantPoint" class="chart-note">
+              {{ assessmentFailed ? "规则判断暂时不可用，象限暂不定位。" : "当前观察日数据不足，象限暂不定位。" }}
+            </p>
+            <div class="judgement">
+              <h3 class="judgement-title">当前判断</h3>
+              <template v-if="assessment && !allInsufficient">
+                <p class="doc-text">
+                  美国经济处于「<strong>{{ regimeLabel }}</strong>」组合：
+                  <template v-for="(item, index) in dimensionRows" :key="item.code">
+                    {{ dimensionLabel(item.code) }}{{ scoreView(item).label
+                    }}{{ index < dimensionRows.length - 1 ? "，" : "。" }}
+                  </template>
+                </p>
+                <p class="muted small">规则依据最近两期已公布数据的方向，不做经济预测，也不构成投资建议。</p>
+              </template>
+              <p v-else class="doc-text muted">
+                {{ pastDateUnsupported ? "公开数据无法回看历史观察日，请调回今天。" : "当前观察日数据不足，暂不判断。" }}
               </p>
             </div>
-            <h3 class="doc-section">当前判断</h3>
-            <template v-if="assessment && !allInsufficient">
-              <p class="doc-text">
-                组合状态 <code>{{ assessment.regimeCode || '—' }}</code>（{{ regimeLabel }}），
-                规则版本 {{ assessment.version || '—' }}，后端时点 {{ assessment.pitDate || '—' }}。
-              </p>
-              <ul class="doc-list">
-                <li v-for="item in dimensionRows" :key="item.code">
-                  {{ dimensionLabel(item.code) }}：<span :style="{ color: scoreView(item).tone }">
-                    {{ scoreView(item).label }}
-                  </span>
-                  <template v-if="reasonView(item.reason)"> · {{ reasonView(item.reason) }}</template>
-                </li>
-              </ul>
-              <p class="muted">
-                分数与理由全部来自后端规则，本页只做文案翻译，不做经济预测，也不构成投资建议。
-              </p>
-            </template>
-            <p v-else class="doc-text muted">
-              当前时点取不到可用的维度分数，本页不编造结论。可换一个观察日后重试。
-            </p>
           </PanelCard>
 
           <div class="stack">
-            <PanelCard title="通胀走势" info="CPI 与核心 PCE 的指数水平（2017=100），2% 目标为参考虚线">
+            <PanelCard title="通胀走势" info="CPI 与核心 PCE 的同比（%）；同比 = 当月指数 ÷ 12 个月前同月指数 − 1">
               <template #icon><span class="panel-icon">▲</span></template>
-              <VChart v-if="inflationOption" class="chart chart-inflation" :option="inflationOption" autoresize />
-              <StateBlock
-                v-else
-                state="empty"
-                message="CPI 与核心 PCE 都少于两个可解析的观测值，暂不画走势图"
-              />
-              <p class="chart-note">
-                纵轴是「指数水平」而不是同比百分比，所以 2% 虚线只作目标位置对照，两者口径不同、不可直接比较；
-                同比口径由后端规则负责，前端不做换算。
-              </p>
+              <template #actions>
+                <span v-if="inflationLatest" class="muted small">{{ inflationLatest }}</span>
+              </template>
+              <VChart v-if="inflationOption" class="chart chart-half" :option="inflationOption" autoresize />
+              <StateBlock v-else state="empty" message="不足 13 个月的物价数据，暂无法计算同比" />
             </PanelCard>
 
-            <PanelCard
-              title="规则解读（宏观状态 / 情景框架 / 关注点）"
-              info="全部文案来自 assessments 的 regime_code、reason 与 evidence，不是模型生成内容"
-            >
-              <template #icon><span class="panel-icon">✦</span></template>
-              <div class="readout-head">
-                <StatusPill :text="regimePill.text" :tone="regimePill.tone" dot />
-                <span class="muted">
-                  后端时点 {{ assessment?.pitDate || '—' }} · 规则版本 {{ assessment?.version || '—' }}
-                </span>
-              </div>
-              <p v-if="assessmentFailed" class="doc-text muted" role="alert">
-                评估接口本次未返回可用结果，本页不编造结论。
-                <button class="text-button" type="button" @click="loadAssessment">重试</button>
-              </p>
-              <p v-else-if="!assessment" class="doc-text muted">未取到评估结果，本页不编造结论。</p>
-              <template v-else>
-                <p class="doc-text">
-                  当前宏观状态：{{ regimeLabel }}。各维度分数、理由与判定依据如下，均可在
-                  <router-link to="/macro/scenarios">宏观综合判断</router-link> 页按同一观察日复核。
-                </p>
-                <ul class="doc-list">
-                  <li v-for="item in dimensionRows" :key="item.code">
-                    {{ dimensionLabel(item.code) }}：
-                    <span :style="{ color: scoreView(item).tone }">{{ scoreView(item).label }}</span>
-                    <template v-if="reasonView(item.reason)"> · {{ reasonView(item.reason) }}</template>
-                    <ul v-if="item.evidence.length" class="evidence">
-                      <li v-for="line in item.evidence" :key="line">
-                        {{ evidenceParts(line).headline }}
-                        <span v-if="evidenceParts(line).published" class="muted">
-                          （公布日 {{ evidenceParts(line).published }}）
-                        </span>
-                      </li>
-                    </ul>
-                  </li>
-                </ul>
-              </template>
-
-              <h3 class="doc-section">未来情景推演</h3>
-              <ul class="scenario-list">
-                <li v-for="item in SCENARIOS" :key="item.key" class="scenario-row">
-                  <StatusPill :text="item.label" :tone="item.tone" />
-                  <div class="scenario-body">
-                    <p class="scenario-title">
-                      {{ item.title }}
-                      <span class="muted">· 概率：后端未提供概率字段</span>
-                    </p>
-                    <p class="muted">{{ item.basis }}</p>
-                  </div>
-                </li>
-              </ul>
-              <p class="chart-note">
-                效果图里的「基准/乐观/悲观 概率 25%–50%」需要模型或人工情景输入，本项目后端没有该写入口
-                （`/api/v1/macro/assessments` 只有 GET），所以这里只列情景框架、不填概率，也不生成方向结论。
-              </p>
-
-              <h3 class="doc-section">主要关注点</h3>
-              <p class="chart-note">
-                后端接口只返回 regime_code / reason / evidence，没有「主要关注点」字段；按不编造数据的要求，
-                这里不填推测性条目。可在
-                <router-link to="/macro/liquidity">货币与流动性</router-link> 与
-                <router-link to="/macro/china">中国经济</router-link> 页查看各序列的真实观测值。
-              </p>
+            <PanelCard title="联邦基金利率与美债收益率" info="联邦基金有效利率（月度）与 2 年、10 年期美债收益率（日度）">
+              <template #icon><span class="panel-icon">▤</span></template>
+              <VChart v-if="ratesOption" class="chart chart-half" :option="ratesOption" autoresize />
+              <StateBlock v-else state="empty" message="利率数据不足两期，暂不画走势" />
+              <p v-if="spreadNote" class="chart-note">{{ spreadNote }}</p>
             </PanelCard>
           </div>
-        </div>
 
-        <div class="grid-2">
-          <PanelCard title="联邦基金利率" info="FEDFUNDS 有效联邦基金利率（%），阶梯式政策利率">
-            <template #icon><span class="panel-icon">▤</span></template>
-            <VChart v-if="fedOption" class="chart chart-third" :option="fedOption" autoresize />
-            <StateBlock v-else state="empty" message="FEDFUNDS 少于两个可见观测值，暂不画走势图" />
-          </PanelCard>
-
-          <PanelCard
-            title="美债收益率曲线"
-            info="按序列目录里真实存在的期限落点，缺的期限不补点"
-          >
-            <template #icon><span class="panel-icon">◠</span></template>
-            <VChart v-if="curveOption" class="chart chart-third" :option="curveOption" autoresize />
+          <PanelCard title="规则解读" info="由增长、通胀、流动性三条规则自动生成，非模型生成内容" tone="violet">
+            <template #icon><span class="panel-icon">✦</span></template>
+            <div class="readout-head">
+              <StatusPill :text="regimePill.text" :tone="regimePill.tone" dot />
+              <span class="muted small">判断日 {{ assessment?.pitDate || "—" }}</span>
+            </div>
             <StateBlock
-              v-else
-              state="empty"
-              :message="`目录中只有 ${curvePoints.length} 个国债期限点（${curvePoints.map((row) => row.tenor).join(' / ') || '无'}），不足以成曲线`"
+              v-if="assessmentFailed"
+              state="error"
+              message="规则判断暂时不可用"
+              @retry="loadAssessment"
             />
-            <p class="chart-note">
-              横轴固定为 3M/6M/1Y/2Y/3Y/5Y/7Y/10Y/20Y/30Y，仅上述期限有序列时落点。
-              <template v-if="curveMissing.length">
-                目录缺少期限：{{ curveMissing.join(' / ') }}，需先在 catalog/macro_series.py 登记并同步。
-              </template>
-              <template v-if="curvePoints.length"> 曲线时点：{{ curvePoints[0]?.date || '—' }}。</template>
-            </p>
+            <p v-else-if="!assessment" class="doc-text muted">正在读取规则判断…</p>
+            <template v-else>
+              <ul class="dimension-list">
+                <li v-for="item in dimensionRows" :key="item.code">
+                  <div class="dimension-head">
+                    <span class="dimension-name">{{ dimensionLabel(item.code) }}</span>
+                    <StatusPill :text="scoreView(item).label" :tone="scoreView(item).tone" />
+                    <span v-if="item.value !== null" class="muted small tabular">{{ item.value }} 分</span>
+                  </div>
+                  <p v-if="evidenceSummary(item)" class="evidence">{{ evidenceSummary(item) }}</p>
+                  <p v-else class="evidence">已公布数据不足两期</p>
+                </li>
+              </ul>
+
+              <h3 class="doc-section">情景切换条件</h3>
+              <ul v-if="scenarioRows.length" class="scenario-list">
+                <li v-for="item in scenarioRows" :key="item.key" class="scenario-row">
+                  <StatusPill :text="item.label" :tone="item.tone" />
+                  <p class="scenario-text">{{ item.text }}</p>
+                </li>
+              </ul>
+              <p v-else class="muted small">数据不足，暂无情景推演。</p>
+
+              <p class="muted small footnote">
+                {{ assessment.notice || "这是规则计算，不是经济定论。" }} 不给概率，不构成投资建议；更多细节见
+                <router-link to="/macro/scenarios">宏观综合判断</router-link>。
+              </p>
+            </template>
           </PanelCard>
         </div>
 
         <SourceFooter
           :as-of="latestObservationDate || appliedAsOf"
-          :sources="['FRED（圣路易斯联储）']"
+          :sources="[sourceLabel]"
           :stale="stale"
-          :note="sourceNote"
+          note="指标「较上期」为相邻两个已公布观测值之差；利率类按百分点，其余按百分比。"
         />
       </template>
     </div>
 
-    <el-dialog v-model="helpOpen" title="数据说明" width="620px">
-      <p class="doc-text">
-        数据源：FRED（圣路易斯联储）。接口：<code>GET /api/v1/macro/series</code>、
-        <code>GET /api/v1/macro/series/{code}/observations</code>、
-        <code>GET /api/v1/macro/assessments</code>。
-        当前数据源状态：{{ availabilityLabel }}；观察日 {{ appliedAsOf || "今天" }}。
-      </p>
-      <p class="doc-text muted">
-        指标带显示序列的原始口径观测值与相邻两期差；日频序列的「较上期」是日变动，月频是月变动。
-        曲线与走势图的数据点全部来自接口，缺数据处显示真实空态与原因。
-      </p>
+    <el-dialog v-model="helpOpen" title="数据说明" width="600px">
       <ul class="doc-list">
-        <li v-for="row in dataNotices" :key="row">{{ row }}</li>
+        <li>数据来源：{{ sourceLabel }}，观察日 {{ appliedAsOf }}。</li>
+        <li v-if="availability === 'public_csv'">
+          公开 CSV 只提供最新修订值，不能回看历史某天当时公布的版本；选择过去的观察日将看不到数据。
+        </li>
+        <li>CPI、核心 PCE 显示同比：当月指数 ÷ 12 个月前同月指数 − 1；缺少上年同月数据的月份不显示。</li>
+        <li>GDP 为现价、季调年化口径（非实际增速）；「较上期」为环比变化。</li>
+        <li>利率、失业率、利差的「较上期」单位为百分点（pct）。</li>
+        <li>
+          宏观象限与规则解读：比较 GDP、CPI、联邦基金利率最近两期已公布值的方向，上行记 70、下行记 30、持平记
+          50；联邦基金利率上行视为流动性偏紧。
+        </li>
       </ul>
     </el-dialog>
   </main>
@@ -1117,7 +1013,7 @@ onMounted(() => {
 
 <style scoped>
 .asof-select {
-  width: 210px;
+  width: 180px;
 }
 
 .panel-icon {
@@ -1125,45 +1021,128 @@ onMounted(() => {
   font-size: 16px;
 }
 
-.tile-empty {
+.source-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   color: var(--muted);
-  font-size: 11px;
 }
 
-.chart-box {
-  position: relative;
+.source-hint i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.reset-row {
+  margin-top: -6px;
+}
+
+.small {
+  font-size: 12px;
+}
+
+p.small {
+  font-size: 13px;
+}
+
+.macro-main {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+@media (max-width: 1440px) {
+  .macro-main {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .macro-main > :last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .macro-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .chart {
   width: 100%;
-  background: var(--bg);
-  border-radius: 12px;
 }
 
 .chart-quadrant {
-  height: 380px;
+  height: 360px;
 }
 
-.chart-inflation {
-  height: 220px;
-}
-
-.chart-third {
-  height: 240px;
+.chart-half {
+  height: 210px;
 }
 
 .chart-note {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
+}
+
+.judgement {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.judgement-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.judgement .doc-text {
+  margin-bottom: 4px;
 }
 
 .readout-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.dimension-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dimension-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.dimension-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dimension-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.evidence {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
 }
 
 .scenario-list {
@@ -1176,28 +1155,23 @@ onMounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .scenario-row:last-child {
   border-bottom: 0;
 }
 
-.scenario-body {
-  min-width: 0;
-}
-
-.scenario-title {
-  margin: 0 0 2px;
+.scenario-text {
+  margin: 0;
   font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
 }
 
-.evidence {
-  margin: 4px 0 0;
-  padding-left: 18px;
-  color: var(--muted);
-  font-size: 12px;
+.footnote {
+  margin: 12px 0 0;
   line-height: 1.7;
 }
 </style>

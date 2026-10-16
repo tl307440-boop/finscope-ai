@@ -6,23 +6,21 @@
  *  - GET /api/v1/macro/china
  *      data = { series: [{ code, name, unit, status, observation_count, latest_value,
  *                          latest_observation_date, source, published_at }], notice }
- *      · status 由 backend/app/services/china_macro.py 的 public_status 给出：
- *        stored（已入库）/ stale（数据陈旧）/ unavailable（库里没有观测值）
- *      · 后端 china_macro 目录里没有任何观测值时，本接口**仍然返回 200**，只是每条 status=unavailable
+ *      · status：stored（已入库）/ stale（数据陈旧）/ unavailable（库里没有观测值）
+ *      · 没有任何观测值时仍然返回 200，只是每条 status=unavailable
  *  - GET /api/v1/macro/series/{series_code}/observations?limit=&as_of=
  *      data = { series_code, pit_date, time_precision, observations[], empty_message, truncated }
- *      · FRED 的观测表与 China CSV 导入共用同一张表，所以中国序列一旦导入即可用这个接口读
+ *      · 与 FRED 共用同一张观测表；按观测日升序，limit 保留最近 N 条
  *
- * 不编造数据（AGENTS.md + docs/UI-设计规范.md §八）：
- *  - 中国宏观序列在导入 CSV 之前是真正不可用的，本页因此以 AvailabilityNotice 式空态收尾，
- *    并用 StateBlock state="empty" 写明原因（管理员需 POST /api/v1/macro/china/observations 导入）。
- *  - 走势图只在真的取到 ≥2 个观测值时才画；status=unavailable 的序列一律不画、不补点。
+ * 不编造数据：中国宏观序列只能由管理员导入 CSV（POST /api/v1/macro/china/observations），
+ * 导入前本页保持诚实空态；走势图只在真的取到 ≥2 个观测值时才画。
  */
 import { computed, onMounted, ref } from "vue"
 import type { EChartsCoreOption } from "echarts/core"
 import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
-import { asNumber, asRecord, asString, listOf } from "../api/json"
+import { asNumber, asRecord, asString, formatAmount, listOf } from "../api/json"
+import { cssColor, unitLabel } from "../api/macro"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
@@ -41,16 +39,11 @@ interface ChinaSeries {
   count: number
   latestValue: string
   latestDate: string
-  source: string
-  publishedAt: string
 }
 
 interface Observation {
   date: string
   value: number
-  raw: string
-  realtimeStart: string
-  revision: number
 }
 
 const TABS = [
@@ -60,17 +53,15 @@ const TABS = [
   { key: "scenarios", label: "宏观综合判断", to: "/macro/scenarios" },
 ]
 
+const IMPORT_HINT = "需管理员在数据中心导入国家统计局官方 CSV"
+
 const phase = ref<Phase>("loading")
 const failure = ref("")
-const notice = ref("")
 const rows = ref<ChinaSeries[]>([])
 
 const detailPhase = ref<"idle" | "loading" | "ready" | "error">("idle")
 const detailError = ref("")
 const observations = ref<Observation[]>([])
-const pitDate = ref("")
-const emptyMessage = ref("")
-const truncated = ref(false)
 const selectedCode = ref("")
 
 const today = new Date()
@@ -87,120 +78,95 @@ const availableRows = computed<ChinaSeries[]>(() =>
   rows.value.filter((row) => row.status === "stored" || row.status === "stale"),
 )
 
-const unavailableRows = computed<ChinaSeries[]>(() =>
-  rows.value.filter((row) => row.status !== "stored" && row.status !== "stale"),
-)
-
 const anyAvailable = computed<boolean>(() => availableRows.value.length > 0)
 
-const stale = computed<boolean>(() => phase.value === "ready" && !anyAvailable.value)
+const latestDate = computed<string>(
+  () => availableRows.value.map((row) => row.latestDate).filter(Boolean).sort().pop() ?? "",
+)
 
-/** 每行状态的口径提示，与后端 public_status 的三档一一对应。 */
-function statusPill(row: ChinaSeries): { text: string; tone: "ok" | "warn" | "muted" | "danger" } {
+/** 与后端 public_status 的三档一一对应。 */
+function statusPill(row: ChinaSeries): { text: string; tone: "ok" | "warn" | "muted" } {
   if (row.status === "stored") {
-    return { text: "已入库", tone: "ok" }
+    return { text: "已导入", tone: "ok" }
   }
   if (row.status === "stale") {
     return { text: "数据陈旧", tone: "warn" }
   }
-  if (row.status === "unavailable") {
-    return { text: "不可用", tone: "muted" }
-  }
-  return { text: row.status || "—", tone: "danger" }
+  return { text: "未导入", tone: "muted" }
 }
 
 function statusNote(row: ChinaSeries): string {
   if (row.status === "stored") {
-    return `库里已有 ${row.count} 条观测值，最新观测日 ${row.latestDate || "—"}`
+    return `已导入 ${row.count} 期，最新 ${row.latestDate || "—"}`
   }
   if (row.status === "stale") {
-    return `有 ${row.count} 条观测值但最新观测日 ${row.latestDate || "—"} 距今超过 60 天`
+    return `已导入 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 60 天`
   }
-  if (row.status === "unavailable") {
-    return "库里没有这条序列的观测值，需管理员导入 CSV"
-  }
-  return "后端返回了未收录的状态值，原样显示、不做解释"
+  return `暂无数据，${IMPORT_HINT}`
 }
 
-function formatValue(value: string): string {
-  const parsed = Number(value)
+function formatValue(value: string | number, unit: string): string {
+  const parsed = typeof value === "number" ? value : Number(value)
   if (!Number.isFinite(parsed)) {
-    return value || "—"
+    return typeof value === "string" && value ? value : "—"
   }
-  return parsed.toLocaleString("zh-CN", { maximumFractionDigits: 4 })
+  if (unit === "CNY") {
+    return formatAmount(parsed, "元")
+  }
+  return parsed.toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 2 })
+}
+
+function tileUnit(row: ChinaSeries): string {
+  if (!row.latestValue || row.unit === "CNY") {
+    return ""
+  }
+  return unitLabel(row.unit) === "%" ? "%" : ""
 }
 
 const chartOption = computed<EChartsCoreOption | null>(() => {
-  if (observations.value.length < 2) {
+  const points = observations.value
+  if (points.length < 2) {
     return null
   }
-  const points = observations.value
-  const values = points.map((row) => row.value)
-  const last = values[values.length - 1]
-  const previous = values[values.length - 2]
-  const color =
-    last === undefined || previous === undefined || last === previous
-      ? "var(--accent)"
-      : last > previous
-        ? "var(--rise)"
-        : "var(--fall)"
-  const zoom = points.length > 40
+  const accent = cssColor("--accent", "#3b82f6")
+  const unit = selectedRow.value?.unit ?? ""
+  const zoom = points.length > 60
   return {
-    grid: { left: 8, right: 16, top: 24, bottom: zoom ? 48 : 8, containLabel: true },
+    grid: { left: 8, right: 16, top: 16, bottom: zoom ? 44 : 4, containLabel: true },
     tooltip: {
       trigger: "axis",
-      backgroundColor: "var(--panel)",
-      borderColor: "var(--line)",
-      textStyle: { color: "var(--text)" },
-      formatter: (params: unknown): string => {
-        const first = Array.isArray(params) ? asRecord(params[0]) : asRecord(params)
-        const index = asNumber(first?.dataIndex)
-        const point = index === null ? undefined : points[index]
-        return point ? `${point.date} · ${point.raw}` : ""
-      },
+      valueFormatter: (value: unknown): string =>
+        typeof value === "number" ? `${formatValue(value, unit)}${unit === "Percent" ? "%" : ""}` : "—",
     },
     xAxis: {
       type: "category",
-      data: points.map((row) => row.date),
-      axisLine: { lineStyle: { color: "var(--line)" } },
-      axisLabel: { color: "var(--muted)", fontSize: 11, hideOverlap: true },
+      data: points.map((row) => row.date.slice(0, 7)),
+      boundaryGap: false,
+      axisLabel: { hideOverlap: true },
     },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLine: { show: false },
-      axisLabel: { color: "var(--muted)", fontSize: 11 },
-      splitLine: { lineStyle: { color: "var(--line)" } },
-    },
+    yAxis: { type: "value", scale: true },
     series: [
       {
-        name: selectedCode.value,
+        name: selectedRow.value?.name ?? selectedCode.value,
         type: "line",
-        symbol: points.length <= 60 ? "circle" : "none",
+        showSymbol: points.length <= 36,
         symbolSize: 5,
-        data: values,
-        lineStyle: { color, width: 2 },
-        itemStyle: { color },
-        areaStyle: { color, opacity: 0.12 },
+        data: points.map((row) => row.value),
+        lineStyle: { color: accent, width: 2 },
+        itemStyle: { color: accent },
+        areaStyle: { color: accent, opacity: 0.1 },
       },
     ],
     ...(zoom
       ? {
           dataZoom: [
-            { type: "inside", start: 60, end: 100 },
-            { type: "slider", start: 60, end: 100, height: 18, bottom: 8 },
+            { type: "inside", start: 50, end: 100 },
+            { type: "slider", start: 50, end: 100, height: 18, bottom: 6 },
           ],
         }
       : {}),
   }
 })
-
-const observationLines = computed<string[]>(() =>
-  observations.value.map(
-    (row) =>
-      `${row.date} · ${row.raw} ${selectedRow.value?.unit ?? ""} · 发布日次日可见 ${row.realtimeStart || "—"} · 第 ${row.revision} 次`,
-  ),
-)
 
 function parseSeries(value: unknown): ChinaSeries[] {
   return listOf(value).flatMap((item) => {
@@ -213,13 +179,11 @@ function parseSeries(value: unknown): ChinaSeries[] {
       {
         code,
         name,
-        unit: asString(item.unit) ?? "—",
+        unit: asString(item.unit) ?? "",
         status: asString(item.status) ?? "",
         count: asNumber(item.observation_count) ?? 0,
         latestValue: asString(item.latest_value) ?? "",
         latestDate: asString(item.latest_observation_date) ?? "",
-        source: asString(item.source) ?? "",
-        publishedAt: asString(item.published_at) ?? "",
       },
     ]
   })
@@ -228,25 +192,16 @@ function parseSeries(value: unknown): ChinaSeries[] {
 function parseObservation(value: unknown): Observation[] {
   const record = asRecord(value)
   const date = asString(record?.observation_date)
-  const raw = asString(record?.value)
   const amount = asNumber(record?.value)
-  if (!date || amount === null || raw === null) {
+  if (!date || amount === null) {
     return []
   }
-  return [
-    {
-      date,
-      value: amount,
-      raw,
-      realtimeStart: asString(record?.realtime_start) ?? "",
-      revision: asNumber(record?.revision_no) ?? 0,
-    },
-  ]
+  return [{ date, value: amount }]
 }
 
 async function loadObservations(): Promise<void> {
   const code = selectedCode.value
-  if (!code) {
+  if (!code || !anyAvailable.value) {
     detailPhase.value = "idle"
     observations.value = []
     return
@@ -254,11 +209,8 @@ async function loadObservations(): Promise<void> {
   detailPhase.value = "loading"
   detailError.value = ""
   observations.value = []
-  pitDate.value = ""
-  emptyMessage.value = ""
-  truncated.value = false
   try {
-    const params = new URLSearchParams({ limit: "500" })
+    const params = new URLSearchParams({ limit: "240" })
     if (appliedAsOf.value) {
       params.set("as_of", appliedAsOf.value)
     }
@@ -270,15 +222,12 @@ async function loadObservations(): Promise<void> {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
     const data = asRecord(asRecord(body)?.data)
-    observations.value = Array.isArray(data?.observations)
-      ? data.observations.flatMap(parseObservation)
-      : []
-    pitDate.value = asString(data?.pit_date) ?? ""
-    emptyMessage.value = asString(data?.empty_message) ?? ""
-    truncated.value = data?.truncated === true
+    const parsed = Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : []
+    parsed.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+    observations.value = parsed
     detailPhase.value = "ready"
   } catch (caught) {
-    detailError.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    detailError.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     detailPhase.value = "error"
   }
 }
@@ -298,23 +247,18 @@ async function load(): Promise<void> {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
     const data = asRecord(asRecord(body)?.data)
-    notice.value = asString(data?.notice) ?? ""
     rows.value = parseSeries(data?.series)
-    // 原行为：优先选已入库/陈旧的序列，没有就落到第一条。
-    selectedCode.value =
-      (availableRows.value[0] ?? rows.value[0])?.code ?? ""
+    selectedCode.value = (availableRows.value[0] ?? rows.value[0])?.code ?? ""
     phase.value = "ready"
-    if (selectedCode.value) {
-      await loadObservations()
-    }
+    await loadObservations()
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   }
 }
 
 async function applyAsOf(): Promise<void> {
-  appliedAsOf.value = queryAsOf.value
+  appliedAsOf.value = queryAsOf.value || browserToday
   await loadObservations()
 }
 
@@ -325,10 +269,7 @@ onMounted(() => {
 
 <template>
   <main class="page">
-    <PageHeader
-      title="全球宏观分析"
-      subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会"
-    >
+    <PageHeader title="全球宏观分析" subtitle="把握全球经济周期，洞察宏观变量，发现大类资产配置机会">
       <template #actions>
         <el-date-picker
           v-model="queryAsOf"
@@ -336,6 +277,7 @@ onMounted(() => {
           value-format="YYYY-MM-DD"
           placeholder="观察日"
           class="asof-select"
+          :disabled="!anyAvailable"
           @change="applyAsOf"
         />
         <el-button @click="load">刷新</el-button>
@@ -343,170 +285,105 @@ onMounted(() => {
       <template #tabs>
         <SectionTabs :tabs="TABS" model-value="china" />
       </template>
+      <template #filters>
+        <span class="source-hint" :class="{ off: !anyAvailable }">
+          <i aria-hidden="true" />数据来源：国家统计局（{{ anyAvailable ? `已导入，最新 ${latestDate}` : "尚未导入" }}）
+        </span>
+      </template>
     </PageHeader>
 
     <div class="stack">
-      <StateBlock
-        v-if="phase === 'loading'"
-        state="loading"
-        message="正在读取中国宏观序列状态"
-      />
+      <StateBlock v-if="phase === 'loading'" state="loading" message="正在读取中国宏观数据" />
 
-      <StateBlock
-        v-else-if="phase === 'error'"
-        state="error"
-        :message="failure"
-        @retry="load"
-      />
+      <StateBlock v-else-if="phase === 'error'" state="error" :message="failure" @retry="load" />
 
       <template v-else>
-        <StateBlock
-          v-if="!anyAvailable"
-          state="stale"
-          :as-of="appliedAsOf"
-          message="中国宏观序列全部未入库：本页只如实展示目录与状态，不画任何走势曲线。"
-          @retry="load"
-        />
+        <StateBlock v-if="!rows.length" state="empty" message="暂无中国宏观指标" />
 
-        <div class="grid-6">
-          <MetricTile
-            v-for="row in rows"
-            :key="row.code"
-            :label="row.name"
-            :value="row.latestValue ? formatValue(row.latestValue) : '—'"
-            :period="row.latestDate ? `${row.latestDate} · 最新观测日` : '暂无观测值'"
-            :unit="row.unit"
-            :info="statusNote(row)"
-          >
-            <template #delta>
-              <StatusPill :text="statusPill(row).text" :tone="statusPill(row).tone" />
-            </template>
-          </MetricTile>
-        </div>
-        <p v-if="!rows.length" class="muted">后端没有返回任何中国宏观序列。</p>
-
-        <div class="grid-2-1">
-          <PanelCard
-            title="序列走势"
-            info="观测值与 FRED 共用同一张表；中国序列需管理员导入 CSV 后才有数据"
-          >
-            <template #icon><span class="panel-icon">◠</span></template>
-
-            <div v-if="detailPhase === 'loading'">
-              <StateBlock state="loading" message="正在查询观测值" />
-            </div>
-
-            <div v-else-if="detailPhase === 'error'">
-              <StateBlock state="error" :message="detailError" @retry="loadObservations" />
-            </div>
-
-            <template v-else-if="detailPhase === 'ready'">
-              <VChart v-if="chartOption" class="chart chart-trend" :option="chartOption" autoresize />
-              <StateBlock
-                v-else
-                state="empty"
-                :message="
-                  emptyMessage ||
-                  '该序列在当前观察日没有可见观测值（少于两个观测值时不画曲线）'
-                "
-                :as-of="pitDate"
-              />
-
-              <StateBlock
-                v-if="truncated"
-                state="stale"
-                :as-of="pitDate"
-                message="观测值多于本次上限，图表只画出了返回的部分。"
-              />
-
-              <template v-if="observations.length">
-                <p class="muted">
-                  共 {{ observations.length }} 条观测值（按后端返回顺序）·
-                  后端时点 {{ pitDate || "—" }} ·
-                  序列 {{ selectedRow?.code || "—" }} · 单位 {{ selectedRow?.unit || "—" }}。
-                </p>
-                <ul class="line-list">
-                  <li v-for="line in observationLines" :key="line">{{ line }}</li>
-                </ul>
-              </template>
-            </template>
-
-            <StateBlock v-else state="empty" message="请选择一条序列查看走势" />
-          </PanelCard>
-
-          <PanelCard title="序列目录与状态" info="状态口径：已入库 / 数据陈旧（>60 天）/ 不可用">
-            <template #icon><span class="panel-icon">▤</span></template>
-            <el-table :data="rows" stripe @row-click="(row: ChinaSeries) => selectSeries(row.code)">
-              <el-table-column prop="code" label="代码" width="118" />
-              <el-table-column prop="name" label="名称" min-width="150" />
-              <el-table-column label="状态" width="104">
-                <template #default="scope">
-                  <StatusPill
-                    :text="statusPill(scope.row).text"
-                    :tone="statusPill(scope.row).tone"
-                  />
-                </template>
-              </el-table-column>
-              <el-table-column label="观测值" width="86">
-                <template #default="scope">
-                  <span class="tabular">{{ scope.row.count }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column prop="unit" label="单位" min-width="110" />
-              <el-table-column label="操作" width="92">
-                <template #default="scope">
-                  <el-button link type="primary" size="small" @click.stop="selectSeries(scope.row.code)">
-                    查看走势
-                  </el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-            <p class="muted">
-              已入库 {{ availableRows.length }} 条 · 不可用 {{ unavailableRows.length }} 条 ·
-              共 {{ rows.length }} 条。
-            </p>
-          </PanelCard>
-        </div>
-
-        <PanelCard title="数据可用性说明" info="结尾空态：本页不补齐缺失数据，也不做替代估计">
-          <template #icon><span class="panel-icon">ⓘ</span></template>
+        <template v-else>
           <StateBlock
             v-if="!anyAvailable"
             state="empty"
-            :as-of="appliedAsOf"
-            :message="
-              notice ||
-              '中国宏观序列尚未导入：后端 catalog 定义了序列代码与单位，但库里没有观测值，因此所有序列的 status 都是 unavailable。'
-            "
+            title="中国宏观数据尚未导入"
+            :message="`CPI、PPI、PMI、M2、工业增加值、社融暂无数据，${IMPORT_HINT}后自动显示。`"
           />
-          <template v-else>
-            <p class="doc-text">
-              以下序列仍不可用，页面上不显示数值、不画曲线：{{
-                unavailableRows.map((row) => row.code).join(" / ") || "无"
-              }}。
-            </p>
-            <p class="muted">{{ notice || "后端未提供额外说明。" }}</p>
-          </template>
-          <ul class="doc-list">
-            <li>
-              导入方式：管理员 POST <code>/api/v1/macro/china/observations</code> 上传国家统计局
-              （或同源口径）CSV，导入后本页会按同一张观测表读到真实数值。
-            </li>
-            <li>
-              CSV 未导入前，后端不返回任何观测值，因此这里保持空态与原因，不用随机数或估计值填版面。
-            </li>
-            <li>
-              页脚时点说明：观察日 {{ appliedAsOf || "今天" }}，观测值可见性由后端按
-              realtime_start 过滤（发布日当天不视为已可见）。
-            </li>
-          </ul>
-        </PanelCard>
+
+          <div class="grid-6">
+            <MetricTile
+              v-for="row in rows"
+              :key="row.code"
+              :label="row.name"
+              :value="row.latestValue ? formatValue(row.latestValue, row.unit) : '—'"
+              :unit="tileUnit(row)"
+              :period="row.latestDate ? row.latestDate.slice(0, 7) : '暂无数据'"
+              :info="statusNote(row)"
+              delta-label="状态"
+            >
+              <template #delta>
+                <StatusPill :text="statusPill(row).text" :tone="statusPill(row).tone" />
+              </template>
+            </MetricTile>
+          </div>
+
+          <div class="grid-2-1">
+            <PanelCard title="指标走势" info="只显示所选观察日已经公布的观测值">
+              <template #icon><span class="panel-icon">◠</span></template>
+              <template v-if="anyAvailable" #actions>
+                <el-select v-model="selectedCode" class="filter-select" size="small" @change="selectSeries">
+                  <el-option
+                    v-for="item in availableRows"
+                    :key="item.code"
+                    :value="item.code"
+                    :label="item.name"
+                  />
+                </el-select>
+              </template>
+
+              <p v-if="!anyAvailable" class="empty-note">导入数据后在此显示走势</p>
+              <StateBlock v-else-if="detailPhase === 'loading'" state="loading" message="正在查询观测值" />
+              <StateBlock
+                v-else-if="detailPhase === 'error'"
+                state="error"
+                :message="detailError"
+                @retry="loadObservations"
+              />
+              <template v-else-if="detailPhase === 'ready'">
+                <VChart v-if="chartOption" class="chart chart-trend" :option="chartOption" autoresize />
+                <StateBlock v-else state="empty" message="所选观察日已公布的数据不足两期，暂不画走势" />
+                <p v-if="observations.length" class="chart-note">
+                  {{ selectedRow?.name }}：共 {{ observations.length }} 期，单位 {{ unitLabel(selectedRow?.unit ?? "") }}
+                </p>
+              </template>
+            </PanelCard>
+
+            <PanelCard title="指标清单" info="已导入 / 数据陈旧（最新一期距今超过 60 天）/ 未导入">
+              <template #icon><span class="panel-icon">▤</span></template>
+              <el-table :data="rows" @row-click="(row: ChinaSeries) => anyAvailable && selectSeries(row.code)">
+                <el-table-column prop="name" label="指标" min-width="170" />
+                <el-table-column label="单位" width="70">
+                  <template #default="scope">{{ unitLabel(scope.row.unit) }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="96">
+                  <template #default="scope">
+                    <StatusPill :text="statusPill(scope.row).text" :tone="statusPill(scope.row).tone" />
+                  </template>
+                </el-table-column>
+                <el-table-column v-if="anyAvailable" label="最新" width="100">
+                  <template #default="scope">
+                    <span class="tabular">{{ scope.row.latestDate ? scope.row.latestDate.slice(0, 7) : "—" }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <p class="chart-note">已导入 {{ availableRows.length }} / {{ rows.length }} 项。</p>
+            </PanelCard>
+          </div>
+        </template>
 
         <SourceFooter
-          :as-of="appliedAsOf"
-          :sources="['国家统计局（CSV 导入）', 'FRED（同一观测表）']"
-          :stale="stale"
-          :note="notice || '中国宏观序列需管理员导入 CSV 后才有观测值。'"
+          :as-of="latestDate || appliedAsOf"
+          :sources="['国家统计局（管理员导入 CSV）']"
+          :stale="!anyAvailable"
+          :note="anyAvailable ? '观察日只显示当天已公布的数据。' : IMPORT_HINT"
         />
       </template>
     </div>
@@ -515,7 +392,7 @@ onMounted(() => {
 
 <style scoped>
 .asof-select {
-  width: 200px;
+  width: 180px;
 }
 
 .panel-icon {
@@ -523,27 +400,54 @@ onMounted(() => {
   font-size: 16px;
 }
 
+.source-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.source-hint i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.source-hint.off i {
+  background: var(--faint);
+}
+
+.filter-select {
+  width: 220px;
+}
+
 .chart {
   width: 100%;
-  background: var(--bg);
-  border-radius: 12px;
 }
 
 .chart-trend {
   height: 300px;
 }
 
-.line-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
+.empty-note {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.chart-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
   line-height: 1.7;
 }
 
 .el-table {
-  margin-top: 8px;
-  cursor: pointer;
   --el-table-border-color: var(--line);
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;

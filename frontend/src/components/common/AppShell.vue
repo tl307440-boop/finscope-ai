@@ -9,11 +9,13 @@
  * 「主路由」渲染成一行；当当前路由命中该分组时，才在它下面缩进展开其余二级页面，
  * 这样静态看是 11 行（和效果图一致），又不会丢掉 §1.3 路由表里的任何一个页面。
  */
-import { computed, onMounted, ref, type Component } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref, type Component } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import {
   ArrowDown,
   Bell,
+  DArrowLeft,
+  DArrowRight,
   DataAnalysis,
   DataBoard,
   Document,
@@ -21,9 +23,11 @@ import {
   HomeFilled,
   MagicStick,
   Monitor,
+  Moon,
   Refresh,
   Setting,
   Star,
+  Sunny,
   TrendCharts,
   Trophy,
 } from "@element-plus/icons-vue"
@@ -239,9 +243,32 @@ function openAccount(command: string): void {
   void router.push(command)
 }
 
+const now = ref(new Date())
+let clock: number | undefined
+
+const clockDate = computed(() =>
+  now.value.toLocaleDateString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }),
+)
+const clockTime = computed(() =>
+  now.value.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }),
+)
+
 onMounted(() => {
   theme.value = applyTheme(readTheme(window.localStorage.getItem("finscope-theme")))
   void loadStatus()
+  clock = window.setInterval(() => {
+    now.value = new Date()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  window.clearInterval(clock)
 })
 
 async function loadStatus(): Promise<void> {
@@ -255,30 +282,41 @@ async function loadStatus(): Promise<void> {
 }
 </script>
 
+
 <template>
   <div class="app-shell" :class="{ collapsed }" :data-layout="collapsed ? 'rail' : 'sidebar'">
     <a class="skip-link" href="#main">跳到主要内容</a>
     <aside class="side-nav" aria-label="主导航">
-      <div class="brand">
-        <span class="mark" aria-hidden="true">FS</span>
+      <router-link class="brand" to="/dashboard" aria-label="FinScope AI 首页">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <defs>
+            <linearGradient id="fs-mark" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#60a5fa" />
+              <stop offset="1" stop-color="#22d3ee" />
+            </linearGradient>
+          </defs>
+          <path d="M6 24 L13 15 L18 19 L26 8" fill="none" stroke="url(#fs-mark)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="26" cy="8" r="3" fill="#22d3ee" />
+          <path d="M6 28 H26" stroke="rgb(96 165 250 / 45%)" stroke-width="2" stroke-linecap="round" />
+        </svg>
         <span v-if="!collapsed" class="brand-text">
-          <strong>FinScope AI</strong>
-          <em>智能投研 · 深度洞察</em>
+          <strong>FinScope <b>AI</b></strong>
+          <em>智能投研 · 洞察未来</em>
         </span>
-      </div>
+      </router-link>
 
       <nav class="rail" aria-label="一级导航">
         <template v-for="group in groups" :key="group.key">
           <router-link
             class="rail-row"
-            :class="{ active: isPrimary(group) }"
+            :class="{ active: isPrimary(group), 'in-group': !isPrimary(group) && activeKey === group.key }"
             :to="group.primary"
             :title="group.label"
           >
             <el-icon class="rail-icon"><component :is="group.icon" /></el-icon>
             <span v-if="!collapsed" class="rail-label">{{ group.label }}</span>
           </router-link>
-          <template v-if="!collapsed && activeKey === group.key">
+          <div v-if="!collapsed && activeKey === group.key && group.children.length" class="rail-children">
             <router-link
               v-for="child in group.children"
               :key="child.index"
@@ -288,19 +326,23 @@ async function loadStatus(): Promise<void> {
             >
               {{ child.label }}
             </router-link>
-          </template>
+          </div>
         </template>
       </nav>
 
       <div v-if="!collapsed" class="rail-foot">
-        <p class="legend">
-          <span class="rise">涨 +</span>
-          <span class="fall">跌 −</span>
-        </p>
-        <p class="version">FinScope AI v1.0.0</p>
+        <strong>FinScope AI</strong>
+        <span>让专业的投研更高效</span>
+        <span class="version">v1.0.0 · <i class="rise">红涨</i> <i class="fall">绿跌</i></span>
       </div>
-      <button class="text-button rail-toggle" type="button" @click="collapsed = !collapsed">
-        {{ collapsed ? "›" : "‹ 收起" }}
+      <button
+        class="rail-toggle"
+        type="button"
+        :aria-label="collapsed ? '展开导航' : '收起导航'"
+        @click="collapsed = !collapsed"
+      >
+        <el-icon><component :is="collapsed ? DArrowRight : DArrowLeft" /></el-icon>
+        <span v-if="!collapsed">收起导航</span>
       </button>
     </aside>
 
@@ -308,8 +350,11 @@ async function loadStatus(): Promise<void> {
       <header class="topbar">
         <GlobalSearch />
         <div class="nav-links">
-          <span class="topbar-chip muted">{{ formatShanghai(snapshot?.asOf ?? "") || "—" }}</span>
-          <span class="topbar-chip" :class="systemReady ? 'up' : 'down'" :title="statusError || '就绪检查'">
+          <span class="clock" :title="`系统数据时间 ${formatShanghai(snapshot?.asOf ?? '') || '—'}`">
+            <span class="clock-date">{{ clockDate }}</span>
+            <span class="clock-time">{{ clockTime }}</span>
+          </span>
+          <span class="topbar-chip" :class="systemReady ? 'up' : 'down'" :title="statusError || '数据库与任务服务的就绪检查'">
             <i class="dot" aria-hidden="true" />
             {{ systemReady ? "数据正常" : "部分异常" }}
           </span>
@@ -329,11 +374,17 @@ async function loadStatus(): Promise<void> {
             </template>
           </el-dropdown>
 
-          <button class="icon-button" type="button" aria-label="刷新" @click="reloadPage">
+          <button class="icon-button" type="button" aria-label="刷新" title="刷新页面" @click="reloadPage">
             <el-icon><Refresh /></el-icon>
           </button>
-          <button class="text-button" type="button" @click="switchTheme">
-            {{ theme === "dark" ? "浅色" : "深色" }}
+          <button
+            class="icon-button"
+            type="button"
+            :aria-label="theme === 'dark' ? '切换到浅色' : '切换到深色'"
+            :title="theme === 'dark' ? '切换到浅色' : '切换到深色'"
+            @click="switchTheme"
+          >
+            <el-icon><component :is="theme === 'dark' ? Sunny : Moon" /></el-icon>
           </button>
 
           <el-dropdown trigger="click" @command="openAccount">
@@ -343,7 +394,7 @@ async function loadStatus(): Promise<void> {
                 <strong>{{ accountLabel }}</strong>
                 <em>{{ accountRole }}</em>
               </span>
-              <el-icon><ArrowDown /></el-icon>
+              <el-icon class="caret"><ArrowDown /></el-icon>
             </button>
             <template #dropdown>
               <el-dropdown-menu>
@@ -366,28 +417,24 @@ async function loadStatus(): Promise<void> {
 </template>
 
 <style scoped>
-
 /* ---- 品牌区 ---- */
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 8px 16px;
+  padding: 2px 8px 18px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 34px;
   height: 34px;
   flex: none;
+  padding: 4px;
   border-radius: 9px;
-  background: linear-gradient(135deg, #3b82f6, #22d3ee);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
+  background: linear-gradient(145deg, rgb(37 99 235 / 28%), rgb(34 211 238 / 10%));
+  box-shadow: 0 0 0 1px rgb(96 165 250 / 30%) inset, 0 8px 20px -10px rgb(59 130 246 / 80%);
 }
 
 .brand-text {
@@ -396,65 +443,89 @@ async function loadStatus(): Promise<void> {
 }
 
 .brand-text strong {
-  font-size: 16px;
-  line-height: 1.2;
+  font-size: 18px;
+  line-height: 1.15;
+  letter-spacing: 0.01em;
   white-space: nowrap;
+  color: var(--text-strong);
+}
+
+.brand-text b {
+  color: var(--cyan);
 }
 
 .brand-text em {
   font-style: normal;
   font-size: 11px;
+  letter-spacing: 0.12em;
   color: var(--muted);
   white-space: nowrap;
 }
 
-/* ---- 一级导航：一列平铺条目 ---- */
+/* ---- 一级导航 ---- */
 .rail {
   flex: 1 1 auto;
   display: grid;
-  gap: 2px;
+  gap: 3px;
   align-content: start;
   overflow-y: auto;
   overflow-x: hidden;
+  margin: 0 -4px;
+  padding: 0 4px;
 }
 
 .rail-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: var(--radius-sm);
+  gap: 11px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
   color: var(--muted);
   text-decoration: none;
-  font-size: 13px;
+  font-size: 14px;
   white-space: nowrap;
-  border-left: 3px solid transparent;
+  transition: background 140ms ease, color 140ms ease;
 }
 
 .rail-row:hover {
-  background: var(--panel-soft);
+  background: rgb(96 140 220 / 8%);
   color: var(--text);
 }
 
 .rail-row.active {
-  background: var(--accent-soft);
-  border-left-color: var(--accent);
-  color: var(--accent);
+  color: #fff;
   font-weight: 600;
+  background: linear-gradient(90deg, #2563eb, rgb(37 99 235 / 55%));
+  box-shadow: 0 0 0 1px rgb(96 165 250 / 40%) inset, 0 10px 24px -12px rgb(37 99 235 / 90%);
+}
+
+.rail-row.in-group {
+  color: var(--text-strong);
+  background: rgb(59 130 246 / 10%);
 }
 
 .rail-icon {
-  font-size: 16px;
+  font-size: 17px;
   flex: none;
+}
+
+.rail-children {
+  display: grid;
+  gap: 1px;
+  margin: 2px 0 4px 20px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
 }
 
 .rail-sub {
   display: block;
-  padding: 7px 12px 7px 40px;
-  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  border-radius: 6px;
   color: var(--muted);
   text-decoration: none;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -462,63 +533,98 @@ async function loadStatus(): Promise<void> {
 
 .rail-sub:hover {
   color: var(--text);
-  background: var(--panel-soft);
+  background: rgb(96 140 220 / 8%);
 }
 
 .rail-sub.active {
   color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .rail-foot {
+  display: grid;
+  gap: 2px;
   margin-top: 12px;
-  padding: 12px 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.legend {
-  display: flex;
-  gap: 12px;
-  margin: 0 0 8px;
-  font-size: 11px;
-}
-
-.legend .rise {
-  color: var(--rise);
-}
-
-.legend .fall {
-  color: var(--fall);
-}
-
-.version {
-  margin: 0;
-  font-size: 11px;
+  padding: 14px 10px 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
   color: var(--muted);
 }
 
+.rail-foot strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.version {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.version i {
+  font-style: normal;
+}
+
 .rail-toggle {
-  margin-top: 8px;
-  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
   font-size: 12px;
+  cursor: pointer;
+}
+
+.rail-toggle:hover {
+  color: var(--text);
+  background: rgb(96 140 220 / 8%);
+}
+
+.app-shell.collapsed .brand {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .app-shell.collapsed .rail-row {
   justify-content: center;
-  padding: 10px 0;
+  padding: 0;
+}
+
+.app-shell.collapsed .rail-toggle {
+  align-self: center;
 }
 
 /* ---- 顶栏 ---- */
+.clock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.clock-time {
+  font-family: var(--font-num);
+  font-size: 15px;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+  min-width: 64px;
+}
+
 .topbar-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
   white-space: nowrap;
-  color: var(--text);
-}
-
-.topbar-chip.muted {
-  color: var(--muted);
 }
 
 .topbar-chip .dot {
@@ -526,14 +632,17 @@ async function loadStatus(): Promise<void> {
   height: 7px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 8px currentColor;
 }
 
 .topbar-chip.up {
   color: var(--ok);
+  background: rgb(52 211 153 / 10%);
 }
 
 .topbar-chip.down {
   color: var(--warn);
+  background: rgb(251 191 36 / 10%);
 }
 
 .icon-button {
@@ -541,43 +650,48 @@ async function loadStatus(): Promise<void> {
   appearance: none;
   background: none;
   border: 0;
-  padding: 6px;
+  width: 34px;
+  height: 34px;
   border-radius: 8px;
   color: var(--muted);
   cursor: pointer;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
 }
 
 .icon-button:hover {
-  background: var(--panel-soft);
-  color: var(--text);
+  background: rgb(96 140 220 / 10%);
+  color: var(--text-strong);
 }
 
 .badge {
   position: absolute;
-  top: 0;
-  right: 0;
-  min-width: 15px;
-  height: 15px;
+  top: 2px;
+  right: 1px;
+  min-width: 16px;
+  height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--danger);
+  background: var(--rise);
   color: #fff;
   font-size: 10px;
-  line-height: 15px;
+  line-height: 16px;
   text-align: center;
+  box-shadow: 0 0 0 2px var(--panel-deep);
 }
 
 .account {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   appearance: none;
   background: none;
   border: 0;
   border-left: 1px solid var(--line);
   margin-left: 4px;
-  padding: 4px 0 4px 12px;
+  padding: 2px 0 2px 14px;
   color: var(--text);
   cursor: pointer;
 }
@@ -586,14 +700,15 @@ async function loadStatus(): Promise<void> {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: none;
   border-radius: 50%;
-  background: linear-gradient(135deg, #3b82f6, #6366f1);
+  background: linear-gradient(135deg, #3b82f6, #22d3ee);
   color: #fff;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
+  box-shadow: 0 0 0 2px rgb(96 165 250 / 25%);
 }
 
 .who {
@@ -614,8 +729,13 @@ async function loadStatus(): Promise<void> {
   white-space: nowrap;
 }
 
+.caret {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 @media (max-width: 1279px) {
-  .topbar-chip.muted,
+  .clock-date,
   .who {
     display: none;
   }

@@ -37,11 +37,12 @@ const toneClass = computed(() => (props.tone === "info" ? "accent" : props.tone)
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
+  padding: 1px 8px;
+  border-radius: 4px;
   font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentcolor 22%, transparent) inset;
 }
 
 .dot {

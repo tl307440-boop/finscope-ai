@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
-import { Lock, Moon, Refresh, User } from "@element-plus/icons-vue"
+import { Brush, Lock, Moon, Refresh, Setting, User } from "@element-plus/icons-vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import StatCard from "../components/ui/StatCard.vue"
@@ -17,6 +17,10 @@ interface Profile {
   email: string
   role: string
   theme: string
+  riseColorScheme: string
+  timezone: string
+  defaultMarket: string
+  defaultLookback: string
 }
 
 const router = useRouter()
@@ -24,9 +28,33 @@ const phase = ref<"loading" | "ready" | "error">("loading")
 const profile = ref<Profile | null>(null)
 const failure = ref("无法读取账号")
 
-const roleText: Record<string, string> = {
+const ROLE_TEXT: Record<string, string> = {
   researcher: "研究者",
   admin: "管理员",
+}
+
+const RISE_TEXT: Record<string, string> = {
+  cn: "红涨绿跌",
+  us: "绿涨红跌",
+}
+
+const MARKET_TEXT: Record<string, string> = {
+  CN: "A 股",
+  US: "美股",
+  HK: "港股",
+}
+
+const LOOKBACK_TEXT: Record<string, string> = {
+  "1m": "近 1 个月",
+  "3m": "近 3 个月",
+  "1y": "近 1 年",
+  all: "全部历史",
+}
+
+const TIMEZONE_TEXT: Record<string, string> = {
+  "Asia/Shanghai": "北京时间",
+  "America/New_York": "美东时间",
+  UTC: "协调世界时",
 }
 
 async function load(): Promise<void> {
@@ -48,10 +76,14 @@ async function load(): Promise<void> {
       email: asString(user?.email) ?? "—",
       role: asString(user?.role) ?? "researcher",
       theme: asString(preferences?.theme) ?? "dark",
+      riseColorScheme: asString(preferences?.rise_color_scheme) ?? "",
+      timezone: asString(preferences?.timezone) ?? "",
+      defaultMarket: asString(preferences?.default_market) ?? "",
+      defaultLookback: asString(preferences?.default_lookback) ?? "",
     }
     phase.value = "ready"
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
   }
 }
@@ -61,24 +93,43 @@ async function signOut(): Promise<void> {
   await router.push("/login")
 }
 
-function themeText(): string {
-  return profile.value?.theme === "light" ? "浅色" : "深色"
-}
+const isAdmin = computed<boolean>(() => profile.value?.role === "admin")
 
-function roleLabel(): string {
+const roleLabel = computed<string>(() => {
   const role = profile.value?.role ?? ""
-  return roleText[role] ?? role
+  return ROLE_TEXT[role] ?? "其他角色"
+})
+
+const roleCaption = computed<string>(() =>
+  isAdmin.value ? "可使用全部研究功能，并管理数据源与同步任务" : "可使用全部研究功能；数据中心仅对管理员开放",
+)
+
+const themeText = computed<string>(() => (profile.value?.theme === "light" ? "浅色" : "深色"))
+
+const passwordNote = computed<string>(() =>
+  isAdmin.value ? "暂不支持在线修改，如需重置请联系系统部署人员。" : "暂不支持在线修改，如需重置请联系管理员。",
+)
+
+function mapped(table: Record<string, string>, value: string | undefined): string {
+  if (!value) {
+    return "未设置"
+  }
+  return table[value] ?? value
 }
 
-function isAdmin(): boolean {
-  return profile.value?.role === "admin"
-}
-
-function passwordNote(): string {
-  return isAdmin()
-    ? "暂无自助改密接口：管理员账号由部署侧脚本维护。"
-    : "本页没有改密入口：当前后端只提供登录/刷新/退出三个账号接口。"
-}
+const preferenceRows = computed(() => {
+  const current = profile.value
+  if (!current) {
+    return []
+  }
+  const zone = current.timezone
+  return [
+    { label: "涨跌配色", value: mapped(RISE_TEXT, current.riseColorScheme) },
+    { label: "时区", value: zone ? `${TIMEZONE_TEXT[zone] ?? zone}（${zone}）` : "未设置" },
+    { label: "默认市场", value: mapped(MARKET_TEXT, current.defaultMarket) },
+    { label: "默认回看区间", value: mapped(LOOKBACK_TEXT, current.defaultLookback) },
+  ]
+})
 
 onMounted(() => {
   void load()
@@ -98,7 +149,7 @@ function asString(value: unknown): string | null {
 
 <template>
   <main id="main" class="page">
-    <PageHeader title="账号设置" subtitle="查看当前登录账号、角色与界面主题">
+    <PageHeader title="账号设置" subtitle="查看当前登录账号、角色权限与研究偏好">
       <template #actions>
         <el-button :loading="phase === 'loading'" :icon="Refresh" @click="load">刷新</el-button>
         <el-button type="primary" @click="signOut">退出登录</el-button>
@@ -119,55 +170,18 @@ function asString(value: unknown): string | null {
         @retry="load"
       />
       <template v-else>
-        <div class="grid-2">
-          <PanelCard title="账号信息" info="来自 GET /api/v1/me 的 user 字段">
-            <template #icon><el-icon><User /></el-icon></template>
-            <dl class="kv">
-              <dt>账号</dt>
-              <dd>{{ profile.username }}</dd>
-              <dt>邮箱</dt>
-              <dd class="break">{{ profile.email }}</dd>
-            </dl>
-            <p class="note">
-              这份信息由服务端返回，前端不维护任何本地副本；刷新即重新拉取，登录态失效时会自动续期一次。
-            </p>
-          </PanelCard>
-
-          <PanelCard title="登录与凭据" info="本页展示的能力边界说明">
-            <template #icon><el-icon><Lock /></el-icon></template>
-            <dl class="kv">
-              <dt>登录方式</dt>
-              <dd>账号密码 + Bearer 访问令牌（凭据走 HttpOnly Cookie 续期）</dd>
-              <dt>改密入口</dt>
-              <dd class="break">{{ passwordNote() }}</dd>
-            </dl>
-            <p class="note">
-              后端只暴露登录、刷新、退出三个账号相关接口，因此这里不提供修改邮箱或密码的表单，避免出现点了没反应的按钮。
-            </p>
-            <template #actions>
-              <router-link
-                v-if="isAdmin()"
-                class="ghost-button"
-                to="/data-center"
-                aria-label="打开数据源管理"
-              >数据源管理</router-link>
-            </template>
-          </PanelCard>
-        </div>
-
         <div class="grid-3">
-          <StatCard
-            title="角色"
-            :value="roleLabel()"
-            caption="决定能否访问 /api/v1/admin/* 与数据源管理页"
-            info="来自 GET /api/v1/me 的 user.role 字段"
-            more-text=""
-          >
+          <StatCard title="账号" :value="profile.username" :caption="profile.email" tone="accent">
             <template #icon><el-icon><User /></el-icon></template>
+          </StatCard>
+
+          <StatCard title="角色" :value="roleLabel" :caption="roleCaption" info="账号角色决定可以使用的功能" tone="violet">
+            <template #icon><el-icon><Lock /></el-icon></template>
             <template #below>
               <StatusPill
-                :text="isAdmin() ? '管理员权限已开通' : '研究者权限'"
-                :tone="isAdmin() ? 'accent' : 'muted'"
+                class="below-pill"
+                :text="isAdmin ? '管理员权限' : '研究者权限'"
+                :tone="isAdmin ? 'accent' : 'muted'"
                 dot
               />
             </template>
@@ -175,35 +189,44 @@ function asString(value: unknown): string | null {
 
           <StatCard
             title="界面主题"
-            :value="themeText()"
-            caption="跟随账号偏好返回，仅深浅两套"
-            info="来自 GET /api/v1/me 的 preferences.theme 字段"
-            more-text=""
+            :value="themeText"
+            caption="可在顶部栏切换深浅主题，切换结果只保存在当前浏览器"
+            tone="cyan"
           >
             <template #icon><el-icon><Moon /></el-icon></template>
-            <template #below>
-              <p class="note tight">
-                主题由浏览器本地偏好（<code>localStorage</code> 的 <code>data-theme</code>）决定；
-                账号侧的偏好值目前没有写入接口，所以这里只读不写。
-              </p>
-            </template>
           </StatCard>
+        </div>
 
-          <StatCard
-            title="本次加载"
-            value="已载入"
-            caption="令牌失效时本页请求会自动续期一次"
-            info="authorizedFetch 在 401 时调用 /api/v1/auth/refresh 重试"
-            more-text=""
-          >
-            <template #icon><el-icon><Lock /></el-icon></template>
-            <template #below>
-              <p class="note tight">
-                这里只表示 <code>/api/v1/me</code> 刚刚返回成功：接口并不回报令牌过期时间，
-                所以不显示剩余时长。退出登录会先请求服务端清除会话，再跳转 <code>/login</code>。
-              </p>
+        <div class="grid-2">
+          <PanelCard title="研究偏好" info="账号保存的默认偏好">
+            <template #icon><el-icon><Brush /></el-icon></template>
+            <dl class="kv">
+              <template v-for="item in preferenceRows" :key="item.label">
+                <dt>{{ item.label }}</dt>
+                <dd>{{ item.value }}</dd>
+              </template>
+            </dl>
+          </PanelCard>
+
+          <PanelCard title="登录与安全">
+            <template #icon><el-icon><Setting /></el-icon></template>
+            <template #actions>
+              <router-link
+                v-if="isAdmin"
+                class="ghost-button"
+                to="/data-center"
+                aria-label="打开数据源管理"
+              >数据源管理 ›</router-link>
             </template>
-          </StatCard>
+            <dl class="kv">
+              <dt>登录方式</dt>
+              <dd>账号密码登录，登录状态过期后会自动续期一次</dd>
+              <dt>修改密码</dt>
+              <dd>{{ passwordNote }}</dd>
+              <dt>退出登录</dt>
+              <dd>点右上角「退出登录」会同时清除本机与服务器上的登录状态</dd>
+            </dl>
+          </PanelCard>
         </div>
       </template>
     </div>
@@ -211,16 +234,23 @@ function asString(value: unknown): string | null {
 </template>
 
 <style scoped>
-.stack {
-  margin-top: var(--gap);
-}
-
 .kv {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 10px 16px;
+  grid-template-columns: 96px minmax(0, 1fr);
   margin: 0;
   font-size: 13px;
+}
+
+.kv dt,
+.kv dd {
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.kv dt:first-of-type,
+.kv dd:first-of-type {
+  border-top: 0;
+  padding-top: 2px;
 }
 
 .kv dt {
@@ -230,39 +260,31 @@ function asString(value: unknown): string | null {
 .kv dd {
   margin: 0;
   color: var(--text);
+  line-height: 1.6;
 }
 
-.break {
-  word-break: break-all;
+.below-pill {
+  margin-top: 8px;
 }
 
-.note {
-  margin: 14px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
+.ghost-button {
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
 }
 
-.note.tight {
-  margin: 0;
-}
-
-.note code {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--panel-soft);
-  color: var(--text);
-  font-size: 11px;
+.ghost-button:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 767px) {
   .kv {
     grid-template-columns: minmax(0, 1fr);
-    gap: 2px 0;
   }
 
   .kv dd {
-    margin-bottom: 8px;
+    border-top: 0;
+    padding-top: 0;
   }
 }
 </style>

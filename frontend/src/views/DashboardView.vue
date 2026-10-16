@@ -18,6 +18,7 @@ import {
 } from "@element-plus/icons-vue"
 import { VChart } from "../charts"
 import DeltaValue from "../components/ui/DeltaValue.vue"
+import MetricTile from "../components/ui/MetricTile.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
@@ -72,9 +73,32 @@ interface TemperatureState {
 interface MacroRegion {
   code: string
   label: string
+  /** 规则分：70 偏强、50 持平、30 偏弱；样本不足为 null */
+  value: number | null
   reason: string
   evidence: number
 }
+
+/** 驾驶舱展示的美国核心序列；CPI 用同比，其余直接取水平值。 */
+interface UsSeriesRow {
+  code: string
+  label: string
+  unit: string
+  latest: number | null
+  change: number | null
+  date: string | null
+  points: number[]
+  problem: string | null
+}
+
+const US_SERIES: { code: string; label: string; unit: string; yoy?: boolean; tail: number }[] = [
+  { code: "DGS10", label: "美债 10Y", unit: "%", tail: 60 },
+  { code: "DGS2", label: "美债 2Y", unit: "%", tail: 60 },
+  { code: "T10Y2Y", label: "10Y-2Y 利差", unit: "pp", tail: 60 },
+  { code: "FEDFUNDS", label: "联邦基金利率", unit: "%", tail: 24 },
+  { code: "CPIAUCSL", label: "CPI 同比", unit: "%", yoy: true, tail: 24 },
+  { code: "UNRATE", label: "失业率", unit: "%", tail: 24 },
+]
 
 interface MacroState {
   pitDate: string
@@ -102,6 +126,10 @@ interface ChinaState {
 interface HotspotState {
   label: string
   count: number | null
+  start: string | null
+  end: string | null
+  topics: { type: string; label: string; count: number }[]
+  recent: { day: string; title: string }[]
 }
 
 interface ProviderState {
@@ -118,8 +146,9 @@ interface IndexRow {
   name: string
   barCount: number
   latestTradeDate: string | null
-  /** 最近 60 个交易日的收盘价，只有真实返回的日期，不补零 */
+  /** 最近 120 个交易日的收盘价，只有真实返回的日期，不补零 */
   closes: number[]
+  dates: string[]
   latestClose: number | null
   changePercent: number | null
   problem: string | null
@@ -171,6 +200,30 @@ const readyChecks = ref<{ key: string; label: string; status: string; detail: st
 const jobSummary = ref<JobSummary | null>(null)
 const providers = ref<ProviderState[]>([])
 const indexRows = ref<IndexRow[]>([])
+const usSeries = ref<UsSeriesRow[]>([])
+const sectors = ref<{ name: string; score: number | null; label: string; coverage: string }[] | null>(null)
+
+/** 有分数的在前、按分数从高到低；样本不足的只列名字。 */
+const rankedSectors = computed(() =>
+  (sectors.value ?? [])
+    .filter((item) => item.score !== null)
+    .sort((left, right) => (right.score ?? 0) - (left.score ?? 0)),
+)
+const pendingSectors = computed(() => (sectors.value ?? []).filter((item) => item.score === null))
+
+async function loadSectors(): Promise<void> {
+  try {
+    const { data } = await getJson("/api/v1/market/sectors", null)
+    sectors.value = listOf(data?.sectors).map((item) => ({
+      name: asString(item.name) ?? "未命名板块",
+      score: asNumber(item.score),
+      label: asString(item.label) ?? "",
+      coverage: asString(item.coverage) ?? "",
+    }))
+  } catch (error) {
+    recordError("sectors", error)
+  }
+}
 const indexLoading = ref(false)
 const indexLoaded = ref(false)
 
@@ -261,7 +314,8 @@ function readRegions(data: Record<string, unknown> | null): MacroRegion[] {
     regions.push({
       code: asString(record.code) ?? item.key,
       label: item.label,
-      reason: asString(record.reason) ?? "unknown",
+      value: asNumber(record.value),
+      reason: asString(record.reason) ?? "",
       evidence: asList(record.evidence).length,
     })
   }
@@ -300,12 +354,85 @@ async function loadMacro(): Promise<void> {
   }
 }
 
+/** 同月比较：找 12 个月前同月的观测，算同比；找不到就不出数。 */
+function yoySeries(items: { date: string; value: number }[]): { date: string; value: number }[] {
+  const byMonth = new Map(items.map((item) => [item.date.slice(0, 7), item.value]))
+  const result: { date: string; value: number }[] = []
+  for (const item of items) {
+    const year = Number(item.date.slice(0, 4))
+    const base = byMonth.get(`${year - 1}${item.date.slice(4, 7)}`)
+    if (base !== undefined && base !== 0) {
+      result.push({ date: item.date, value: ((item.value - base) / base) * 100 })
+    }
+  }
+  return result
+}
+
+async function loadUsSeries(): Promise<void> {
+  const rows = await Promise.all(
+    US_SERIES.map(async (spec): Promise<UsSeriesRow> => {
+      try {
+        const { data } = await getJson(`/api/v1/macro/series/${spec.code}/observations`, null)
+        const raw = listOf(data?.observations)
+          .map((item) => ({
+            date: asString(item.observation_date) ?? "",
+            value: asNumber(item.value),
+          }))
+          .filter((item): item is { date: string; value: number } => item.date !== "" && item.value !== null)
+        const series = spec.yoy ? yoySeries(raw) : raw
+        const tail = series.slice(-spec.tail)
+        const last = tail.at(-1)
+        const previous = tail.at(-2)
+        return {
+          code: spec.code,
+          label: spec.label,
+          unit: spec.unit,
+          latest: last?.value ?? null,
+          change: last && previous ? last.value - previous.value : null,
+          date: last?.date ?? null,
+          points: tail.map((item) => item.value),
+          problem: last ? null : "尚无可见观测",
+        }
+      } catch (error) {
+        return {
+          code: spec.code,
+          label: spec.label,
+          unit: spec.unit,
+          latest: null,
+          change: null,
+          date: null,
+          points: [],
+          problem: toApiError(error).message,
+        }
+      }
+    }),
+  )
+  usSeries.value = rows
+}
+
 async function loadHotspots(): Promise<void> {
   try {
     const { data } = await getJson("/api/v1/market/hotspots", null)
+    const recent: { day: string; title: string }[] = []
+    for (const day of listOf(data?.timeline)) {
+      const dayText = asString(day.day) ?? ""
+      for (const title of asList(day.titles)) {
+        if (typeof title === "string" && recent.length < 5) {
+          recent.push({ day: dayText, title })
+        }
+      }
+    }
     hotspots.value = {
       label: asString(data?.label) ?? "暂无热点数据",
       count: asNumber(data?.count),
+      start: asString(data?.start),
+      end: asString(data?.end),
+      topics: listOf(data?.topics).map((item) => ({
+        type: asString(item.event_type) ?? "other",
+        label: asString(item.label) ?? "其他",
+        count: asNumber(item.count) ?? 0,
+      })),
+      recent,
     }
   } catch (error) {
     recordError("hotspots", error)
@@ -444,6 +571,7 @@ async function loadIndexRows(): Promise<void> {
           barCount: 0,
           latestTradeDate: null,
           closes: [],
+          dates: [],
           latestClose: null,
           changePercent: null,
           problem: "该指数未入库",
@@ -452,10 +580,11 @@ async function loadIndexRows(): Promise<void> {
       }
       const bars = await getJson(`/api/v1/market/bars/${instrumentId}?limit=3000`, null)
       const items = listOf(bars.data?.bars)
-      const closes = items
-        .map((item) => asNumber(item.close))
-        .filter((value): value is number => value !== null)
-      const tail = closes.slice(-60)
+      const points = items
+        .map((item) => ({ date: asString(item.trade_date) ?? "", close: asNumber(item.close) }))
+        .filter((item): item is { date: string; close: number } => item.close !== null)
+      const closes = points.map((item) => item.close)
+      const tailPoints = points.slice(-120)
       const lastClose = closes.length ? closes[closes.length - 1] : null
       const previousClose = closes.length > 1 ? closes[closes.length - 2] : null
       rows.push({
@@ -463,7 +592,8 @@ async function loadIndexRows(): Promise<void> {
         name: asString(hit.name_cn) ?? asString(hit.name_en) ?? "—",
         barCount: items.length,
         latestTradeDate: asString(items[items.length - 1]?.trade_date),
-        closes: tail,
+        closes: tailPoints.map((item) => item.close),
+        dates: tailPoints.map((item) => item.date),
         latestClose: lastClose,
         changePercent:
           lastClose !== null && previousClose !== null && previousClose !== 0
@@ -478,6 +608,7 @@ async function loadIndexRows(): Promise<void> {
         barCount: 0,
         latestTradeDate: null,
         closes: [],
+        dates: [],
         latestClose: null,
         changePercent: null,
         problem: toApiError(error).message,
@@ -525,6 +656,8 @@ async function load(): Promise<void> {
     await Promise.all([
       loadTemperature(),
       loadMacro(),
+      loadUsSeries(),
+      loadSectors(),
       loadHotspots(),
       loadReady(),
       loadDigest(),
@@ -550,6 +683,9 @@ function statusText(value: string): string {
   if (value === "configured") {
     return "已配置"
   }
+  if (value === "public_csv") {
+    return "公开 CSV"
+  }
   if (value === "not_required") {
     return "无需凭据"
   }
@@ -562,17 +698,41 @@ function statusText(value: string): string {
   return value
 }
 
-function regionReason(value: string): string {
-  return value === "insufficient_data" ? "样本不足" : value
+const REGION_WORDS: Record<string, [string, string, string]> = {
+  growth: ["回升", "持平", "放缓"],
+  inflation: ["升温", "持平", "回落"],
+  liquidity: ["宽松", "持平", "收紧"],
+}
+
+/** 规则分 70/50/30 → 文字；与后端 macro_rules 的打分口径一致。 */
+function regionWord(region: MacroRegion): string {
+  if (region.value === null) {
+    return "样本不足"
+  }
+  const words = REGION_WORDS[region.code] ?? ["偏强", "持平", "偏弱"]
+  return region.value > 50 ? words[0] : region.value < 50 ? words[2] : words[1]
+}
+
+function regionTone(region: MacroRegion): "rise" | "fall" | "muted" {
+  if (region.value === null || region.value === 50) {
+    return "muted"
+  }
+  return region.value > 50 ? "rise" : "fall"
+}
+
+/** 增长 × 通胀 两个方向映射到投资时钟四象限（规则映射，不是经济定论）。 */
+const QUADRANTS: Record<string, string> = {
+  "up-down": "复苏象限",
+  "up-up": "过热象限",
+  "down-up": "滞胀象限",
+  "down-down": "衰退象限",
 }
 
 /** 驾驶舱的四张大卡：数值全部来自上面几个接口，取不到就渲染「—」。 */
 const cardMacroValue = computed<string>(() => {
   const code = macro.value?.regimeCode ?? ""
-  if (!code || code === "unknown" || code === "insufficient_data") {
-    return "—"
-  }
-  return code
+  const [growth, inflation] = code.split("-")
+  return QUADRANTS[`${growth}-${inflation}`] ?? "—"
 })
 
 const cardMacroCaption = computed<string>(() => {
@@ -580,10 +740,10 @@ const cardMacroCaption = computed<string>(() => {
     return sectionErrors.value.macro ?? "读取中"
   }
   const regions = macro.value.regions
-  if (regions.length && regions.every((item) => item.reason === "insufficient_data")) {
-    return "增长/通胀/流动性样本均不足"
+  if (!regions.length || regions.some((item) => item.value === null)) {
+    return "增长 / 通胀 / 流动性样本不足，暂不判定"
   }
-  return macro.value.notice || `时点 ${macro.value.pitDate}`
+  return `${regions.map((item) => `${item.label}${regionWord(item)}`).join(" · ")} · 美国 · ${macro.value.pitDate}`
 })
 
 const cardTemperatureCaption = computed<string>(() => {
@@ -617,50 +777,94 @@ const cardReadyCaption = computed<string>(() => {
   return readyChecks.value.map((item) => `${item.label} ${item.detail}`).join(" · ")
 })
 
-/** 四个指数近 60 个交易日的收盘价，缺失日期不补值。 */
+const INDEX_PALETTE = ["#3b82f6", "#22d3ee", "#a78bfa", "#fbbf24"]
+
+/** 四个指数近 120 个交易日相对窗口首日的累计涨跌幅；点位量级不同，换算成百分比才能同轴比较。 */
 const indexChartOption = computed<EChartsOption>(() => {
-  const palette = ["#3b82f6", "#f87171", "#34d399", "#fbbf24"]
   const usable = indexRows.value.filter((row) => row.closes.length > 1)
-  const longest = usable.reduce((max, row) => Math.max(max, row.closes.length), 0)
-  const axis = Array.from({ length: longest }, (_, index) => `T-${longest - 1 - index}`)
+  const axis = [...new Set(usable.flatMap((row) => row.dates))].sort()
   return {
     animation: false,
-    tooltip: { trigger: "axis" },
-    legend: {
-      data: usable.map((row) => row.symbol),
-      textStyle: { color: "#95a6be", fontSize: 11 },
-      icon: "circle",
-      top: 0,
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (value) => (typeof value === "number" ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "—"),
     },
-    grid: { left: 8, right: 8, top: 34, bottom: 4, containLabel: true },
+    legend: {
+      data: usable.map((row) => row.name),
+      top: 0,
+      right: 0,
+    },
+    grid: { left: 4, right: 22, top: 30, bottom: 2, containLabel: true },
     xAxis: {
       type: "category",
       data: axis,
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      axisLine: { lineStyle: { color: "rgba(149,166,190,0.3)" } },
+      boundaryGap: false,
+      axisLabel: { formatter: (value: string) => value.slice(5), hideOverlap: true },
     },
     yAxis: {
       type: "value",
       scale: true,
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      splitLine: { lineStyle: { color: "rgba(149,166,190,0.12)" } },
+      axisLabel: { formatter: "{value}%" },
     },
-    series: usable.map((row, index) => ({
-      name: row.symbol,
-      type: "line" as const,
-      data: row.closes.map((value, offset) => [offset + (longest - row.closes.length), value]),
-      smooth: false,
-      symbol: "none",
-      lineStyle: { color: palette[index % palette.length], width: 1.6 },
-      itemStyle: { color: palette[index % palette.length] },
-    })),
+    series: usable.map((row, index) => {
+      const base = row.closes[0]
+      const byDate = new Map(row.dates.map((date, offset) => [date, row.closes[offset]]))
+      const color = INDEX_PALETTE[index % INDEX_PALETTE.length]
+      return {
+        name: row.name,
+        type: "line" as const,
+        data: axis.map((date) => {
+          const close = byDate.get(date)
+          return close === undefined ? null : ((close - base) / base) * 100
+        }),
+        connectNulls: true,
+        symbol: "none",
+        lineStyle: { color, width: index === 0 ? 2 : 1.5 },
+        itemStyle: { color },
+        areaStyle:
+          index === 0
+            ? {
+                color: {
+                  type: "linear" as const,
+                  x: 0,
+                  y: 0,
+                  x2: 0,
+                  y2: 1,
+                  colorStops: [
+                    { offset: 0, color: "rgba(59,130,246,0.28)" },
+                    { offset: 1, color: "rgba(59,130,246,0)" },
+                  ],
+                },
+              }
+            : undefined,
+        markLine:
+          index === 0
+            ? { silent: true, symbol: "none", data: [{ yAxis: 0 }], lineStyle: { color: "rgba(148,163,184,0.35)", type: "dashed" as const }, label: { show: false } }
+            : undefined,
+      }
+    }),
   }
 })
 
+/** 热点主题条：按条数占比画横条，条数来自后端分类统计。 */
+const topicMax = computed<number>(() => Math.max(1, ...(hotspots.value?.topics ?? []).map((item) => item.count)))
+
 /** 数据来源条用的数据源标识。 */
 const sourceList = computed<string[]>(() => {
-  const source = meta.value.source
-  return source ? [source] : []
+  const found: string[] = []
+  if (indexRows.value.some((row) => row.barCount > 0)) {
+    found.push("A股日线")
+  }
+  if (usSeries.value.some((row) => row.latest !== null)) {
+    found.push("FRED 美国宏观")
+  }
+  if ((hotspots.value?.count ?? 0) > 0) {
+    found.push("巨潮资讯 / SEC EDGAR 公告")
+  }
+  if (!found.length && meta.value.source) {
+    found.push(meta.value.source)
+  }
+  return found
 })
 
 onMounted(() => {
@@ -685,7 +889,7 @@ onMounted(() => {
           title="全球经济状态"
           :value="cardMacroValue"
           :caption="cardMacroCaption"
-          info="来自 /macro/assessments 的历史时点打分；未接 FRED 凭证时增长/通胀/流动性均为样本不足"
+          info="用美国 GDP、CPI、联邦基金利率最近两期的方向做规则打分，再映射到投资时钟象限；只用当时已公布的数据"
         >
           <template #icon><el-icon><TrendCharts /></el-icon></template>
         </StatCard>
@@ -695,7 +899,7 @@ onMounted(() => {
           :value="temperature?.score === null || temperature?.score === undefined ? null : temperature.score.toFixed(1)"
           unit="/100"
           :caption="cardTemperatureCaption"
-          info="趋势、广度、活跃度、波动、收益五个因子按权重合成；样本不足时后端返回 insufficient"
+          info="趋势、广度、活跃度、波动、收益五个因子按权重合成；样本不足时不出分"
         >
           <template #icon><el-icon><Histogram /></el-icon></template>
           <template #chart>
@@ -724,7 +928,7 @@ onMounted(() => {
           title="数据更新状态"
           :value="cardReadyValue"
           :caption="cardReadyCaption"
-          info="来自 /health/ready：数据库与后台 Worker 的就绪检查"
+          info="数据库与后台任务服务的就绪检查"
         >
           <template #icon><el-icon><Monitor /></el-icon></template>
         </StatCard>
@@ -732,7 +936,7 @@ onMounted(() => {
 
       <!-- 主区：左宽右窄 -->
       <div class="grid-2-1 section">
-        <PanelCard title="A股主要指数走势" info="四个已入库指数的收盘价，缺失交易日不补值" more-text="指数行情" more-to="/market/indices">
+        <PanelCard title="A股主要指数走势" info="近 120 个交易日相对窗口首日的累计涨跌幅，缺失交易日不补值" more-text="指数行情" more-to="/market/indices">
           <template #icon><el-icon><DataAnalysis /></el-icon></template>
           <StateBlock
             v-if="indexLoading"
@@ -755,7 +959,7 @@ onMounted(() => {
           </div>
         </PanelCard>
 
-        <PanelCard title="全球宏观概览" info="增长、通胀、流动性三个维度的历史时点判定" more-text="全球宏观" more-to="/macro/us">
+        <PanelCard title="全球宏观概览" info="增长、通胀、流动性三个维度的规则判定，以及 FRED 美国核心序列的最新可见值" more-text="全球宏观" more-to="/macro/us">
           <template #icon><el-icon><MagicStick /></el-icon></template>
           <StateBlock
             v-if="!macro && sectionErrors.macro"
@@ -768,70 +972,78 @@ onMounted(() => {
               <MetricTile
                 v-for="region in macro?.regions ?? []"
                 :key="region.code"
-                :label="region.label"
-                :value="region.code"
+                :label="`美国${region.label}`"
+                :value="regionWord(region)"
+                delta-label=""
               >
                 <template #delta>
-                  <StatusPill
-                    :text="regionReason(region.reason)"
-                    :tone="region.reason === 'insufficient_data' ? 'muted' : 'ok'"
-                  />
+                  <span class="region-score" :class="regionTone(region)">
+                    规则分 {{ region.value ?? "—" }}
+                  </span>
                 </template>
               </MetricTile>
             </div>
-            <p v-if="macro?.notice" class="macro-notice">{{ macro.notice }}</p>
-            <p class="macro-version">规则版本 {{ macro?.version || "—" }} · 时点 {{ macro?.pitDate || "—" }}</p>
 
-            <h3 class="sub-title">中国宏观序列</h3>
-            <ul class="series-list">
-              <li v-for="item in china?.series ?? []" :key="item.code">
-                <span class="series-name">{{ item.name }}</span>
-                <StatusPill
-                  :text="item.status === 'available' ? (item.latestValue ?? '已入库') : statusText(item.status)"
-                  :tone="item.status === 'available' ? 'ok' : 'muted'"
+            <ul class="us-list">
+              <li v-for="row in usSeries" :key="row.code">
+                <span class="us-name" :title="`FRED ${row.code}`">{{ row.label }}</span>
+                <MiniSpark
+                  v-if="row.points.length > 1"
+                  :points="row.points"
+                  tone="accent"
+                  :width="72"
+                  :height="22"
                 />
-                <span class="series-date">{{ item.latestDate ?? "" }}</span>
-              </li>
-              <li v-if="!(china?.series ?? []).length" class="series-empty">
-                {{ china?.notice || sectionErrors.china || "读取中" }}
+                <span v-else class="us-spark-empty" />
+                <span class="us-value num">
+                  {{ row.latest === null ? "—" : row.latest.toFixed(2) }}<small>{{ row.latest === null ? "" : row.unit }}</small>
+                </span>
+                <DeltaValue :value="row.change" size="sm" :colored="false" signed />
+                <span class="us-date num">{{ row.date?.slice(2) ?? row.problem ?? "" }}</span>
               </li>
             </ul>
+            <p class="macro-notice">
+              {{ macro?.notice }} 中国宏观序列
+              {{ (china?.series ?? []).filter((item) => item.status === "available").length }}/{{ (china?.series ?? []).length }}
+              已导入，<router-link to="/macro/china">去查看</router-link>
+            </p>
           </template>
         </PanelCard>
       </div>
 
       <!-- 底部三栏 -->
       <div class="grid-3 section">
-        <PanelCard title="重点指数与入库情况" info="条数来自 /market/bars 实际返回的行数" flush>
+        <PanelCard
+          title="板块强弱"
+          info="申万一级行业，成分相对沪深300的区间表现打分；成分不足 3 只的板块不出分"
+          more-text="板块行情"
+          more-to="/market/sectors"
+        >
           <template #icon><el-icon><DataAnalysis /></el-icon></template>
-          <el-table :data="indexRows" size="small" :show-header="true">
-            <el-table-column prop="symbol" label="代码" width="110" />
-            <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
-            <el-table-column label="收盘" width="100" align="right">
-              <template #default="{ row }">
-                <DeltaValue :value="row.latestClose" :colored="false" />
-              </template>
-            </el-table-column>
-            <el-table-column label="日涨跌" width="100" align="right">
-              <template #default="{ row }">
-                <DeltaValue :value="row.changePercent" suffix="%" />
-              </template>
-            </el-table-column>
-            <el-table-column label="K线条数" width="100" align="right">
-              <template #default="{ row }">
-                <span class="tabular">{{ row.barCount }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="120">
-              <template #default="{ row }">
-                <StatusPill
-                  :text="row.problem ? '缺数据' : '已入库'"
-                  :tone="row.problem ? 'warn' : 'ok'"
-                  dot
-                />
-              </template>
-            </el-table-column>
-          </el-table>
+          <StateBlock
+            v-if="!sectors"
+            :state="sectionErrors.sectors ? 'stale' : 'loading'"
+            :message="sectionErrors.sectors ?? ''"
+            @retry="load"
+          />
+          <StateBlock
+            v-else-if="!rankedSectors.length"
+            state="empty"
+            message="各板块成分都不足 3 只，暂不判断强弱"
+          />
+          <ul v-else class="sector-bars">
+            <li v-for="item in rankedSectors" :key="item.name">
+              <span class="sector-name">{{ item.name }}</span>
+              <span class="sector-track">
+                <i :style="{ width: `${Math.max(2, item.score ?? 0)}%` }" :class="{ strong: (item.score ?? 0) >= 50 }" />
+              </span>
+              <b class="num">{{ item.score?.toFixed(1) }}</b>
+              <em>{{ item.label }}</em>
+            </li>
+          </ul>
+          <p v-if="pendingSectors.length" class="macro-notice">
+            样本不足：{{ pendingSectors.map((item) => item.name).join("、") }}
+          </p>
         </PanelCard>
 
         <PanelCard title="市场热点与公告" info="只统计通过来源白名单校验的公告；没有合规来源时后端不展示情绪分数" more-text="市场热点" more-to="/hotspots">
@@ -843,27 +1055,38 @@ onMounted(() => {
           />
           <div v-else-if="hotspots" class="hotspot-body">
             <p class="hotspot-count">
-              <strong>{{ hotspots.count ?? "—" }}</strong>
-              <small>条合规公告</small>
+              <strong class="num">{{ hotspots.count ?? "—" }}</strong>
+              <small>条官方公告 · {{ hotspots.start?.slice(5) }} 至 {{ hotspots.end?.slice(5) }}</small>
             </p>
-            <p class="macro-notice">{{ hotspots.label }}</p>
+            <ul class="topic-bars">
+              <li v-for="topic in hotspots.topics" :key="topic.type">
+                <span>{{ topic.label }}</span>
+                <i :style="{ width: `${(topic.count / topicMax) * 100}%` }" />
+                <b class="num">{{ topic.count }}</b>
+              </li>
+            </ul>
+            <ul class="recent-list">
+              <li v-for="(item, index) in hotspots.recent" :key="index">
+                <span class="num">{{ item.day.slice(5) }}</span>
+                <p :title="item.title">{{ item.title }}</p>
+              </li>
+            </ul>
           </div>
           <StateBlock v-else :state="sectionErrors.hotspots ? 'stale' : 'loading'" :message="sectionErrors.hotspots ?? ''" @retry="load" />
 
-          <h3 class="sub-title">数据源状态</h3>
-          <ul class="series-list">
-            <li v-for="item in providers" :key="item.code">
-              <span class="series-name">{{ item.code }}</span>
-              <StatusPill
-                :text="statusText(item.availability)"
-                :tone="item.availability === 'configured' || item.availability === 'not_required' ? 'ok' : 'warn'"
-              />
-              <span class="series-date">{{ item.healthAt ? formatMoment(item.healthAt) : "" }}</span>
-            </li>
-            <li v-if="!providers.length" class="series-empty">
-              {{ session.accessToken ? "暂未读取到数据源" : "登录管理员账号后可查看数据源状态" }}
-            </li>
-          </ul>
+          <template v-if="providers.length">
+            <h3 class="sub-title">数据源状态</h3>
+            <ul class="series-list">
+              <li v-for="item in providers" :key="item.code">
+                <span class="series-name">{{ item.code }}</span>
+                <StatusPill
+                  :text="statusText(item.availability)"
+                  :tone="['configured', 'not_required', 'public_csv'].includes(item.availability) ? 'ok' : 'warn'"
+                />
+                <span class="series-date">{{ item.healthAt ? formatMoment(item.healthAt) : "" }}</span>
+              </li>
+            </ul>
+          </template>
         </PanelCard>
 
         <PanelCard title="AI 每日研究摘要" info="来自 /me/digest，只汇总已生成的研究报告与合规公告" more-text="研究报告" more-to="/reports">
@@ -905,7 +1128,7 @@ onMounted(() => {
 
 .chart-main {
   width: 100%;
-  height: 320px;
+  height: 300px;
 }
 
 .index-strip {
@@ -938,12 +1161,188 @@ onMounted(() => {
 
 .macro-tiles {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.region-score {
+  font-size: 12px;
+  font-family: var(--font-num);
+  color: var(--muted);
+}
+
+.region-score.rise {
+  color: var(--rise);
+}
+
+.region-score.fall {
+  color: var(--fall);
+}
+
+.us-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+}
+
+.us-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 66px 52px 58px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--line-soft);
+  font-size: 13px;
+}
+
+.us-list li:last-child {
+  border-bottom: 0;
+}
+
+.us-name {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.us-value {
+  text-align: right;
+  font-size: 15px;
+  color: var(--text-strong);
+}
+
+.us-value small {
+  margin-left: 1px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.us-date {
+  text-align: right;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.us-spark-empty {
+  height: 22px;
+}
+
+.sector-bars {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 12px;
+}
+
+.sector-bars li {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) 40px 34px;
+  align-items: center;
   gap: 10px;
+  font-size: 13px;
+}
+
+.sector-name {
+  color: var(--text);
+}
+
+.sector-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgb(96 140 220 / 10%);
+  overflow: hidden;
+}
+
+.sector-track i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, rgb(31 195 125 / 45%), var(--fall));
+}
+
+.sector-track i.strong {
+  background: linear-gradient(90deg, rgb(246 70 93 / 45%), var(--rise));
+}
+
+.sector-bars b {
+  text-align: right;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+
+.sector-bars em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.topic-bars {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 7px;
+}
+
+.topic-bars li {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.topic-bars li > i {
+  display: block;
+  height: 6px;
+  min-width: 4px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--orange), rgb(251 146 60 / 35%));
+  box-shadow: 0 0 10px -2px rgb(251 146 60 / 55%);
+}
+
+.topic-bars b {
+  text-align: right;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+
+.recent-list {
+  margin: 14px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line-soft);
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.recent-list li {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 13px;
+}
+
+.recent-list span {
+  color: var(--faint);
+}
+
+.recent-list p {
+  margin: 0;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .macro-notice {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   line-height: 1.6;
 }
@@ -1008,9 +1407,9 @@ onMounted(() => {
 }
 
 .hotspot-count strong {
-  font-size: 26px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-strong);
 }
 
 .hotspot-count small {

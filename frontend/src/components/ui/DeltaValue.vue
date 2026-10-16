@@ -79,6 +79,7 @@ const tone = computed<string>(() => {
 
 <style scoped>
 .delta {
+  font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -92,7 +93,7 @@ const tone = computed<string>(() => {
 }
 
 .size-lg {
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
 }
 

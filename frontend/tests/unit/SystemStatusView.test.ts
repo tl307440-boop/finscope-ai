@@ -62,8 +62,8 @@ describe("运行状态页", () => {
     resolveReady(jsonResponse(ready))
     expect(await screen.findByRole("heading", { name: "运行正常" })).toBeTruthy()
     // 业务覆盖只做定性说明（后端没有覆盖率汇总接口），这里核对它确实写明了边界。
-    expect(screen.getByText("未配置数据源密钥时不填观测值，页面显示「不可用」而不是旧值。")).toBeTruthy()
-    expect(screen.getByText("数据模式：live，未使用演示数据")).toBeTruthy()
+    expect(screen.getByText("需管理员在数据中心导入国家统计局等官方 CSV，导入前显示为不可用。")).toBeTruthy()
+    expect(screen.getByText("实时数据模式，未使用演示数据")).toBeTruthy()
     expect(screen.getByText("延迟 4 毫秒（就绪检查实测）")).toBeTruthy()
   })
 
@@ -120,7 +120,7 @@ describe("运行状态页", () => {
 
     render(SystemStatusView)
     const retry = await screen.findByRole("button", { name: "重试" })
-    expect(screen.getByText("无法连接接口")).toBeTruthy()
+    expect(screen.getByText("无法连接服务")).toBeTruthy()
     online = true
     await fireEvent.click(retry)
     expect(await screen.findByRole("heading", { name: "运行正常" })).toBeTruthy()

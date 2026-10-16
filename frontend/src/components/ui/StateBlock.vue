@@ -97,14 +97,20 @@ const emit = defineEmits<{ retry: [] }>()
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
 .state {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 28px 20px;
+  padding: 24px 18px;
   border-radius: var(--radius-sm);
-  background: var(--panel-soft);
+  background: transparent;
   border: 1px dashed var(--line);
   color: var(--muted);
   font-size: 13px;

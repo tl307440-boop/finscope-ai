@@ -18,9 +18,11 @@ import {
   reasonText,
 } from "../api/health"
 
+const UNREACHABLE = "无法连接服务"
+
 const phase = ref<"loading" | "ready" | "degraded" | "error">("loading")
 const snapshot = ref<SystemSnapshot | null>(null)
-const failure = ref("无法连接接口")
+const failure = ref(UNREACHABLE)
 const failureRequestId = ref<string | null>(null)
 let requestToken = 0
 
@@ -40,7 +42,7 @@ async function load(): Promise<void> {
       return
     }
     phase.value = "error"
-    failure.value = error instanceof ApiError ? error.message : "无法连接接口"
+    failure.value = error instanceof ApiError ? error.message : UNREACHABLE
     failureRequestId.value = error instanceof ApiError ? error.requestId : null
   }
 }
@@ -48,13 +50,13 @@ async function load(): Promise<void> {
 type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
 
 /**
- * 错误态的正文。标题已经写了「无法连接接口」，正文就补上可操作的下一步，
+ * 错误态的正文。标题已经写了「无法连接服务」，正文就补上可操作的下一步，
  * 避免标题和正文重复同一句话。
  */
 const failureDetail = computed(() => {
   const base =
-    failure.value === "无法连接接口"
-      ? "请确认后端进程已启动（默认 127.0.0.1:8000），然后重试。"
+    failure.value === UNREACHABLE
+      ? "服务暂时没有响应，请稍后重试；持续失败请联系管理员。"
       : failure.value
   return failureRequestId.value ? `${base}（请求编号 ${failureRequestId.value}）` : base
 })
@@ -76,7 +78,7 @@ function statusLabel(check: ComponentCheck): string {
 
 function databaseLatency(): string {
   const value = snapshot.value?.database.latencyMs
-  return value === undefined ? "延迟未上报" : `延迟 ${value} 毫秒（就绪检查实测）`
+  return value === undefined ? "本次检查没有测到响应延迟" : `延迟 ${value} 毫秒（就绪检查实测）`
 }
 
 function openDocs(): void {
@@ -84,7 +86,8 @@ function openDocs(): void {
 }
 
 function workerHeartbeat(): string {
-  return `最近心跳 ${formatShanghai(snapshot.value?.worker.lastSeenAt)}`
+  const seen = snapshot.value?.worker.lastSeenAt
+  return seen ? `最近心跳 ${formatShanghai(seen)}` : "还没有收到心跳"
 }
 
 onMounted(() => {
@@ -96,7 +99,7 @@ onMounted(() => {
   <main id="main" class="page">
     <PageHeader
       title="系统运行状态"
-      subtitle="核对接口进程、数据库与后台 Worker 的实时就绪情况"
+      subtitle="核对服务进程、数据库与后台任务的实时就绪情况"
     >
       <template #actions>
         <el-button :loading="phase === 'loading'" :icon="Refresh" @click="load">重新检查</el-button>
@@ -114,12 +117,12 @@ onMounted(() => {
       <StateBlock
         v-else-if="phase === 'error' || !snapshot"
         state="error"
-        title="无法连接接口"
+        :title="UNREACHABLE"
         :message="failureDetail"
         @retry="load"
       />
       <template v-else>
-        <PanelCard title="就绪检查" info="GET /api/v1/health/live 与 /api/v1/health/ready">
+        <PanelCard title="就绪检查" info="同时检查服务进程、数据库连接与后台任务心跳">
           <template #icon><el-icon><Connection /></el-icon></template>
           <template #actions>
             <StatusPill
@@ -133,14 +136,14 @@ onMounted(() => {
             <h2 :class="snapshot.ready ? 'ok' : 'bad'">
               {{ snapshot.ready ? "运行正常" : "部分组件不可用" }}
             </h2>
-            <p class="muted">
-              检查时间 {{ formatShanghai(snapshot.asOf) }}（北京时间） · 请求编号 {{ snapshot.requestId }}
+            <p class="muted" :title="`请求编号 ${snapshot.requestId}`">
+              检查时间 {{ formatShanghai(snapshot.asOf) }}（北京时间）
             </p>
             <p class="muted">
               {{
                 snapshot.dataMode === "demo"
                   ? snapshot.notice || "当前为演示模式"
-                  : "数据模式：live，未使用演示数据"
+                  : "实时数据模式，未使用演示数据"
               }}
             </p>
             <el-button v-if="!snapshot.ready" size="small" @click="load">重试</el-button>
@@ -151,15 +154,14 @@ onMounted(() => {
 
         <div class="grid-3">
           <StatCard
-            title="接口进程"
+            title="服务进程"
             value="就绪"
-            caption="GET /api/v1/health/live 已返回，进程存活检查不依赖数据库"
-            info="存活检查与就绪检查来自同一个 FastAPI 进程"
-            more-text=""
+            caption="服务进程在线，存活检查不依赖数据库"
+            tone="accent"
           >
             <template #icon><el-icon><Cpu /></el-icon></template>
             <template #below>
-              <StatusPill text="进程存活" tone="ok" dot />
+              <StatusPill class="below-pill" text="进程存活" tone="ok" dot />
             </template>
           </StatCard>
 
@@ -167,12 +169,13 @@ onMounted(() => {
             title="数据库"
             :value="statusLabel(snapshot.database)"
             :caption="databaseLatency()"
-            info="就绪检查里的 checks.database 分量"
-            more-text=""
+            info="数据库连接是否可用，以及本次检查的响应延迟"
+            tone="cyan"
           >
             <template #icon><el-icon><DataLine /></el-icon></template>
             <template #below>
               <StatusPill
+                class="below-pill"
                 :text="snapshot.database.status === 'up' ? '连接正常' : '连接失败'"
                 :tone="tone(snapshot.database)"
                 dot
@@ -181,15 +184,16 @@ onMounted(() => {
           </StatCard>
 
           <StatCard
-            title="任务 Worker"
+            title="后台任务"
             :value="statusLabel(snapshot.worker)"
             :caption="workerHeartbeat()"
-            info="就绪检查里的 checks.worker 分量，心跳过期按心跳 TTL 判定"
-            more-text=""
+            info="负责执行数据同步等后台任务；长时间没有心跳会判为异常"
+            tone="violet"
           >
             <template #icon><el-icon><DataBoard /></el-icon></template>
             <template #below>
               <StatusPill
+                class="below-pill"
                 :text="snapshot.worker.status === 'up' ? '心跳正常' : '心跳异常'"
                 :tone="tone(snapshot.worker)"
                 dot
@@ -199,32 +203,32 @@ onMounted(() => {
         </div>
 
         <div class="grid-2">
-          <PanelCard title="业务数据覆盖" info="这里说明真实边界，不合成任何行情">
+          <PanelCard title="业务数据覆盖" info="各类数据的收录范围；没有收录的内容不会用估算值代替">
             <template #icon><el-icon><DataLine /></el-icon></template>
             <dl class="kv">
               <dt>日线行情</dt>
-              <dd>只覆盖已入库的少数指定 A 股，未同步时不展示价格。</dd>
-              <dt>宏观观测</dt>
-              <dd>未配置数据源密钥时不填观测值，页面显示「不可用」而不是旧值。</dd>
-              <dt>接口现状</dt>
-              <dd>后端没有提供数据覆盖率的汇总接口，因此本节只做定性说明，不给百分比。</dd>
+              <dd>覆盖已收录的 A 股与指数，未同步的标的不展示价格。</dd>
+              <dt>美国宏观</dt>
+              <dd>来自 FRED（美联储圣路易斯分行）官方发布的数据。</dd>
+              <dt>中国宏观</dt>
+              <dd>需管理员在数据中心导入国家统计局等官方 CSV，导入前显示为不可用。</dd>
+              <dt>美股财报</dt>
+              <dd>来自 SEC EDGAR（美国证监会电子披露系统）的公司申报数据。</dd>
             </dl>
           </PanelCard>
 
-          <PanelCard title="标的检索" info="GET /api/v1/instruments/search">
+          <PanelCard title="标的检索" info="检索已收录的证券">
             <template #icon><el-icon><Search /></el-icon></template>
             <InstrumentSearch />
-            <p class="note">
-              检索结果来自已入库的标的表；查不到只说明该标的尚未入库，不代表代码不存在。
-            </p>
+            <p class="note">查不到只说明该标的尚未收录，不代表代码不存在。</p>
           </PanelCard>
         </div>
 
         <SourceFooter
           :as-of="formatShanghai(snapshot.asOf)"
-          :sources="['/api/v1/health/live', '/api/v1/health/ready']"
+          :sources="['服务健康检查']"
           :stale="!snapshot.ready || snapshot.dataMode === 'demo'"
-          note="本页数字全部来自上面两个健康检查接口，没有其它数据源。"
+          note="本页状态全部来自服务自身的健康检查"
         />
       </template>
     </div>
@@ -277,10 +281,14 @@ onMounted(() => {
   color: var(--text);
 }
 
+.below-pill {
+  margin-top: 8px;
+}
+
 .note {
   margin: 14px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.7;
 }
 

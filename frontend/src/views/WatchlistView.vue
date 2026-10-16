@@ -15,7 +15,7 @@
  * 布局：页首 PageHeader + 四张概览小卡 + 「加入自选」+ 每个分组一张表 + 「关注事件」说明。
  */
 import { computed, onMounted, ref } from "vue"
-import { Bell, Plus, Search, Star, TrendCharts } from "@element-plus/icons-vue"
+import { Bell, Clock, Coin, Plus, Search, Star, TrendCharts } from "@element-plus/icons-vue"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
@@ -98,12 +98,12 @@ const quotedCount = computed<number>(() =>
 
 const missingCount = computed<number>(() => trackedIds.value.length - quotedCount.value)
 
-const latestTradeDate = computed<string>(() => {
+const latestTradeDate = computed<string | null>(() => {
   const dates = Object.values(moves.value)
     .map((move) => move.tradeDate)
     .filter((date): date is string => Boolean(date))
   if (!dates.length) {
-    return "—"
+    return null
   }
   return dates.sort()[dates.length - 1]
 })
@@ -113,30 +113,49 @@ const overviewCaption = computed<string>(() => {
     return "还没有分组，先新建一个"
   }
   if (!trackedIds.value.length) {
-    return `${groups.value.length} 个分组里还没有自选`
+    return "分组里还没有标的"
   }
-  return `共 ${groups.value.length} 个分组`
+  return groups.value.map((group) => group.name).join("、")
 })
 
 const missingCaption = computed<string>(() => {
   if (!trackedIds.value.length) {
-    return "暂无自选，无可统计的行情"
+    return "加入自选后显示"
   }
-  return missingCount.value ? "已入库日线还没覆盖到" : "全部都有已入库日线"
+  return missingCount.value ? `${missingCount.value} 只暂无日线` : "全部都有已入库日线"
 })
 
+const SOURCE_TEXT: Record<string, string> = {
+  akshare: "AKShare",
+  tushare: "Tushare",
+}
+
+const DELAY_TEXT: Record<string, string> = {
+  eod: "收盘后更新",
+  realtime: "实时",
+}
+
 const sourceCaption = computed<string>(() => {
-  if (!moveMeta.value) {
-    return "还没有取到任何 K 线"
+  if (!moveMeta.value || !quotedCount.value) {
+    return trackedIds.value.length ? "自选标的暂无已入库日线" : "加入自选后显示"
   }
-  const parts = [`来源 ${moveMeta.value.source || "未知"}`]
+  const parts: string[] = []
+  if (moveMeta.value.source) {
+    parts.push(`来源 ${SOURCE_TEXT[moveMeta.value.source] ?? moveMeta.value.source}`)
+  }
   if (moveMeta.value.delay) {
-    parts.push(`延迟 ${moveMeta.value.delay}`)
+    parts.push(DELAY_TEXT[moveMeta.value.delay] ?? `延迟 ${moveMeta.value.delay}`)
   }
-  if (moveMeta.value.pitDate) {
-    parts.push(`数据截止 ${moveMeta.value.pitDate}`)
+  return parts.join(" · ") || "已入库日线"
+})
+
+const uniqueCaption = computed<string>(() => {
+  if (!itemCount.value) {
+    return "还没有加入任何标的"
   }
-  return parts.join(" · ")
+  return itemCount.value === trackedIds.value.length
+    ? "各分组合计"
+    : `去重后 ${trackedIds.value.length} 只`
 })
 
 async function refreshToken(): Promise<string | null> {
@@ -457,9 +476,9 @@ function statusText(instrumentId: string): string {
     return "未加载"
   }
   if (move.unavailable) {
-    return `不可用：${move.unavailable}`
+    return move.unavailable
   }
-  return "已加载"
+  return "行情已入库"
 }
 
 function statusTone(instrumentId: string): "ok" | "warn" | "muted" {
@@ -497,13 +516,10 @@ onMounted(() => {
     </div>
 
     <div v-else-if="needsLogin" class="stack">
-      <PanelCard title="我的自选" info="未登录时不发任何分组请求，也不显示任何行情数字">
-        <StateBlock state="denied" message="登录后可以使用自选">
-          <p class="login-line">
-            登录后可以使用自选，<a :href="loginHref">前往登录</a>。
-          </p>
+      <PanelCard title="我的自选">
+        <StateBlock state="denied" message="自选分组跟随账号保存，登录后即可查看和管理">
+          <a class="login-line" :href="loginHref">前往登录</a>
         </StateBlock>
-        <p class="card-note">这里刻意不渲染任何占位行情：登录前接口不会返回分组与日线。</p>
       </PanelCard>
     </div>
 
@@ -514,9 +530,7 @@ onMounted(() => {
           :message="failure"
           @retry="load"
         />
-        <p v-if="!retryable" class="card-note">
-          这次失败来自业务接口，可能是该分组已不存在；刷新页面或重新登录后再试。
-        </p>
+        <p v-if="!retryable" class="card-note">分组可能已被删除，刷新页面或重新登录后再试。</p>
       </PanelCard>
     </div>
 
@@ -527,8 +541,8 @@ onMounted(() => {
           :value="groups.length"
           unit="个"
           :caption="overviewCaption"
-          info="来自 /api/v1/watchlists 返回的 groups"
-          more-text=""
+          info="你建立的自选分组数量"
+          tone="accent"
         >
           <template #icon><el-icon><Star /></el-icon></template>
         </StatCard>
@@ -536,9 +550,9 @@ onMounted(() => {
           title="自选标的"
           :value="itemCount"
           unit="只"
-          caption="去重后的行情请求按标的逐档发起"
-          info="groups[].items 的条数合计，可能包含跨分组重复的标的"
-          more-text=""
+          :caption="uniqueCaption"
+          info="各分组标的数合计；同一标的出现在多个分组时会重复计数"
+          tone="cyan"
         >
           <template #icon><el-icon><TrendCharts /></el-icon></template>
         </StatCard>
@@ -546,9 +560,9 @@ onMounted(() => {
           title="已入库行情"
           :value="quotedCount"
           unit="只"
-          :caption="`${missingCaption}（${missingCount} 只）`"
-          info="GET /api/v1/market/bars/{instrument_id}?limit=2 真实返回 K 线的标的数量"
-          more-text=""
+          :caption="missingCaption"
+          info="有已入库日线、可以显示收盘价的自选标的数量"
+          tone="ok"
         >
           <template #icon><el-icon><Coin /></el-icon></template>
         </StatCard>
@@ -556,84 +570,86 @@ onMounted(() => {
           title="行情数据截止"
           :value="latestTradeDate"
           :caption="sourceCaption"
-          info="所有已取到 K 线里最新的 trade_date，不是当前系统时间"
-          more-text=""
+          info="自选标的已入库日线里最新的交易日，不是当前时间"
+          tone="violet"
         >
           <template #icon><el-icon><Clock /></el-icon></template>
         </StatCard>
       </div>
 
-      <PanelCard title="新建分组" info="POST /api/v1/watchlists">
-        <template #icon><el-icon><Plus /></el-icon></template>
-        <form class="inline-form" @submit.prevent="createGroup">
-          <el-input
-            v-model="newGroupName"
-            name="group-name"
-            type="text"
-            maxlength="40"
-            placeholder="例如：白酒"
-            clearable
-          />
-          <el-button type="primary" native-type="submit" :disabled="!canCreate" :loading="busy">
-            新建分组
-          </el-button>
-        </form>
-        <p v-if="actionOk" class="inline-note" role="status">{{ actionOk }}</p>
-        <p v-if="actionError" class="inline-note danger" role="alert">{{ actionError }}</p>
-      </PanelCard>
-
-      <PanelCard
-        title="加入自选"
-        info="POST /api/v1/watchlists/{group_id}/items，标的先经 /api/v1/instruments/search 换取 UUID"
-      >
-        <template #icon><el-icon><Search /></el-icon></template>
-        <StateBlock
-          v-if="!groups.length"
-          state="empty"
-          message="还没有自选分组，先在上面的卡片里新建一个分组再添加公司"
-        />
-        <template v-else>
-          <div class="search-row">
-            <el-select v-model="activeGroup" placeholder="选择分组" style="width: 220px">
-              <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
-            </el-select>
+      <div class="grid-2">
+        <PanelCard title="新建分组" info="按主题或行业建分组，例如「白酒」「银行」；名称最长 40 个字">
+          <template #icon><el-icon><Plus /></el-icon></template>
+          <form class="inline-form" @submit.prevent="createGroup">
             <el-input
-              v-model="query"
-              name="instrument-query"
+              v-model="newGroupName"
+              name="group-name"
               type="text"
-              placeholder="例如 600519.SH 或 贵州茅台"
+              maxlength="40"
+              placeholder="分组名称，例如：白酒"
+              aria-label="分组名称"
               clearable
-              style="max-width: 280px"
-              @input="scheduleSearch"
             />
-            <el-button :disabled="busy || !hits.length" :loading="busy" @click="addFirstHit">
-              加入第一个结果
+            <el-button type="primary" native-type="submit" :disabled="!canCreate" :loading="busy">
+              新建分组
             </el-button>
-          </div>
+          </form>
+        </PanelCard>
 
-          <p v-if="searching" class="inline-note">正在检索证券</p>
-          <ul v-else-if="hits.length" class="hit-list">
-            <li v-for="hit in hits" :key="hit.id">
-              <router-link :to="routeForHit(hit)">{{ describeHit(hit) }}</router-link>
-              <el-button size="small" :disabled="busy" @click="addItem(hit)">加入自选</el-button>
-            </li>
-          </ul>
-          <p v-else-if="query.trim() && searched" class="inline-note">没有匹配的证券</p>
-        </template>
+        <PanelCard title="加入自选" info="输入代码或名称，检索已收录的证券后加入所选分组">
+          <template #icon><el-icon><Search /></el-icon></template>
+          <p v-if="!groups.length" class="inline-note first">先在左侧新建一个分组，再把关注的标的加进来。</p>
+          <template v-else>
+            <div class="search-row">
+              <el-select v-model="activeGroup" placeholder="选择分组" aria-label="选择分组" style="width: 160px">
+                <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+              </el-select>
+              <el-input
+                v-model="query"
+                name="instrument-query"
+                type="text"
+                placeholder="例如 600519.SH 或 贵州茅台"
+                aria-label="证券代码或名称"
+                clearable
+                @input="scheduleSearch"
+              />
+              <el-button :disabled="busy || !hits.length" :loading="busy" @click="addFirstHit">
+                加入第一个结果
+              </el-button>
+            </div>
+
+            <p v-if="searching" class="inline-note">正在检索证券…</p>
+            <ul v-else-if="hits.length" class="hit-list">
+              <li v-for="hit in hits" :key="hit.id">
+                <router-link :to="routeForHit(hit)">{{ describeHit(hit) }}</router-link>
+                <el-button size="small" :disabled="busy" @click="addItem(hit)">加入自选</el-button>
+              </li>
+            </ul>
+            <p v-else-if="query.trim() && searched" class="inline-note">没有匹配的证券</p>
+          </template>
+        </PanelCard>
+      </div>
+
+      <p v-if="actionOk" class="action-note" role="status">{{ actionOk }}</p>
+      <p v-if="actionError" class="action-note danger" role="alert">{{ actionError }}</p>
+
+      <PanelCard v-if="!groups.length" title="我的自选">
+        <template #icon><el-icon><Star /></el-icon></template>
+        <StateBlock state="empty" message="还没有自选分组。新建分组并加入标的后，这里会列出最近收盘与当日涨跌。" />
       </PanelCard>
 
       <PanelCard
         v-for="group in groups"
         :key="group.id"
         :title="group.name"
-        :info="`GET /api/v1/watchlists 分组 ${group.name} 的 items`"
+        flush
       >
         <template #icon><el-icon><Star /></el-icon></template>
         <template #actions>
-          <span class="group-count">{{ group.items.length }} 只 · 分组 ID {{ group.id.slice(0, 8) }}</span>
+          <span class="group-count">{{ group.items.length }} 只</span>
         </template>
 
-        <StateBlock v-if="!group.items.length" state="empty" message="这个分组还没有自选公司" />
+        <StateBlock v-if="!group.items.length" state="empty" message="这个分组还没有标的，可在上方「加入自选」里添加" />
         <el-table v-else :data="group.items" size="small" style="width: 100%">
           <el-table-column label="代码" width="140">
             <template #default="scope">
@@ -658,7 +674,7 @@ onMounted(() => {
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="当日变化" width="120" align="right">
+          <el-table-column label="当日涨跌" width="120" align="right">
             <template #default="scope">
               <DeltaValue
                 :value="changePercentOf(scope.row.instrumentId)"
@@ -670,10 +686,10 @@ onMounted(() => {
           </el-table-column>
           <el-table-column label="交易日" width="120">
             <template #default="scope">
-              <span class="muted">{{ moveOf(scope.row.instrumentId)?.tradeDate || "—" }}</span>
+              <span class="muted tabular">{{ moveOf(scope.row.instrumentId)?.tradeDate || "—" }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="行情状态" min-width="180">
+          <el-table-column label="行情状态" min-width="160">
             <template #default="scope">
               <StatusPill
                 :text="statusText(scope.row.instrumentId)"
@@ -690,14 +706,10 @@ onMounted(() => {
         </el-table>
       </PanelCard>
 
-      <PanelCard title="关注事件" info="后端还没有自选维度的关注事件接口，这里不生成事件条目">
+      <PanelCard title="关注事件" more-text="市场热点" more-to="/hotspots">
         <template #icon><el-icon><Bell /></el-icon></template>
-        <StateBlock state="empty" message="后端还没有自选维度的关注事件接口，这里不生成事件条目。" />
-        <p class="card-note">
-          可核对的只有上表的真实日线收盘与当日变化。事件线索请到公司页的财报资料与产业页的已入库事实上查。
-        </p>
-        <p class="card-note">
-          页面不生成任何时间戳，行情数据截止日以上表「交易日」与「行情数据截止」卡为准。
+        <p class="inline-note first">
+          暂不按自选标的汇总公告事件。近期公告可在「市场热点」查看，单家公司的财报与公告在公司页查看。
         </p>
       </PanelCard>
     </div>
@@ -705,21 +717,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.stack {
-  display: grid;
-  gap: var(--gap);
-}
-
 .login-line {
-  margin: 0;
-}
-
-.login-line a {
+  flex: none;
   color: var(--accent);
+  font-size: 13px;
 }
 
 .group-count {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -727,22 +732,25 @@ onMounted(() => {
 .inline-form,
 .search-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .inline-form :deep(.el-input),
 .search-row :deep(.el-input) {
-  max-width: 240px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.search-row :deep(.el-select) {
+  flex: none;
 }
 
 .hit-list {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   padding: 0;
   display: grid;
-  gap: 8px;
 }
 
 .hit-list li {
@@ -750,10 +758,13 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
-  background: var(--panel-soft);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-sm);
+  padding: 8px 2px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+
+.hit-list li:first-child {
+  border-top: 0;
 }
 
 .cell-link {
@@ -762,22 +773,40 @@ onMounted(() => {
 
 .inline-note {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--muted);
 }
 
-.inline-note.danger {
+.inline-note.first {
+  margin-top: 0;
+}
+
+.inline-note.danger,
+.action-note.danger {
   color: var(--danger);
+}
+
+.action-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ok);
 }
 
 .card-note {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--muted);
   line-height: 1.6;
 }
 
 .muted {
   color: var(--muted);
+}
+
+@media (max-width: 767px) {
+  .search-row {
+    flex-wrap: wrap;
+  }
 }
 </style>

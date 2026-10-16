@@ -21,7 +21,7 @@ const loading = ref(false)
 const emptyMessage = ref("")
 const failed = ref("")
 
-const placeholder = computed(() => emptyMessage.value || "暂无该证券")
+const placeholder = computed(() => emptyMessage.value || "搜索公司 / 代码，如 600519、茅台、AAPL")
 
 async function run(query: string): Promise<void> {
   const trimmed = query.trim()
@@ -93,12 +93,23 @@ function open(code: string): void {
 <style scoped>
 .global-search {
   min-width: 260px;
-  max-width: 380px;
-  flex: 1 1 260px;
+  max-width: 460px;
+  flex: 1 1 300px;
 }
 
 .global-search__input {
   width: 100%;
+}
+
+.global-search__input :deep(.el-select__wrapper) {
+  min-height: 36px;
+  border-radius: 8px;
+  background: rgb(96 140 220 / 7%);
+  box-shadow: 0 0 0 1px var(--line) inset;
+}
+
+.global-search__input :deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px var(--accent) inset, 0 0 0 4px rgb(59 130 246 / 14%);
 }
 
 .global-search__error {

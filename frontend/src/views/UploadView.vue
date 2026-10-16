@@ -1,20 +1,22 @@
 <script setup lang="ts">
 /**
- * 上传财报 PDF（`POST /api/v1/documents` + `POST /api/v1/documents/{id}/index` + `GET /api/v1/documents/search`）。
+ * 上传财报 PDF（`POST /api/v1/documents` + `POST /api/v1/documents/{id}/index` + `GET /api/v1/documents/search`），
+ * 并列出当前账号已上传的文件（`GET /api/v1/documents`）。
  *
  * 硬性口径（与后端一致）：仅支持 PDF、≤30MB、≤200 页；内容不是 PDF、
  * 扫描件（需要文字版）、重复文件都在上传阶段就被拒或标记，并回显后端原文。
  * 上传成功后必须显式调一次索引接口，所以这里把「校验 → 解析 → 建立索引 → 完成」
  * 如实分步展示：每一步只写后端真正返回的状态，进度不做百分比估算。
  */
-import { computed, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
+import { Document, Files, Search, UploadFilled } from "@element-plus/icons-vue"
 import { authorizedFetch, readJson } from "../api/client"
 import { pageLabel } from "../api/documentSearch"
-import { uploadStatusText } from "../api/uploads"
+import { formatShanghai } from "../api/health"
+import { documentStatus, uploadStatusText } from "../api/uploads"
 import { restoreSession, useSessionStore } from "../stores/auth"
 import PanelCard from "../components/ui/PanelCard.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
-import SourceFooter from "../components/ui/SourceFooter.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
 import { asNumber, asString } from "../api/json"
@@ -29,7 +31,18 @@ interface Hit {
   snippet: string
 }
 
+interface UploadedDocument {
+  id: string
+  title: string
+  pageCount: number | null
+  parseStatus: string
+  parseError: string | null
+  uploadedAt: string | null
+}
+
 type Stage = "idle" | "validating" | "parsing" | "indexing" | "done" | "error"
+
+const MAX_BYTES = 30 * 1024 * 1024
 
 const session = useSessionStore()
 
@@ -38,10 +51,14 @@ const stage = ref<Stage>("idle")
 const message = ref("")
 const indexMessage = ref("")
 const file = ref<File | null>(null)
+const dragging = ref(false)
 const query = ref("")
 const hits = ref<Hit[]>([])
 const searchMessage = ref("")
 const searching = ref(false)
+const documents = ref<UploadedDocument[]>([])
+const documentsPhase = ref<"loading" | "ready" | "error">("loading")
+const documentsFailure = ref("")
 
 const STAGE_STEPS: { key: Stage; label: string }[] = [
   { key: "validating", label: "校验格式与大小" },
@@ -52,28 +69,36 @@ const STAGE_STEPS: { key: Stage; label: string }[] = [
 
 const STAGE_ORDER: Stage[] = ["idle", "validating", "parsing", "indexing", "done"]
 
-const scopeLabel = computed(() =>
-  props.symbol ? `${props.symbol} · 上传的财报只用于该标的的检索` : "上传的财报只用于站内按原文检索",
+const loginHref = computed(() => {
+  const target = props.symbol ? `/company/${encodeURIComponent(props.symbol)}/uploads` : "/"
+  return `/login?redirect=${encodeURIComponent(target)}`
+})
+
+const subtitle = computed(() =>
+  props.symbol
+    ? `${props.symbol} · 上传后可按原文检索，并定位到具体页码`
+    : "上传后可按原文检索，并定位到具体页码",
 )
 
-const selectedLabel = computed(() => {
+const fileSize = computed(() => {
   const picked = file.value
-  if (!picked) {
-    return "还没有选择文件"
-  }
-  const size = picked.size / (1024 * 1024)
-  return `${picked.name} · ${size.toFixed(2)}MB`
+  return picked ? `${(picked.size / (1024 * 1024)).toFixed(2)} MB` : ""
 })
 
 /** 本地预检只为提示，最终判定以后端返回的 status / error 为准。 */
-const selectedTone = computed<"ok" | "warn" | "muted">(() => {
+const precheckWarning = computed<string>(() => {
   const picked = file.value
   if (!picked) {
-    return "muted"
+    return ""
   }
   const okType = picked.type === "application/pdf" || picked.name.toLowerCase().endsWith(".pdf")
-  const okSize = picked.size <= 30 * 1024 * 1024
-  return okType && okSize ? "ok" : "warn"
+  if (!okType) {
+    return "这不是 PDF 文件，上传会被拒收"
+  }
+  if (picked.size > MAX_BYTES) {
+    return "文件超过 30MB，上传会被拒收"
+  }
+  return ""
 })
 
 const stageIndex = computed(() => STAGE_ORDER.indexOf(stage.value))
@@ -92,18 +117,58 @@ function stageState(key: Stage): "done" | "active" | "pending" | "failed" {
   return "pending"
 }
 
+function pick(next: File | null): void {
+  file.value = next
+  indexMessage.value = ""
+  if (stage.value === "done" || stage.value === "error") {
+    stage.value = "idle"
+    message.value = ""
+  }
+}
+
 function choose(event: Event): void {
   const input = event.target
   if (!(input instanceof HTMLInputElement)) {
     return
   }
-  file.value = input.files?.[0] ?? null
-  indexMessage.value = ""
+  pick(input.files?.[0] ?? null)
+}
+
+function drop(event: DragEvent): void {
+  dragging.value = false
+  const dropped = event.dataTransfer?.files?.[0]
+  if (dropped) {
+    pick(dropped)
+  }
 }
 
 async function refreshToken(): Promise<string | null> {
   const restored = await restoreSession()
   return restored ? session.accessToken : null
+}
+
+async function loadDocuments(): Promise<void> {
+  if (!session.accessToken) {
+    documentsPhase.value = "ready"
+    documents.value = []
+    return
+  }
+  documentsPhase.value = "loading"
+  try {
+    const response = await authorizedFetch("/api/v1/documents", { method: "GET" }, session.accessToken, refreshToken)
+    const payload = await readJson(response)
+    const record = asRecord(payload)
+    if (!response.ok) {
+      documentsFailure.value = asString(asRecord(record?.error)?.message) ?? "无法读取已上传的文件"
+      documentsPhase.value = "error"
+      return
+    }
+    documents.value = readDocuments(asRecord(record?.data)?.documents)
+    documentsPhase.value = "ready"
+  } catch {
+    documentsFailure.value = "无法连接服务，请稍后重试"
+    documentsPhase.value = "error"
+  }
 }
 
 async function submit(): Promise<void> {
@@ -116,7 +181,7 @@ async function submit(): Promise<void> {
   if (!file.value) {
     stage.value = "error"
     phase.value = "error"
-    message.value = "请选择 PDF"
+    message.value = "请先选择一份 PDF"
     return
   }
   stage.value = "validating"
@@ -153,9 +218,11 @@ async function submit(): Promise<void> {
       stage.value = "done"
     }
   } catch {
-    message.value = "无法连接接口"
+    message.value = "无法连接服务，请稍后重试"
     stage.value = "error"
     phase.value = "error"
+  } finally {
+    void loadDocuments()
   }
 }
 
@@ -180,7 +247,7 @@ async function indexDocument(documentId: string): Promise<void> {
     }
     stage.value = "done"
   } catch {
-    indexMessage.value = "索引请求无法连接接口"
+    indexMessage.value = "建立索引时无法连接服务"
     stage.value = "error"
     phase.value = "error"
   }
@@ -215,9 +282,9 @@ async function runSearch(): Promise<void> {
     }
     const data = asRecord(record?.data)
     hits.value = readHits(data?.items)
-    searchMessage.value = hits.value.length ? "已定位到下面的页" : "没有找到对应页"
+    searchMessage.value = hits.value.length ? `找到 ${hits.value.length} 处匹配` : "没有找到对应页"
   } catch {
-    searchMessage.value = "无法连接接口"
+    searchMessage.value = "无法连接服务，请稍后重试"
   } finally {
     searching.value = false
   }
@@ -243,93 +310,167 @@ function readHits(value: unknown): Hit[] {
   return items
 }
 
+function readDocuments(value: unknown): UploadedDocument[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((entry) => {
+    const row = asRecord(entry)
+    const id = asString(row?.id)
+    if (!id) {
+      return []
+    }
+    return [
+      {
+        id,
+        title: asString(row?.title) ?? "未命名文件",
+        pageCount: asNumber(row?.page_count),
+        parseStatus: asString(row?.parse_status) ?? "",
+        parseError: asString(row?.parse_error),
+        uploadedAt: asString(row?.uploaded_at),
+      },
+    ]
+  })
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     return value as Record<string, unknown>
   }
   return null
 }
+
+onMounted(() => {
+  void loadDocuments()
+})
 </script>
 
 <template>
   <main class="page">
-    <PageHeader title="上传财报 PDF" subtitle="只接受 PDF · 单份 ≤30MB · ≤200 页 · 不做 OCR">
+    <PageHeader title="上传财报 PDF" :subtitle="subtitle">
       <template #actions>
-        <a v-if="!session.accessToken" class="login-link" href="/login">请先登录</a>
-        <StatusPill v-else tone="ok" :text="session.username ?? '已登录'" />
+        <a v-if="!session.accessToken" class="login-link" :href="loginHref">请先登录</a>
+        <StatusPill v-else tone="ok" :text="session.username ?? '已登录'" dot />
       </template>
     </PageHeader>
 
-    <div class="grid-1-2">
-      <PanelCard title="选择文件" :info="scopeLabel">
-        <form class="form" @submit.prevent="submit">
-          <label class="field">
-            PDF 文件
-            <input name="pdf-file" type="file" accept="application/pdf,.pdf" @change="choose" />
-          </label>
-          <p class="picked">
-            <StatusPill :tone="selectedTone" :text="selectedLabel" />
+    <div class="stack">
+      <div class="grid-1-2">
+        <PanelCard title="选择文件" info="仅支持文字版 PDF；文件不按原名保存">
+          <template #icon><el-icon><UploadFilled /></el-icon></template>
+          <form class="form" @submit.prevent="submit">
+            <label
+              class="drop"
+              :class="{ picked: file, dragging }"
+              @dragover.prevent="dragging = true"
+              @dragleave="dragging = false"
+              @drop.prevent="drop"
+            >
+              <input class="sr-only" name="pdf-file" type="file" accept="application/pdf,.pdf" @change="choose" />
+              <el-icon class="drop-icon" aria-hidden="true"><Document v-if="file" /><UploadFilled v-else /></el-icon>
+              <span class="drop-title">{{ file ? file.name : "点击选择或拖入 PDF 文件" }}</span>
+              <span class="drop-sub">{{ file ? fileSize : "单份 ≤30MB · ≤200 页" }}</span>
+            </label>
+            <p v-if="precheckWarning" class="warn-line" role="alert">{{ precheckWarning }}</p>
+            <ul class="limits">
+              <li>只接受 PDF，Word 文档和图片会被拒收。</li>
+              <li>单份不超过 30MB、200 页，超出的文件不入库。</li>
+              <li>扫描件（纯图片 PDF）不做文字识别，会标记为「需要文字版」。</li>
+              <li>同一份文件重复上传会提示「已经上传过」。</li>
+            </ul>
+            <el-button type="primary" native-type="submit" :loading="phase === 'loading'" :disabled="!file">
+              上传并解析
+            </el-button>
+          </form>
+        </PanelCard>
+
+        <PanelCard title="解析与索引进度" info="按实际处理结果逐步更新，不估算百分比">
+          <template #icon><el-icon><Files /></el-icon></template>
+          <ol class="steps">
+            <li v-for="(item, index) in STAGE_STEPS" :key="item.key" :class="`is-${stageState(item.key)}`">
+              <span class="step-no" aria-hidden="true">{{ index + 1 }}</span>
+              <span>{{ item.label }}</span>
+            </li>
+          </ol>
+          <p v-if="stage === 'idle'" class="muted stage-line">选择文件后点「上传并解析」。</p>
+          <p v-else-if="message" class="stage-line" :class="{ danger: stage === 'error' }" :role="phase === 'error' ? 'alert' : 'status'">
+            {{ message }}
           </p>
-          <ul class="limits">
-            <li>仅支持 PDF：扩展名与文件头都要是 PDF，<code>.docx</code>／图片一律拒绝。</li>
-            <li>单份 ≤30MB，超过会在上传阶段直接拒收。</li>
-            <li>≤200 页，超页数的文件不入库。</li>
-            <li>扫描件（纯图片 PDF）不做 OCR，会标记为「需要文字版」。</li>
-            <li>同一份文件重复上传会返回「已经上传过」，文件不按原名保存。</li>
-          </ul>
-          <button class="retry" type="submit" :disabled="phase === 'loading'">上传并解析</button>
-        </form>
+          <p v-if="indexMessage" class="stage-line muted">索引：{{ indexMessage }}</p>
+          <p v-if="stage === 'error'" class="muted stage-line">失败的文件不会自动重试，修正后可以重新上传。</p>
+        </PanelCard>
+      </div>
+
+      <PanelCard title="我的上传" info="当前账号上传过的 PDF，按上传时间排列" flush>
+        <template #icon><el-icon><Document /></el-icon></template>
+        <template #actions>
+          <span v-if="documentsPhase === 'ready'" class="count">共 {{ documents.length }} 份</span>
+        </template>
+        <StateBlock v-if="documentsPhase === 'loading'" state="loading" :rows="2" />
+        <StateBlock
+          v-else-if="documentsPhase === 'error'"
+          state="error"
+          :message="documentsFailure"
+          @retry="loadDocuments"
+        />
+        <StateBlock
+          v-else-if="!documents.length"
+          state="empty"
+          :message="session.accessToken ? '还没有上传过 PDF，上传后会出现在这里' : '登录后可以查看自己上传的文件'"
+        />
+        <el-table v-else :data="documents" size="small" style="width: 100%">
+          <el-table-column label="文件" min-width="260">
+            <template #default="{ row }">
+              <span class="cell-strong">{{ row.title }}</span>
+              <span v-if="row.parseError" class="cell-sub danger">{{ row.parseError }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="页数" width="90" align="right">
+            <template #default="{ row }">
+              <span class="tabular">{{ row.pageCount ?? "—" }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="130">
+            <template #default="{ row }">
+              <StatusPill :text="documentStatus(row.parseStatus).text" :tone="documentStatus(row.parseStatus).tone" dot />
+            </template>
+          </el-table-column>
+          <el-table-column label="上传时间" width="190">
+            <template #default="{ row }">
+              <span class="tabular">{{ formatShanghai(row.uploadedAt ?? undefined) }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
       </PanelCard>
 
-      <PanelCard title="解析与索引进度" info="每一步都只写后端真正返回的状态，不做百分比估算">
-        <ol class="steps">
-          <li v-for="item in STAGE_STEPS" :key="item.key" :class="`is-${stageState(item.key)}`">
-            <span class="dot" aria-hidden="true" />
-            <span>{{ item.label }}</span>
+      <PanelCard title="按原文检索" info="粘贴报告中的一句话，定位到已解析 PDF 的具体页码；使用本地文本匹配，不调用外部模型">
+        <template #icon><el-icon><Search /></el-icon></template>
+        <form class="search-form" @submit.prevent="runSearch">
+          <el-input
+            v-model="query"
+            name="chunk-query"
+            placeholder="粘贴报告里的一句话"
+            aria-label="检索原句"
+            clearable
+          />
+          <el-button type="primary" native-type="submit" :loading="searching">检索</el-button>
+        </form>
+
+        <div v-if="searching" class="search-state"><StateBlock state="loading" :rows="2" /></div>
+        <StateBlock v-else-if="searchMessage === '没有找到对应页'" class="search-state" state="empty" :message="searchMessage" />
+        <p v-else-if="searchMessage" class="muted search-msg" role="status">{{ searchMessage }}</p>
+
+        <ul v-if="hits.length" class="hit-list">
+          <li v-for="hit in hits" :key="hit.chunkId">
+            <p class="hit-head">
+              <strong>{{ hit.documentTitle }}</strong>
+              <span class="muted">{{ pageLabel(hit.pageStart, hit.pageEnd) }}</span>
+            </p>
+            <p class="hit-snippet">{{ hit.snippet }}</p>
           </li>
-        </ol>
-        <p v-if="stage === 'idle'" class="muted stage-line">选择文件后点「上传并解析」。</p>
-        <p v-else-if="message" class="stage-line" :role="phase === 'error' ? 'alert' : 'status'">
-          {{ message }}
-        </p>
-        <p v-if="indexMessage" class="stage-line muted">索引：{{ indexMessage }}</p>
-        <p v-if="stage === 'error'" class="muted stage-line">
-          失败的文件已经记录，可以在数据管理页看到原因；不会自动重试。
-        </p>
+        </ul>
       </PanelCard>
     </div>
-
-    <PanelCard title="按原文检索" info="GET /api/v1/documents/search · 向量是可复现的本地哈希，不是外部语义模型">
-      <form class="search-form" @submit.prevent="runSearch">
-        <label class="field grow">
-          原句
-          <input v-model="query" name="chunk-query" placeholder="粘贴报告里的一句话" />
-        </label>
-        <button class="retry" type="submit" :disabled="searching">
-          {{ searching ? "检索中…" : "检索" }}
-        </button>
-      </form>
-
-      <div v-if="searching" class="search-state"><StateBlock state="loading" :rows="2" /></div>
-      <StateBlock v-else-if="searchMessage === '没有找到对应页'" state="empty" :message="searchMessage" />
-      <p v-else-if="searchMessage" class="muted search-msg" role="status">{{ searchMessage }}</p>
-
-      <ul v-if="hits.length" class="hit-list">
-        <li v-for="hit in hits" :key="hit.chunkId">
-          <p class="hit-head">
-            <strong>{{ hit.documentTitle }}</strong>
-            <span class="muted">{{ pageLabel(hit.pageStart, hit.pageEnd) }}</span>
-          </p>
-          <p class="hit-snippet">{{ hit.snippet }}</p>
-        </li>
-      </ul>
-    </PanelCard>
-
-    <SourceFooter
-      :as-of="selectedLabel"
-      :sources="['POST /api/v1/documents', 'POST /api/v1/documents/{id}/index', 'GET /api/v1/documents/search']"
-      :note="indexMessage || '仅支持 PDF、≤30MB、≤200 页；扫描件不做 OCR，入库文件不按原名保存'"
-    />
   </main>
 </template>
 
@@ -340,25 +481,70 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   justify-items: start;
 }
 
-.field {
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.drop {
+  position: relative;
   display: grid;
+  justify-items: center;
   gap: 4px;
   width: 100%;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.field input {
-  border: 1px solid var(--line);
+  padding: 20px 16px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 45%, var(--line));
   border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--text);
-  padding: 7px 10px;
-  font-size: 13px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  cursor: pointer;
+  text-align: center;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease;
 }
 
-.picked {
+.drop:hover,
+.drop.dragging,
+.drop:focus-within {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.drop.picked {
+  border-style: solid;
+}
+
+.drop-icon {
+  font-size: 26px;
+  color: var(--accent);
+}
+
+.drop-title {
+  max-width: 100%;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drop-sub {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.warn-line {
   margin: 0;
+  font-size: 13px;
+  color: var(--warn);
 }
 
 .limits {
@@ -367,19 +553,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   display: grid;
   gap: 6px;
   font-size: 13px;
-}
-
-code {
-  font-size: 12px;
-  color: var(--accent);
+  color: var(--muted);
 }
 
 .steps {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 8px;
+  gap: 4px;
   font-size: 13px;
 }
 
@@ -387,23 +569,29 @@ code {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 7px 0;
   color: var(--muted);
 }
 
-.steps .dot {
-  width: 10px;
-  height: 10px;
+.step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   flex: none;
   border-radius: 50%;
   border: 1px solid var(--line);
+  font-family: var(--font-num);
+  font-size: 12px;
 }
 
 .steps .is-done {
   color: var(--ok);
 }
 
-.steps .is-done .dot {
-  background: var(--ok);
+.steps .is-done .step-no {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
   border-color: var(--ok);
 }
 
@@ -412,8 +600,8 @@ code {
   font-weight: 600;
 }
 
-.steps .is-active .dot {
-  background: var(--accent);
+.steps .is-active .step-no {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: var(--accent);
 }
 
@@ -421,25 +609,49 @@ code {
   color: var(--danger);
 }
 
-.steps .is-failed .dot {
-  background: var(--danger);
+.steps .is-failed .step-no {
   border-color: var(--danger);
 }
 
 .stage-line {
   margin: 0 0 6px;
   font-size: 13px;
+  line-height: 1.6;
+}
+
+.stage-line.danger {
+  color: var(--danger);
+}
+
+.count {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.cell-strong {
+  display: block;
+  font-size: 13px;
+  color: var(--text-strong);
+}
+
+.cell-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cell-sub.danger {
+  color: var(--danger);
 }
 
 .search-form {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
 }
 
-.grow {
-  flex: 1 1 260px;
+.search-form :deep(.el-input) {
+  flex: 1 1 auto;
 }
 
 .search-state,
@@ -453,14 +665,15 @@ code {
   padding: 0;
   list-style: none;
   display: grid;
-  gap: 12px;
 }
 
 .hit-list li {
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel-soft);
+  padding: 12px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.hit-list li:first-child {
+  border-top: 0;
 }
 
 .hit-head {
@@ -474,6 +687,7 @@ code {
 .hit-snippet {
   margin: 0;
   font-size: 13px;
+  line-height: 1.6;
   color: var(--muted);
 }
 

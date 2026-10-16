@@ -1,29 +1,48 @@
 <script setup lang="ts">
 /**
- * AI 财报解读（/company/:symbol/analysis/:runId）。视觉目标：设计稿 5「AI 财报解读」。
+ * AI 财报解读（/company/:symbol/analysis/:runId）。视觉目标：设计稿「AI 财报解读」。
  *
- *  - GET  /api/v1/analysis/runs/{run_id}   报告正文（需 Bearer），页面主体
+ *  - GET  /api/v1/analysis/runs/{run_id}   研究记录正文（需 Bearer），页面主体
  *  - GET  /api/v1/analysis/model-status    模型是否已配置（规则生成时必须显式提示）
+ *  - POST /api/v1/analysis/filing          按正文里的报告期重新生成（需 Bearer）
  *  - GET  /api/v1/instruments/search       路由 symbol → 证券元数据（id / CIK / 币种）
- *  - GET  /api/v1/companies/{id}/research  规则结论（highlights / risks / unevaluated）
- *  - GET  /api/v1/sec/facts?cik=&as_of=    已申报事实，右栏「关键数据」的证据
+ *  - GET  /api/v1/companies/{id}/research  规则引擎结论
+ *  - GET  /api/v1/companies/{id}/financials 规则读数、年度现金流与利润（后端已算好）
+ *  - GET  /api/v1/sec/facts?cik=&as_of=    已申报事实：只用来标注两期是单季还是累计
  *  - GET  /api/v1/sec/filings?cik=         最新财报与申报日（抬头条）
- *  - GET  /api/v1/market/bars/{id}         最新收盘与涨跌，未同步时按接口原话空态
+ *  - GET  /api/v1/market/bars/{id}         最新收盘与涨跌
  *
- * 后端返回的报告正文是纯文本行（不是 markdown）：逐行渲染，行内的来源 URL 抽成链接，
- * 不引入任何渲染库；正文里没有的段落（经营亮点 / 现金流匹配 / 结论）一律走 StateBlock 空态，
- * 绝不补写内容。规则引擎的 status 原样展示，不臆造「高/中」风险等级。
- *
- * 已知边界：AnalysisRunData 不含 as_of / period_a / period_b，因此本页无法重新生成
- * （POST /api/v1/analysis/filing 需要这三个字段）。「重新生成」在右上角按钮旁给出到公司页的入口。
+ * 正文是规则整理的纯文本行，用 parseReportBody 拆成报告期 + 指标行；
+ * 正文没有的段落（模型观点、管理层表述）走空态，不补写内容。
  */
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, ref, watch } from "vue"
 import type { EChartsOption } from "echarts"
 import VChart from "vue-echarts"
 import { useRouter } from "vue-router"
 import { ApiError, apiUrl, authorizedFetch, errorFrom, readJson } from "../api/client"
-import { asNumber, asRecord, asString, dataOf, listOf } from "../api/json"
+import { asNumber, asRecord, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { searchInstruments, type InstrumentHit } from "../api/instruments"
+import { fetchFinancials, type CompanyFinancials } from "../api/companyFinancials"
+import {
+  parseReportBody,
+  ruleChecks,
+  ruleName,
+  ruleStatusLabel,
+  ruleTone,
+  runStatusLabel,
+  runTone,
+  type ReportMetricLine,
+} from "../api/research"
+import {
+  conceptLabel,
+  formatFact,
+  METRICS,
+  parseFactPoint,
+  periodKindLabel,
+  sameShape,
+  todayText,
+  type FactPoint,
+} from "../api/secFacts"
 import { restoreSession, useSessionStore } from "../stores/auth"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
@@ -38,8 +57,8 @@ const session = useSessionStore()
 const router = useRouter()
 
 const NO_DOCUMENT = "没有可引用的上传文档。"
-/** 辅助接口（research / facts / filings / bars）的观察日，与仓库其它公司页保持同一个可复现日期。 */
-const AUX_AS_OF = "2024-06-01"
+/** 重新生成与口径标注用的观察日：今天。 */
+const AUX_AS_OF = todayText()
 
 interface RunReport {
   runId: string
@@ -49,23 +68,14 @@ interface RunReport {
   message: string
   body: string
   notice: string
+  /** 报告生成时的观察日；规则读数和现金流对比都按它取数 */
+  asOf: string
 }
 
 interface RuleLine {
   ruleId: string
   status: string
   rationale: string
-}
-
-interface FactLine {
-  concept: string
-  unit: string
-  value: string
-  periodEnd: string
-  form: string
-  filed: string
-  accessionNo: string
-  sourceUrl: string
 }
 
 interface DocEvidence {
@@ -77,31 +87,45 @@ interface DocEvidence {
 
 interface FilingBrief {
   filingType: string
-  fiscalYear: string
+  fiscalYear: number | null
   fiscalPeriod: string
   filed: string
-  accessionNo: string
 }
 
-interface LineRef {
-  index: number
-  text: string
-  url: string
+interface ComparedLine {
+  key: string
+  label: string
+  earlier: string
+  later: string
+  change: number | null
+  comparable: boolean
+  basis: string
+  accession: string
+  source: string
 }
 
 type Phase = "loading" | "ready" | "error"
 type AuxPhase = "idle" | "loading" | "ready" | "empty" | "error" | "unavailable"
 
-const RULE_TONES: Record<string, "ok" | "warn" | "danger" | "muted" | "accent"> = {
-  flagged: "danger",
-  triggered: "danger",
-  alert: "danger",
-  ok: "ok",
-  passed: "ok",
-  not_evaluated: "muted",
-  insufficient_data: "warn",
-  insufficient: "warn",
-}
+/** 指标在报告里的展示顺序；不在表里的排在后面。 */
+const ORDER = [
+  "revenue",
+  "grossProfit",
+  "operatingIncome",
+  "netIncome",
+  "epsDiluted",
+  "operatingCashFlow",
+  "rnd",
+  "cost",
+  "assets",
+  "liabilities",
+  "equity",
+  "currentAssets",
+  "currentLiabilities",
+  "receivables",
+  "inventory",
+  "cash",
+]
 
 const phase = ref<Phase>("loading")
 const failure = ref("")
@@ -113,26 +137,27 @@ const modelMessage = ref("")
 const generatedAt = ref("")
 const copyState = ref("")
 const exportState = ref("")
+const regenerating = ref(false)
+const regenerateMessage = ref("")
 
 const rules = ref<RuleLine[]>([])
-const unevaluated = ref<RuleLine[]>([])
-const researchNotice = ref("")
 const researchPhase = ref<AuxPhase>("idle")
-const facts = ref<FactLine[]>([])
+const facts = ref<FactPoint[]>([])
 const factsPhase = ref<AuxPhase>("idle")
+const financials = ref<CompanyFinancials | null>(null)
+const financialsPhase = ref<AuxPhase>("idle")
 const latestFiling = ref<FilingBrief | null>(null)
-const filingsPhase = ref<AuxPhase>("idle")
 const bars = ref<{ tradeDate: string; closeText: string; simpleReturn: number | null }[]>([])
 const barsPhase = ref<AuxPhase>("idle")
-const barsMessage = ref("")
 
-const evidenceTab = ref("filings")
-const activeTab = ref("ai")
+const evidenceTab = ref("facts")
 
 const symbol = computed<string>(() => (Array.isArray(props.symbol) ? props.symbol[0] ?? "" : props.symbol))
 const runId = computed<string>(() => (Array.isArray(props.runId) ? props.runId[0] ?? "" : props.runId))
 const bodyText = computed<string>(() => report.value?.body ?? "")
-const currency = computed<string>(() => instrument.value?.currency ?? "")
+const reportAsOf = computed<string>(() => report.value?.asOf || AUX_AS_OF)
+const parsed = computed(() => parseReportBody(bodyText.value))
+const currencyUnit = computed<string>(() => (instrument.value?.currency === "CNY" ? "元" : instrument.value?.currency === "USD" ? "美元" : ""))
 
 const heading = computed<string>(() => {
   const item = instrument.value
@@ -147,145 +172,166 @@ const logoText = computed<string>(() => {
   return source.replace(/[^A-Za-z0-9\u4e00-\u9fa5]/g, "").slice(0, 4).toUpperCase() || "—"
 })
 
-const runTone = computed<"ok" | "warn" | "danger" | "muted">(() => {
-  const status = report.value?.status ?? ""
-  if (status === "succeeded") {
-    return "ok"
-  }
-  if (status === "failed") {
-    return "danger"
-  }
-  return "muted"
-})
-
-/** 规则生成的明确提示：模型不可用时不得含糊。 */
 const ruleBasedNotice = computed<string>(() => {
   if (modelAvailable.value === false) {
-    return `未配置大模型，报告为规则生成。${modelMessage.value}`
+    return "未配置大模型：本报告由规则整理两期已申报数字，不含模型生成的观点。"
   }
   if (modelAvailable.value === null) {
-    return "未能确认模型状态，请以报告内的来源标注为准。"
+    return "未能确认模型状态，请以报告内的数据来源为准。"
   }
-  return modelMessage.value
+  return modelMessage.value || "模型已配置，结论请与数据来源核对。"
 })
 
-const bodyRows = computed<LineRef[]>(() =>
-  bodyText.value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line, index) => {
-      const match = line.match(/https?:\/\/\S+/)
-      const url = match ? match[0] : ""
-      return { index: index + 1, text: url ? line.replace(url, "").trim() : line, url }
-    }),
-)
+const generatedMode = computed<string>(() => {
+  if (modelAvailable.value === false) {
+    return "规则整理"
+  }
+  return modelAvailable.value ? "模型生成" : "—"
+})
 
 /** 正文里的文档引用行：`文档 {id} 第 {起}-{止} 页 {摘录}`。 */
 const docEvidence = computed<DocEvidence[]>(() =>
-  bodyText.value
-    .split("\n")
-    .flatMap((line) => {
-      const match = line.trim().match(/^文档 (\S+) 第 (\d+)-(\d+) 页 (.+)$/)
-      if (!match) {
-        return []
-      }
-      return [
-        {
-          documentId: match[1] ?? "",
-          pageStart: match[2] ?? "",
-          pageEnd: match[3] ?? "",
-          snippet: match[4] ?? "",
-        },
-      ]
-    }),
+  parsed.value.lines.flatMap((line) => {
+    const match = line.match(/^文档 (\S+) 第 (\d+)-(\d+) 页 (.+)$/)
+    if (!match) {
+      return []
+    }
+    return [{ documentId: match[1] ?? "", pageStart: match[2] ?? "", pageEnd: match[3] ?? "", snippet: match[4] ?? "" }]
+  }),
 )
 
 const noDocumentCited = computed<boolean>(() => bodyText.value.includes(NO_DOCUMENT))
 
-const highlights = computed<RuleLine[]>(() => rules.value.filter((rule) => rule.status !== "not_evaluated"))
+const changeLabel = computed<string>(() => financials.value?.deltaLabel || "较对比期")
 
-const riskRules = computed<RuleLine[]>(() => rules.value)
+const periodsText = computed<string>(() => {
+  const range = parsed.value.periods
+  return range ? `${range.earlier} → ${range.later}` : "—"
+})
 
-const metricRows = computed<LineRef[]>(() =>
-  bodyRows.value.filter((row) => row.text.includes(":")) ,
-)
+function metricOrder(concept: string): number {
+  const short = concept.replace(/^[A-Za-z-]+:/, "")
+  const index = ORDER.findIndex((key) => METRICS[key]?.concepts.includes(short))
+  return index < 0 ? ORDER.length : index
+}
 
-const cashConcept = computed<FactLine | null>(
-  () =>
-    facts.value.find((fact) => fact.concept.includes("OperatingActivities")) ?? null,
-)
-
-const profitConcept = computed<FactLine | null>(
-  () =>
-    facts.value.find(
-      (fact) =>
-        fact.concept.endsWith("NetIncomeLoss") ||
-        fact.concept.endsWith("OperatingIncomeLoss") ||
-        fact.concept.endsWith("GrossProfit"),
-    ) ?? null,
-)
-
-const cashFlowOption = computed<EChartsOption | null>(() => {
-  const cash = cashConcept.value
-  const profit = profitConcept.value
-  if (!cash || !profit) {
+/** 用已申报事实核对报告里两期数字的期间长度：长度不同（单季 vs 累计）就不算变化率。 */
+function locate(line: ReportMetricLine, end: string, raw: string | null): FactPoint | null {
+  const value = asNumber(raw)
+  if (value === null) {
     return null
   }
-  const periods = [...new Set(facts.value.map((fact) => fact.periodEnd))].sort()
-  const seriesFor = (concept: string): (number | null)[] =>
-    periods.map((period) => {
-      const hit = facts.value.find((fact) => fact.concept === concept && fact.periodEnd === period)
-      const value = hit ? Number(hit.value) : Number.NaN
-      return Number.isFinite(value) ? value : null
+  return (
+    facts.value.find(
+      (point) => point.concept === line.concept && point.unit === line.unit && point.periodEnd === end && point.value === value,
+    ) ?? null
+  )
+}
+
+const comparedLines = computed<ComparedLine[]>(() => {
+  const range = parsed.value.periods
+  return [...parsed.value.metrics]
+    .sort((left, right) => metricOrder(left.concept) - metricOrder(right.concept))
+    .map((line) => {
+      const earlier = range ? locate(line, range.earlier, line.earlier) : null
+      const later = range ? locate(line, range.later, line.later) : null
+      const sameBasis = Boolean(earlier && later && sameShape(earlier, later))
+      const basis =
+        earlier && later
+          ? sameBasis
+            ? periodKindLabel(later)
+            : `${periodKindLabel(earlier)} vs ${periodKindLabel(later)}`
+          : ""
+      const ratio = asNumber(line.change)
+      return {
+        key: `${line.concept}|${line.unit}`,
+        label: conceptLabel(line.concept),
+        earlier: formatFact(asNumber(line.earlier), line.unit),
+        later: formatFact(asNumber(line.later), line.unit),
+        change: ratio === null ? null : Math.round(ratio * 10000) / 100,
+        comparable: sameBasis || !basis,
+        basis,
+        accession: line.laterAccession || line.earlierAccession,
+        source: line.laterSource || line.earlierSource,
+      }
     })
+})
+
+const headlineLines = computed<ComparedLine[]>(() =>
+  comparedLines.value.filter((line) => line.comparable && line.change !== null).slice(0, 4),
+)
+
+const mismatchCount = computed<number>(() => comparedLines.value.filter((line) => line.basis && !line.comparable).length)
+
+const ruleRows = computed(() => {
+  const observations = financials.value?.ruleObservations ?? {}
+  return rules.value.map((rule) => ({
+    ...rule,
+    name: ruleName(rule.ruleId),
+    checks: ruleChecks(rule.ruleId),
+    statusText: ruleStatusLabel(rule.status),
+    tone: ruleTone(rule.status),
+    observation: observations[rule.ruleId] ?? null,
+  }))
+})
+
+/* ---------------- 现金流与利润匹配（年度口径，后端配对） ---------------- */
+
+/** 金额换算成「亿」只为排版，数值本身来自接口。 */
+const toYi = (value: number | null): number | null => (value === null ? null : Math.round((value / 1e8) * 100) / 100)
+
+const cashSeries = computed<{ end: string; cash: number | null; profit: number | null; multiple: number | null }[]>(() =>
+  (financials.value?.cashVsProfit ?? []).map((row) => ({
+    end: row.periodEnd,
+    cash: toYi(row.operatingCashFlow),
+    profit: toYi(row.netIncome),
+    multiple: row.multiple,
+  })),
+)
+
+const cashLatest = computed(() => {
+  const rows = cashSeries.value.filter((row) => row.cash !== null && row.profit !== null && row.multiple !== null)
+  const last = rows[rows.length - 1]
+  if (!last || last.cash === null || last.profit === null || last.multiple === null) {
+    return null
+  }
+  return { end: last.end, cash: last.cash, profit: last.profit, ratio: last.multiple }
+})
+
+const cashFlowOption = computed<EChartsOption | null>(() => {
+  const rows = cashSeries.value.filter((row) => row.cash !== null || row.profit !== null)
+  if (rows.length < 2) {
+    return null
+  }
+  const unit = `亿${currencyUnit.value}`
   return {
     animation: false,
-    backgroundColor: "transparent",
     tooltip: { trigger: "axis" },
-    legend: { data: [cash.concept, profit.concept], textStyle: { color: "#95a6be", fontSize: 11 } },
-    grid: { left: 72, right: 24, top: 36, bottom: 40 },
-    xAxis: {
-      type: "category",
-      data: periods,
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      axisLine: { lineStyle: { color: "rgba(231,237,248,0.12)" } },
-      axisTick: { show: false },
-    },
-    yAxis: {
-      type: "value",
-      axisLabel: { color: "#95a6be", fontSize: 11 },
-      splitLine: { lineStyle: { color: "rgba(231,237,248,0.06)" } },
-    },
+    legend: { data: ["净利润", "经营现金流"], top: 0, right: 0 },
+    grid: { left: 56, right: 12, top: 32, bottom: 28 },
+    xAxis: { type: "category", data: rows.map((row) => `FY ${row.end.slice(0, 4)}`) },
+    yAxis: { type: "value", name: unit },
     series: [
-      { name: cash.concept, type: "bar", barMaxWidth: 36, itemStyle: { color: "#3b82f6" }, data: seriesFor(cash.concept) },
-      { name: profit.concept, type: "bar", barMaxWidth: 36, itemStyle: { color: "#34d399" }, data: seriesFor(profit.concept) },
+      { name: "净利润", type: "bar", barMaxWidth: 22, color: "#3b82f6", data: rows.map((row) => row.profit) },
+      { name: "经营现金流", type: "bar", barMaxWidth: 22, color: "#34d399", data: rows.map((row) => row.cash) },
     ],
   }
 })
 
 const cashFlowReason = computed<string>(() => {
-  if (factsPhase.value === "loading") {
-    return "正在读取已申报事实"
+  if (financialsPhase.value === "loading" || financialsPhase.value === "idle") {
+    return "正在读取已申报数据"
   }
-  if (factsPhase.value === "unavailable") {
-    return "该证券没有 CIK，接口不会返回 SEC XBRL 事实，无法对比现金流与利润。"
+  if (financialsPhase.value === "empty") {
+    return financials.value?.notice || "该公司没有已申报的财务数据，无法对比现金流与利润。"
   }
-  if (factsPhase.value === "error") {
-    return "无法读取已申报事实，稍后可重试。"
+  if (financialsPhase.value === "error") {
+    return "已申报数据读取失败，稍后可重试。"
   }
-  const missing: string[] = []
-  if (!cashConcept.value) {
-    missing.push("现金流量表科目（例如 us-gaap:NetCashProvidedByUsedInOperatingActivities）")
-  }
-  if (!profitConcept.value) {
-    missing.push("利润科目（例如 us-gaap:NetIncomeLoss）")
-  }
-  if (missing.length) {
-    return `已申报事实里没有${missing.join("与")}，接口没给这两条线，因此不画匹配图。`
-  }
-  return "已申报事实不足两期，画不出匹配趋势。"
+  return "年度经营现金流或净利润不足两期，暂不绘制。"
 })
+
+/* ---------------- 抬头 / 页签 / 来源 ---------------- */
 
 const priceChange = computed<number | null>(() => {
   const latest = bars.value[bars.value.length - 1]
@@ -295,89 +341,49 @@ const priceChange = computed<number | null>(() => {
   return Math.round(latest.simpleReturn * 10000) / 100
 })
 
-const companiesTabs = computed(() => [
-  { key: "overview", label: "公司概况", to: `/company/${encodeURIComponent(symbol.value)}` },
-  { key: "finance", label: "财务分析" },
-  { key: "ai", label: "AI财报解读" },
-  { key: "valuation", label: "估值模型" },
-  { key: "peers", label: "同行对比" },
-  { key: "institution", label: "机构观点" },
-  { key: "news", label: "新闻舆情" },
-])
-
-const TAB_NOTICES: Record<string, { title: string; message: string }> = {
-  finance: {
-    title: "财务分析页签还没有对应接口",
-    message:
-      "公司页的财务总览与财务趋势已经在 /company/{symbol} 上展示 XBRL 事实；这里不做第二套口径，也不在缺少接口时补数字。",
-  },
-  valuation: {
-    title: "估值模型需要市值与股本",
-    message:
-      "已接入接口只有 /market/bars 的价格与 SEC XBRL 财报科目，没有股本与市值字段，PE / PB / DCF 都算不出来。",
-  },
-  peers: {
-    title: "同行对比需要行业归类",
-    message: "证券元数据里没有行业字段，无法确定同行集合；接口补齐之前本页不列同行。",
-  },
-  institution: {
-    title: "机构观点需要研报数据源",
-    message: "当前没有接入卖方研报或评级接口，因此没有可展示的机构观点。",
-  },
-  news: {
-    title: "新闻舆情未启用",
-    message: "后端配置里 ENABLE_NEWS=false，新闻与舆情没有数据源。",
-  },
-}
-
-const activeTabNotice = computed(() => TAB_NOTICES[activeTab.value] ?? null)
+const companiesTabs = computed(() => {
+  const base = `/company/${encodeURIComponent(symbol.value)}`
+  return [
+    { key: "overview", label: "公司概况", to: base },
+    { key: "ai", label: "AI财报解读" },
+    { key: "filings", label: "原始财报", to: `${base}/filings` },
+  ]
+})
 
 const evidenceTabs = computed(() => [
+  { key: "facts", label: `关键数据（${comparedLines.value.length}）` },
   { key: "filings", label: `财报原文（${docEvidence.value.length}）` },
-  { key: "facts", label: `关键数据（${facts.value.length}）` },
   { key: "charts", label: `图表引用（${cashFlowOption.value ? 1 : 0}）` },
 ])
 
 const filingSummary = computed<string>(() => {
   const filing = latestFiling.value
   if (!filing) {
-    return "—"
+    return ""
   }
-  const period = [filing.fiscalYear, filing.fiscalPeriod].filter(Boolean).join(" ")
-  return [period, filing.filingType].filter(Boolean).join(" · ")
+  const period = [filing.fiscalYear ? `FY${filing.fiscalYear}` : "", filing.fiscalPeriod].filter(Boolean).join(" ")
+  return `${period}${filing.filingType ? `（${filing.filingType}）` : ""}`
 })
 
 const stripStats = computed(() => [
-  { label: "总市值", value: null as string | null, info: "已接入接口未提供市值字段（行情只有价格）" },
-  {
-    label: "所属行业",
-    value: null as string | null,
-    info: "证券元数据没有行业字段，接口未提供",
-  },
-  {
-    label: "最新财报",
-    value: filingSummary.value === "—" ? null : filingSummary.value,
-    info: "来自 GET /api/v1/sec/filings?cik=",
-  },
-  {
-    label: "发布日期",
-    value: latestFiling.value?.filed ?? null,
-    info: "最新一份申报的申报日（filed）",
-  },
+  { label: "解读报告期", value: periodsText.value === "—" ? null : periodsText.value },
+  { label: "生成方式", value: generatedMode.value === "—" ? null : generatedMode.value },
+  { label: "最新财报", value: filingSummary.value || null },
+  { label: "发布日期", value: latestFiling.value?.filed ?? null },
 ])
 
-const sourceList = computed<string[]>(() => [
-  "/api/v1/analysis/runs/{run_id}",
-  "/api/v1/analysis/model-status",
-  "/api/v1/companies/{id}/research",
-  "/api/v1/sec/facts",
-  "/api/v1/sec/filings",
-  "/api/v1/market/bars/{id}",
-])
+const sourceList = computed<string[]>(() => {
+  const list = ["本站研究记录"]
+  if (instrument.value?.cik) {
+    list.push("SEC EDGAR")
+  }
+  if (bars.value.length) {
+    list.push("AKShare 日线")
+  }
+  return list
+})
 
-function ruleTone(status: string): "ok" | "warn" | "danger" | "muted" | "accent" {
-  return RULE_TONES[status] ?? "muted"
-}
+/* ---------------- 加载 ---------------- */
 
 async function refreshToken(): Promise<string | null> {
   const restored = await restoreSession()
@@ -386,28 +392,19 @@ async function refreshToken(): Promise<string | null> {
 
 async function loadModelStatus(): Promise<void> {
   try {
-    const response = await authorizedFetch(
-      "/api/v1/analysis/model-status",
-      { method: "GET" },
-      session.accessToken,
-      refreshToken,
-    )
+    const response = await fetch(apiUrl("/api/v1/analysis/model-status"))
     const body = await readJson(response)
     if (!response.ok) {
       modelAvailable.value = null
       return
     }
     const data = dataOf(body)
-    modelAvailable.value = asBoolSafe(data?.available)
+    modelAvailable.value = typeof data?.available === "boolean" ? data.available : null
     modelMessage.value = asString(data?.message) ?? ""
   } catch {
     modelAvailable.value = null
     modelMessage.value = ""
   }
-}
-
-function asBoolSafe(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null
 }
 
 async function loadInstrument(): Promise<void> {
@@ -418,12 +415,11 @@ async function loadInstrument(): Promise<void> {
   try {
     const search = await searchInstruments(code, undefined, 10)
     instrument.value =
-      search.results.find((hit) => hit.displaySymbol === code) ??
-      search.results.find((hit) => hit.canonicalCode === code) ??
+      search.results.find((hit) => hit.displaySymbol.toUpperCase() === code.toUpperCase()) ??
+      search.results.find((hit) => hit.canonicalCode.toUpperCase() === code.toUpperCase()) ??
       search.results[0] ??
       null
   } catch {
-    // 证券元数据只是抬头，取不到不影响报告正文。
     instrument.value = null
   }
 }
@@ -441,8 +437,7 @@ async function load(): Promise<void> {
     const restored = await restoreSession()
     if (!restored) {
       phase.value = "error"
-      retryable.value = true
-      failure.value = "请先登录后再查看分析报告"
+      failure.value = "请先登录后再查看研究记录"
       return
     }
   }
@@ -451,7 +446,7 @@ async function load(): Promise<void> {
   if (!id) {
     phase.value = "error"
     retryable.value = false
-    failure.value = "路由里没有运行标识 runId"
+    failure.value = "地址里缺少研究记录编号"
     return
   }
 
@@ -464,8 +459,7 @@ async function load(): Promise<void> {
     )
     const payload = await readJson(response)
     if (!response.ok) {
-      const error = asRecord(asRecord(payload)?.error)
-      failure.value = asString(error?.message) ?? "找不到这份研究记录"
+      failure.value = asString(asRecord(asRecord(payload)?.error)?.message) ?? "找不到这份研究记录"
       retryable.value = response.status !== 404
       phase.value = "error"
       return
@@ -474,7 +468,7 @@ async function load(): Promise<void> {
     if (!data) {
       phase.value = "error"
       retryable.value = false
-      failure.value = "接口返回里没有报告数据"
+      failure.value = "这份研究记录没有内容"
       return
     }
     report.value = {
@@ -485,57 +479,54 @@ async function load(): Promise<void> {
       message: asString(data.message) ?? "",
       body: typeof data.body === "string" ? data.body : "",
       notice: asString(data.notice) ?? "",
+      asOf: asString(data.as_of) ?? "",
     }
-    generatedAt.value = asString(asRecord(asRecord(payload)?.meta)?.as_of) ?? ""
+    generatedAt.value = formatMoment(asRecord(asRecord(payload)?.meta)?.as_of)
     phase.value = "ready"
   } catch (caught) {
-    failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
+    failure.value = caught instanceof ApiError ? caught.message : "无法连接服务器"
     phase.value = "error"
   }
 }
 
-/** 规则结论（research）+ 已申报事实（facts）+ 抬头条所需的申报与行情。 */
 async function loadContext(): Promise<void> {
   await loadInstrument()
   const item = instrument.value
   if (!item) {
     researchPhase.value = "error"
     factsPhase.value = "unavailable"
-    filingsPhase.value = "unavailable"
     barsPhase.value = "empty"
-    barsMessage.value = "无法定位证券，行情不可用"
     return
   }
-  await Promise.all([loadRules(item.id), loadBars(item.id)])
-  if (item.cik) {
-    await Promise.all([loadFacts(item.cik), loadFilings(item.cik)])
-  } else {
+  await Promise.all([loadBars(item.id), item.cik ? loadFacts(item.cik) : Promise.resolve(), item.cik ? loadFilings(item.cik) : Promise.resolve()])
+  if (!item.cik) {
     factsPhase.value = "unavailable"
-    filingsPhase.value = "unavailable"
   }
 }
 
 async function loadRules(instrumentId: string): Promise<void> {
+  const range = parsed.value.periods
   researchPhase.value = "loading"
   try {
-    const params = new URLSearchParams({ as_of: AUX_AS_OF })
+    const params = new URLSearchParams({ as_of: reportAsOf.value })
+    if (range) {
+      params.set("period_a", range.earlier)
+      params.set("period_b", range.later)
+    }
     const response = await fetch(apiUrl(`/api/v1/companies/${instrumentId}/research?${params.toString()}`))
     const body = await readJson(response)
     if (!response.ok) {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
     const data = dataOf(body)
-    researchNotice.value = asString(data?.notice) ?? ""
-    const collected = [
-      ...(Array.isArray(data?.highlights) ? data.highlights : []),
-      ...(Array.isArray(data?.risks) ? data.risks : []),
+    rules.value = [
+      ...(Array.isArray(data?.risks) ? data.risks.flatMap(parseRule) : []),
+      ...(Array.isArray(data?.highlights) ? data.highlights.flatMap(parseRule) : []),
+      ...(Array.isArray(data?.unevaluated) ? data.unevaluated.flatMap(parseRule) : []),
     ]
-    rules.value = collected.flatMap(parseRule)
-    unevaluated.value = Array.isArray(data?.unevaluated) ? data.unevaluated.flatMap(parseRule) : []
     researchPhase.value = "ready"
   } catch {
     rules.value = []
-    unevaluated.value = []
     researchPhase.value = "error"
   }
 }
@@ -549,57 +540,60 @@ async function loadFacts(targetCik: string): Promise<void> {
     if (!response.ok) {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
-    const rows = listOf(dataOf(body)?.facts).flatMap(parseFact)
-    facts.value = rows
-    factsPhase.value = rows.length ? "ready" : "empty"
+    facts.value = listOf(dataOf(body)?.facts).flatMap(parseFactPoint)
+    factsPhase.value = facts.value.length ? "ready" : "empty"
   } catch {
     facts.value = []
     factsPhase.value = "error"
   }
 }
 
+async function loadFinancials(instrumentId: string): Promise<void> {
+  const range = parsed.value.periods
+  financialsPhase.value = "loading"
+  try {
+    financials.value = await fetchFinancials(instrumentId, {
+      asOf: reportAsOf.value,
+      reference: range?.later,
+      compare: range?.earlier,
+    })
+    financialsPhase.value = financials.value && financials.value.dataStatus !== "empty" ? "ready" : "empty"
+  } catch {
+    financials.value = null
+    financialsPhase.value = "error"
+  }
+}
+
 async function loadFilings(targetCik: string): Promise<void> {
-  filingsPhase.value = "loading"
   try {
     const response = await fetch(apiUrl(`/api/v1/sec/filings?cik=${encodeURIComponent(targetCik)}`))
     const body = await readJson(response)
     if (!response.ok) {
-      throw errorFrom(body, response.headers.get("X-Request-ID"))
+      return
     }
     const rows = listOf(dataOf(body)?.filings).flatMap(parseFiling)
-    latestFiling.value =
-      rows.sort((left, right) => left.filed.localeCompare(right.filed)).pop() ?? null
-    filingsPhase.value = rows.length ? "ready" : "empty"
+    latestFiling.value = rows.sort((left, right) => left.filed.localeCompare(right.filed)).pop() ?? null
   } catch {
     latestFiling.value = null
-    filingsPhase.value = "error"
   }
 }
 
 async function loadBars(instrumentId: string): Promise<void> {
   barsPhase.value = "loading"
-  barsMessage.value = ""
   try {
-    const response = await fetch(apiUrl(`/api/v1/market/bars/${instrumentId}?limit=60`))
+    const response = await fetch(apiUrl(`/api/v1/market/bars/${instrumentId}?limit=5`))
     const body = await readJson(response)
     if (!response.ok) {
       throw errorFrom(body, response.headers.get("X-Request-ID"))
     }
-    const data = dataOf(body)
-    barsMessage.value = asString(data?.empty_message) ?? "暂无已同步的日线"
-    bars.value = listOf(data?.bars).flatMap((record) => {
-      const row = asRecord(record)
-      const tradeDate = asString(row?.trade_date)
-      const close = asString(row?.close)
-      if (!tradeDate || !close) {
-        return []
-      }
-      return [{ tradeDate, closeText: close, simpleReturn: asNumber(row?.simple_return) }]
+    bars.value = listOf(dataOf(body)?.bars).flatMap((row) => {
+      const tradeDate = asString(row.trade_date)
+      const close = asString(row.close)
+      return tradeDate && close ? [{ tradeDate, closeText: close, simpleReturn: asNumber(row.simple_return) }] : []
     })
     barsPhase.value = bars.value.length ? "ready" : "empty"
   } catch {
     bars.value = []
-    barsMessage.value = "无法连接接口"
     barsPhase.value = "error"
   }
 }
@@ -610,34 +604,7 @@ function parseRule(value: unknown): RuleLine[] {
   if (!ruleId) {
     return []
   }
-  return [
-    {
-      ruleId,
-      status: asString(record?.status) ?? "",
-      rationale: asString(record?.rationale) ?? "",
-    },
-  ]
-}
-
-function parseFact(value: unknown): FactLine[] {
-  const record = asRecord(value)
-  const concept = asString(record?.concept)
-  const amount = asString(record?.value)
-  if (!concept || !amount) {
-    return []
-  }
-  return [
-    {
-      concept,
-      unit: asString(record?.unit) ?? "—",
-      value: amount,
-      periodEnd: asString(record?.period_end) ?? "—",
-      form: asString(record?.form) ?? "—",
-      filed: asString(record?.filed) ?? "—",
-      accessionNo: asString(record?.accession_no) ?? "—",
-      sourceUrl: asString(record?.source_url) ?? "",
-    },
-  ]
+  return [{ ruleId, status: asString(record?.status) ?? "", rationale: asString(record?.rationale) ?? "" }]
 }
 
 function parseFiling(value: unknown): FilingBrief[] {
@@ -649,29 +616,28 @@ function parseFiling(value: unknown): FilingBrief[] {
   return [
     {
       filingType: asString(record?.filing_type) ?? "",
-      fiscalYear: asString(record?.fiscal_year) ?? "",
+      fiscalYear: asNumber(record?.fiscal_year),
       fiscalPeriod: asString(record?.fiscal_period) ?? "",
       filed,
-      accessionNo: asString(record?.accession_no) ?? "",
     },
   ]
 }
 
+/* ---------------- 操作 ---------------- */
+
 async function copyBody(): Promise<void> {
-  const text = bodyText.value
-  if (!text) {
+  if (!bodyText.value) {
     copyState.value = "没有可复制的正文"
     return
   }
   try {
-    await navigator.clipboard.writeText(text)
+    await navigator.clipboard.writeText(bodyText.value)
     copyState.value = "已复制正文"
   } catch {
-    copyState.value = "浏览器拒绝访问剪贴板，请手动选中正文复制"
+    copyState.value = "浏览器不允许访问剪贴板，请改用导出"
   }
 }
 
-/** 导出报告的 Markdown：正文原样落盘，不含任何本地补写的内容。 */
 function exportMarkdown(): void {
   if (!bodyText.value) {
     exportState.value = "没有可导出的正文"
@@ -681,78 +647,130 @@ function exportMarkdown(): void {
     `# ${report.value?.title ?? "研究记录"}`,
     "",
     `- 证券：${heading.value}`,
-    `- 运行标识：${report.value?.runId ?? ""}`,
-    `- 记录标识：${report.value?.reportId ?? ""}`,
-    `- 服务端截止：${generatedAt.value || "—"}`,
-    `- 模型状态：${ruleBasedNotice.value || "—"}`,
+    `- 报告期：${periodsText.value}`,
+    `- 生成时间：${generatedAt.value || "—"}`,
+    `- 生成方式：${ruleBasedNotice.value}`,
     "",
   ].join("\n")
   const blob = new Blob([`${header}${bodyText.value}\n`], { type: "text/markdown;charset=utf-8" })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement("a")
   anchor.href = url
-  anchor.download = `${report.value?.runId ?? "report"}.md`
+  anchor.download = `${report.value?.title ?? "report"}.md`
   anchor.click()
   URL.revokeObjectURL(url)
-  exportState.value = "已导出 Markdown（正文与来源均来自接口）"
+  exportState.value = "已导出 Markdown"
 }
 
 function printReport(): void {
   window.print()
 }
 
-function goCompany(): void {
-  void router.push(`/company/${encodeURIComponent(symbol.value)}`)
+/** 按正文里的同一对报告期、以今天为观察日重新生成一份新记录。 */
+async function regenerate(): Promise<void> {
+  regenerateMessage.value = ""
+  const item = instrument.value
+  const range = parsed.value.periods
+  if (!item || !range) {
+    regenerateMessage.value = "这份记录缺少报告期，请回到公司页选择报告期后生成"
+    return
+  }
+  regenerating.value = true
+  try {
+    const response = await authorizedFetch(
+      "/api/v1/analysis/filing",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instrument_id: item.id, as_of: AUX_AS_OF, period_a: range.earlier, period_b: range.later }),
+      },
+      session.accessToken,
+      refreshToken,
+    )
+    const payload = await readJson(response)
+    const nextRun = asString(dataOf(payload)?.run_id)
+    if (!response.ok || !nextRun) {
+      regenerateMessage.value = asString(asRecord(asRecord(payload)?.error)?.message) ?? "重新生成失败，请稍后重试"
+      return
+    }
+    void router.push(`/company/${encodeURIComponent(symbol.value)}/analysis/${encodeURIComponent(nextRun)}`)
+  } catch {
+    regenerateMessage.value = "无法连接服务器"
+  } finally {
+    regenerating.value = false
+  }
 }
 
 function goFilings(): void {
   void router.push(`/company/${encodeURIComponent(symbol.value)}/filings`)
 }
 
+async function bootstrap(): Promise<void> {
+  await Promise.all([load(), loadContext(), loadModelStatus()])
+  if (instrument.value) {
+    await Promise.all([loadRules(instrument.value.id), loadFinancials(instrument.value.id)])
+  } else {
+    financialsPhase.value = "empty"
+  }
+}
+
 onMounted(() => {
-  void load()
-  void loadContext()
-  void loadModelStatus()
+  void bootstrap()
+})
+
+watch(runId, (next, previous) => {
+  if (next && next !== previous) {
+    void bootstrap()
+  }
 })
 </script>
 
 <template>
   <main class="page stack">
     <nav class="crumb" aria-label="面包屑">
-      <span>公司研究</span>
+      <router-link :to="`/company/${encodeURIComponent(symbol)}`">公司研究</router-link>
       <i aria-hidden="true">›</i>
       <strong>AI财报解读</strong>
     </nav>
 
-    <PageHeader :title="heading" :subtitle="report ? `${report.title} · 运行 ${report.runId}` : 'AI 财报解读'">
+    <PageHeader :title="heading" :subtitle="report ? `${report.title} · 生成于 ${generatedAt || '—'}` : 'AI 财报解读'">
       <template #actions>
         <el-dropdown trigger="click">
           <el-button size="small">
             导出报告
-            <span aria-hidden="true">▾</span>
+            <span aria-hidden="true">&nbsp;▾</span>
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item @click="exportMarkdown">导出 Markdown</el-dropdown-item>
               <el-dropdown-item @click="copyBody">复制正文</el-dropdown-item>
-              <el-dropdown-item @click="printReport">打印为 PDF</el-dropdown-item>
-              <el-dropdown-item divided @click="goCompany">到公司页重新生成（需选报告期）</el-dropdown-item>
+              <el-dropdown-item @click="printReport">打印 / 存为 PDF</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button size="small" type="primary" :disabled="!retryable && phase === 'error'" @click="load">
-          重新读取分析
+        <el-button
+          size="small"
+          type="primary"
+          :loading="regenerating"
+          :disabled="phase !== 'ready' || !parsed.periods"
+          @click="regenerate"
+        >
+          重新生成分析
         </el-button>
       </template>
     </PageHeader>
+
+    <p v-if="regenerateMessage || copyState || exportState" class="muted" role="status">
+      {{ regenerateMessage || copyState || exportState }}
+    </p>
 
     <StateBlock v-if="phase === 'loading'" state="loading" :rows="4" />
 
     <StateBlock
       v-else-if="phase === 'error'"
       state="error"
-      title="无法读取分析报告"
-      :message="`${failure}（证券 ${symbol} · 运行 ${runId}）`"
+      title="无法读取研究记录"
+      :message="failure"
       @retry="load"
     />
 
@@ -765,199 +783,157 @@ onMounted(() => {
               {{ instrument?.nameCn || instrument?.nameEn || symbol }}
               <span class="muted">{{ instrument?.displaySymbol ?? symbol }}</span>
             </p>
-            <p class="muted strip-meta">
-              {{ instrument?.exchange || "—" }} · {{ instrument?.market || "—" }} · 币种
-              {{ currency || "—" }}
-            </p>
+            <p class="muted strip-meta">{{ instrument?.nameEn || "—" }}</p>
           </div>
           <div class="quote">
             <template v-if="barsPhase === 'ready' && bars.length">
-              <span class="strip-price">
-                {{ bars[bars.length - 1]?.closeText }}<small> {{ currency }}</small>
+              <span class="strip-price num">
+                {{ bars[bars.length - 1]?.closeText }}<small> {{ currencyUnit }}</small>
               </span>
               <DeltaValue :value="priceChange" suffix="%" />
+              <span class="muted">{{ bars[bars.length - 1]?.tradeDate }} 收盘</span>
             </template>
             <span v-else class="muted">
-              {{ barsPhase === "loading" ? "正在读取行情" : barsMessage || "行情不可用" }}
+              {{ barsPhase === "loading" ? "正在读取行情" : instrument?.market === "US" ? "暂未同步美股日线" : "暂无已同步的日线" }}
             </span>
           </div>
           <dl class="strip-stats">
             <div v-for="row in stripStats" :key="row.label" class="kv">
-              <dt>
-                {{ row.label }}
-                <span class="info" :title="row.info">?</span>
-              </dt>
+              <dt>{{ row.label }}</dt>
               <dd :class="{ dim: !row.value }">{{ row.value ?? "—" }}</dd>
             </div>
           </dl>
         </div>
       </PanelCard>
 
-      <PanelCard compact>
-        <SectionTabs :tabs="companiesTabs" :model-value="activeTab" @update:model-value="activeTab = $event" />
-      </PanelCard>
+      <div class="tabs-bar">
+        <SectionTabs :tabs="companiesTabs" model-value="ai" />
+      </div>
 
-      <PanelCard v-if="activeTabNotice" compact>
-        <StateBlock
-          state="empty"
-          :title="activeTabNotice.title"
-          :message="activeTabNotice.message"
-        />
-      </PanelCard>
-
-      <div v-else class="grid-1-2">
+      <div class="analysis-grid">
         <PanelCard title="AI 财报解读">
           <template #icon>✦</template>
           <template #actions>
-            <StatusPill :text="report.status || '—'" :tone="runTone" dot />
+            <StatusPill :text="runStatusLabel(report.status)" :tone="runTone(report.status)" dot />
           </template>
 
-          <el-alert
-            :type="modelAvailable === false ? 'warning' : 'info'"
-            :closable="false"
-            show-icon
-            class="notice"
-          >
-            <template #title>{{ ruleBasedNotice }}</template>
-          </el-alert>
-
-          <p class="muted">
-            已深度阅读 {{ bodyRows.length }} 行报告正文；报告期、口径、申报号与服务端截止时间如下，
-            正文之外的段落（经营亮点 / 结论）若接口没给，这里显示空态而不是补写内容。
-          </p>
+          <div class="intro">
+            <span class="badge">基于 {{ periodsText }}</span>
+            <p>{{ ruleBasedNotice }}</p>
+          </div>
 
           <section class="block">
-            <h3>经营亮点</h3>
-            <StateBlock
-              v-if="!highlights.length"
-              state="empty"
-              :title="researchPhase === 'loading' ? '正在读取规则结论' : '接口未返回经营亮点'"
-              :message="`${researchNotice || '接口未提供来源说明'}规则引擎只有在拿到对应科目时才会给出结论。`"
-            />
-            <ol v-else class="item-list">
-              <li v-for="rule in highlights" :key="rule.ruleId">
-                <div class="item-head">
-                  <strong>{{ rule.ruleId }}</strong>
-                  <StatusPill :text="rule.status || '—'" :tone="ruleTone(rule.status)" />
+            <h3><span class="h-icon tone-ok" aria-hidden="true">★</span>核心变化</h3>
+            <p v-if="!headlineLines.length" class="empty-line">
+              {{ factsPhase === "loading" ? "正在核对两期口径" : "两期数字口径不一致或缺少数据，暂不给出变化率。" }}
+            </p>
+            <ol v-else class="headline-list">
+              <li v-for="(line, index) in headlineLines" :key="line.key">
+                <span class="line-index">{{ index + 1 }}</span>
+                <div>
+                  <p class="headline">
+                    {{ line.label }} {{ line.later }}，{{ changeLabel }}
+                    <DeltaValue :value="line.change" suffix="%" />
+                  </p>
+                  <p class="muted">{{ line.basis }} · 上期 {{ line.earlier }}</p>
                 </div>
-                <p class="item-text">{{ rule.rationale }}</p>
-                <div class="item-actions">
-                  <button class="link-btn" type="button" @click="goFilings">财报原文 ›</button>
-                </div>
+                <button class="link-btn" type="button" @click="evidenceTab = 'facts'">数据证据 ›</button>
               </li>
             </ol>
           </section>
 
           <section class="block">
-            <h3>潜在风险</h3>
-            <StateBlock
-              v-if="!riskRules.length"
-              state="empty"
-              title="接口未返回风险标记"
-              :message="`${researchNotice || '接口未提供来源说明'}未标记不等于没有风险；下面列出规则引擎给出的未评估原因。`"
-            />
+            <h3><span class="h-icon tone-danger" aria-hidden="true">⚠</span>潜在风险</h3>
+            <StateBlock v-if="researchPhase === 'loading'" state="loading" :rows="2" />
+            <p v-else-if="!ruleRows.length" class="empty-line">暂无规则检查结果</p>
             <div v-else class="risk-cards">
-              <article v-for="rule in riskRules" :key="`risk-${rule.ruleId}`" class="risk-card">
+              <article v-for="rule in ruleRows" :key="rule.ruleId" class="risk-card" :class="`tone-${rule.tone}`" :title="rule.checks">
                 <div class="item-head">
-                  <strong>{{ rule.ruleId }}</strong>
-                  <StatusPill :text="rule.status || '—'" :tone="ruleTone(rule.status)" />
+                  <strong>{{ rule.name }}</strong>
+                  <StatusPill :text="rule.statusText" :tone="rule.tone" />
                 </div>
-                <p class="item-text">{{ rule.rationale }}</p>
+                <p class="risk-obs" :class="{ dim: !rule.observation }">{{ rule.observation ?? rule.rationale }}</p>
               </article>
             </div>
-            <details v-if="unevaluated.length" class="unevaluated" open>
-              <summary>未评估的规则（{{ unevaluated.length }} 条，接口给出的原因）</summary>
-              <ul class="plain-list">
-                <li v-for="rule in unevaluated" :key="`u-${rule.ruleId}`">
-                  <strong>{{ rule.ruleId }}</strong>
-                  <span class="muted">{{ rule.rationale }}</span>
-                </li>
-              </ul>
-            </details>
+            <p v-if="ruleRows.length" class="footnote">
+              卡片中的读数由服务端按同口径已申报数据配对计算，仅供参考；悬停卡片可查看判定口径。
+            </p>
           </section>
 
           <section class="block">
-            <h3>现金流与利润匹配</h3>
-            <StateBlock
-              v-if="!cashFlowOption"
-              state="empty"
-              title="画不出匹配图"
-              :message="cashFlowReason"
-            />
-            <template v-else>
-              <VChart class="cash-chart" :option="cashFlowOption" autoresize aria-label="现金流与利润" />
-              <p class="footnote">
-                数据源 /api/v1/sec/facts，观察日 {{ AUX_AS_OF }}；两条都是接口给的已申报数值，未做任何换算。
+            <h3><span class="h-icon tone-accent" aria-hidden="true">▥</span>现金流与利润匹配</h3>
+            <p v-if="!cashFlowOption" class="empty-line">{{ cashFlowReason }}</p>
+            <div v-else class="cash-row">
+              <p v-if="cashLatest" class="cash-text">
+                FY {{ cashLatest.end.slice(0, 4) }} 经营现金流 {{ cashLatest.cash.toFixed(2) }} 亿{{ currencyUnit }}，
+                净利润 {{ cashLatest.profit.toFixed(2) }} 亿{{ currencyUnit }}，现金流为利润的
+                <strong class="num">{{ cashLatest.ratio.toFixed(2) }}</strong> 倍。
               </p>
-            </template>
+              <VChart class="cash-chart" :option="cashFlowOption" autoresize aria-label="现金流与利润" />
+            </div>
           </section>
 
           <section class="block">
-            <h3>报告正文</h3>
-            <p v-if="report.message" class="muted">{{ report.message }}</p>
-            <StateBlock
-              v-if="!bodyRows.length"
-              state="empty"
-              title="这份记录没有报告正文"
-              :message="report.notice || '接口返回的 body 为空。'"
-            />
-            <ol v-else class="item-list">
-              <li v-for="row in bodyRows" :key="row.index">
-                <span class="line-index">{{ row.index }}</span>
-                <span class="item-text">{{ row.text }}</span>
-                <a v-if="row.url" :href="row.url" target="_blank" rel="noreferrer noopener">来源 ›</a>
-              </li>
-            </ol>
-          </section>
-
-          <section class="block">
-            <h3>管理层表述</h3>
-            <StateBlock
-              v-if="!docEvidence.length"
-              state="empty"
-              title="没有可引用的上传文档"
-              :message="noDocumentCited
-                ? `后端原文：${NO_DOCUMENT}上传与解析自己的财报后，正文会逐页引用原文。`
-                : '这份记录里没有文档引用行，接口未给出原文摘录。'"
-            />
+            <h3><span class="h-icon tone-violet" aria-hidden="true">❝</span>管理层表述</h3>
+            <p v-if="!docEvidence.length" class="empty-line">
+              {{ noDocumentCited ? "暂无上传的财报原文。上传公司财报 PDF 并完成解析后，这里会逐页引用管理层表述。" : "这份记录没有引用财报原文。" }}
+              <router-link class="link" :to="`/company/${encodeURIComponent(symbol)}/uploads`">上传财报 ›</router-link>
+            </p>
             <blockquote v-for="doc in docEvidence" :key="`${doc.documentId}-${doc.pageStart}`" class="quote-block">
               <p>{{ doc.snippet }}</p>
               <footer>
-                文档 {{ doc.documentId }} · P.{{ doc.pageStart }}-{{ doc.pageEnd }}
+                P.{{ doc.pageStart }}-{{ doc.pageEnd }}
                 <button class="link-btn" type="button" @click="goFilings">查看原文 ›</button>
               </footer>
             </blockquote>
           </section>
 
           <section class="block">
-            <h3>结论</h3>
-            <div class="conclusion" :class="`tone-${runTone}`">
-              <StatusPill :text="report.status || '—'" :tone="runTone" dot />
-              <p class="item-text">
-                {{ report.message || "接口没有给出结论说明。" }}
+            <h3><span class="h-icon tone-ok" aria-hidden="true">✓</span>结论</h3>
+            <div class="conclusion" :class="`tone-${runTone(report.status)}`">
+              <p>
+                {{ report.message || "本记录没有给出结论说明。" }}
+                <template v-if="mismatchCount">其中 {{ mismatchCount }} 项两期期间长度不同（单季与累计），未计算变化率。</template>
               </p>
             </div>
-            <p v-if="report.notice" class="footnote">{{ report.notice }}</p>
           </section>
         </PanelCard>
 
-        <PanelCard title="证据与数据来源" info="正文中的文档引用行、/sec/facts 的已申报事实、以及本页实际渲染的图表">
+        <PanelCard title="证据与数据来源" info="每个数字都可以追溯到 SEC 申报号">
           <template #icon>▤</template>
-          <SectionTabs :tabs="evidenceTabs" :model-value="evidenceTab" @update:model-value="evidenceTab = $event" />
+          <SectionTabs :tabs="evidenceTabs" :model-value="evidenceTab" class="evidence-tabs" @update:model-value="evidenceTab = $event" />
 
           <div class="evidence-body">
-            <template v-if="evidenceTab === 'filings'">
-              <StateBlock
-                v-if="!docEvidence.length"
-                state="empty"
-                title="没有引用任何财报原文"
-                :message="noDocumentCited ? `后端原文：${NO_DOCUMENT}` : '正文里没有「文档 … 第 x-y 页 …」引用行。'"
-              />
-              <ol v-else class="item-list">
+            <template v-if="evidenceTab === 'facts'">
+              <p v-if="!comparedLines.length" class="empty-line">这份记录没有指标数据。</p>
+              <ol v-else class="evidence-list">
+                <li v-for="(line, index) in comparedLines" :key="line.key">
+                  <span class="line-index">{{ index + 1 }}</span>
+                  <div class="evidence-text">
+                    <p class="evidence-title">
+                      {{ line.label }}
+                      <DeltaValue v-if="line.change !== null" :value="line.change" suffix="%" size="sm" />
+                      <span v-else-if="line.basis" class="muted">口径不同</span>
+                    </p>
+                    <p class="excerpt num">{{ line.earlier }} → {{ line.later }}</p>
+                    <p class="page-ref">
+                      {{ line.basis || "—" }}<template v-if="line.accession"> · 申报号 {{ line.accession }}</template>
+                      <a v-if="line.source" :href="line.source" target="_blank" rel="noreferrer noopener">查看原文 ›</a>
+                    </p>
+                  </div>
+                </li>
+              </ol>
+            </template>
+
+            <template v-else-if="evidenceTab === 'filings'">
+              <p v-if="!docEvidence.length" class="empty-line">
+                {{ noDocumentCited ? "暂无上传的财报原文可供引用。" : "这份记录没有引用财报原文。" }}
+              </p>
+              <ol v-else class="evidence-list">
                 <li v-for="(doc, index) in docEvidence" :key="`ev-${doc.documentId}-${index}`">
                   <span class="line-index">{{ index + 1 }}</span>
                   <div class="evidence-text">
-                    <p class="page-ref">P.{{ doc.pageStart }}-{{ doc.pageEnd }} 文档 {{ doc.documentId }}</p>
+                    <p class="page-ref">P.{{ doc.pageStart }}-{{ doc.pageEnd }}</p>
                     <p class="excerpt">“{{ doc.snippet }}”</p>
                     <button class="link-btn" type="button" @click="goFilings">查看原文 ›</button>
                   </div>
@@ -965,76 +941,27 @@ onMounted(() => {
               </ol>
             </template>
 
-            <template v-else-if="evidenceTab === 'facts'">
-              <StateBlock
-                v-if="factsPhase === 'loading'"
-                state="loading"
-                :rows="3"
-              />
-              <StateBlock
-                v-else-if="factsPhase === 'unavailable'"
-                state="empty"
-                title="该证券没有 CIK"
-                message="没有 SEC 申报就没有 XBRL 事实，本栏没有可引用的关键数据。"
-              />
-              <StateBlock
-                v-else-if="!facts.length"
-                state="empty"
-                title="没有可引用的关键数据"
-                :message="`观察日 ${AUX_AS_OF} 之前没有已申报事实。`"
-              />
-              <ol v-else class="item-list">
-                <li v-for="(fact, index) in facts" :key="`fact-${fact.concept}-${fact.periodEnd}-${index}`">
-                  <span class="line-index">{{ index + 1 }}</span>
-                  <div class="evidence-text">
-                    <p class="page-ref">报告期 {{ fact.periodEnd }} · {{ fact.form }} · 申报 {{ fact.filed }}</p>
-                    <p class="excerpt">
-                      {{ fact.concept }}：{{ fact.value }} {{ fact.unit }}（申报号 {{ fact.accessionNo }}）
-                    </p>
-                    <a v-if="fact.sourceUrl" :href="fact.sourceUrl" target="_blank" rel="noreferrer noopener">
-                      查看原文 ›
-                    </a>
-                  </div>
-                </li>
-              </ol>
-              <p v-if="metricRows.length" class="footnote">
-                正文里的指标行 {{ metricRows.length }} 条，申报号与来源见上表。
-              </p>
-            </template>
-
             <template v-else>
-              <StateBlock
-                v-if="!cashFlowOption"
-                state="empty"
-                title="本页没有渲染任何图表"
-                :message="cashFlowReason"
-              />
-              <ol v-else class="item-list">
+              <p v-if="!cashFlowOption" class="empty-line">{{ cashFlowReason }}</p>
+              <ol v-else class="evidence-list">
                 <li>
                   <span class="line-index">1</span>
                   <div class="evidence-text">
-                    <p class="page-ref">现金流与利润匹配（双柱）</p>
-                    <p class="excerpt">
-                      {{ cashConcept?.concept }} 与 {{ profitConcept?.concept }}，报告期
-                      {{ facts.map((fact) => fact.periodEnd).join("、") }}
-                    </p>
-                    <p class="muted">数据源 /api/v1/sec/facts?cik=&as_of={{ AUX_AS_OF }}</p>
+                    <p class="evidence-title">现金流与利润匹配</p>
+                    <p class="excerpt">年度经营现金流与净利润，{{ cashSeries.map((row) => `FY ${row.end.slice(0, 4)}`).join("、") }}</p>
+                    <p class="page-ref">来源：SEC EDGAR 年报（10-K）</p>
                   </div>
                 </li>
               </ol>
             </template>
           </div>
-
-          <p v-if="copyState" class="footnote" role="status">{{ copyState }}</p>
-          <p v-if="exportState" class="footnote" role="status">{{ exportState }}</p>
         </PanelCard>
       </div>
 
       <SourceFooter
         :as-of="generatedAt"
         :sources="sourceList"
-        :stale="phase !== 'ready'"
-        :note="`报告正文来自 /analysis/runs/{run_id}；规则结论观察日 ${AUX_AS_OF}；${report.notice || '接口未提供来源说明'}`"
+        :note="modelAvailable === false ? '未配置大模型，报告为规则整理' : '结论请与数据来源核对'"
       />
     </template>
   </main>
@@ -1049,6 +976,15 @@ onMounted(() => {
   font-size: 13px;
 }
 
+.crumb a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.crumb a:hover {
+  color: var(--accent);
+}
+
 .crumb strong {
   color: var(--text);
   font-weight: 600;
@@ -1056,8 +992,8 @@ onMounted(() => {
 
 .strip {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.6fr);
-  gap: 16px;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.8fr);
+  gap: 18px;
   align-items: center;
 }
 
@@ -1068,7 +1004,7 @@ onMounted(() => {
   place-items: center;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  background: var(--panel-soft);
+  background: linear-gradient(160deg, var(--panel-raise), var(--panel-deep));
   color: var(--accent);
   font-size: 13px;
   font-weight: 700;
@@ -1076,40 +1012,39 @@ onMounted(() => {
 
 .strip-name {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.strip-name .muted {
+  margin-left: 6px;
+  font-weight: 500;
 }
 
 .strip-meta {
   margin: 4px 0 0;
-  font-size: 12px;
 }
 
 .quote {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 10px;
   font-size: 13px;
   min-width: 0;
-}
-
-/* 行情空态文案较长时按两行截断，避免挤到右侧的口径列表。 */
-.quote > .muted {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  border-left: 1px solid var(--line-soft);
+  padding-left: 18px;
 }
 
 .strip-price {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  color: var(--text-strong);
 }
 
 .strip-price small {
   margin-left: 3px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   color: var(--muted);
 }
@@ -1117,8 +1052,10 @@ onMounted(() => {
 .strip-stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 16px;
+  gap: 4px 18px;
   margin: 0;
+  border-left: 1px solid var(--line-soft);
+  padding-left: 18px;
 }
 
 .kv {
@@ -1128,20 +1065,24 @@ onMounted(() => {
   gap: 8px;
   border-bottom: 1px solid var(--line-soft);
   padding-bottom: 3px;
+  min-width: 0;
 }
 
 .kv dt {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .kv dd {
   margin: 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .kv dd.dim {
@@ -1149,20 +1090,42 @@ onMounted(() => {
   font-weight: 500;
 }
 
-.info {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 1px solid var(--line);
-  font-size: 9px;
-  cursor: help;
+.tabs-bar {
+  border-bottom: 1px solid var(--line);
+  padding: 0 4px 10px;
 }
 
-.notice {
-  margin-bottom: 12px;
+.analysis-grid {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.intro {
+  display: grid;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  padding: 10px 12px;
+}
+
+.intro p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.badge {
+  justify-self: start;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .block {
@@ -1172,12 +1135,54 @@ onMounted(() => {
 }
 
 .block h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0 0 10px;
   font-size: 15px;
   font-weight: 600;
+  color: var(--text-strong);
 }
 
-.item-list {
+.h-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.h-icon.tone-ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+}
+
+.h-icon.tone-danger {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
+.h-icon.tone-accent {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.h-icon.tone-violet {
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 16%, transparent);
+}
+
+.empty-line {
+  margin: 0;
+  max-width: 46em;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.headline-list,
+.evidence-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1185,23 +1190,35 @@ onMounted(() => {
   gap: 10px;
 }
 
-.item-list li {
-  display: flex;
-  align-items: flex-start;
+.headline-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
   gap: 10px;
   border-bottom: 1px solid var(--line-soft);
   padding-bottom: 10px;
 }
 
-.item-list li:last-child {
+.headline-list li:last-child {
   border-bottom: 0;
   padding-bottom: 0;
 }
 
+.headline {
+  margin: 0 0 3px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.headline-list .muted {
+  margin: 0;
+}
+
 .line-index {
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
   border-radius: 6px;
@@ -1214,70 +1231,68 @@ onMounted(() => {
 .item-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 8px;
 }
 
-.item-text {
-  margin: 6px 0 0;
-  font-size: 13px;
-  line-height: 1.7;
-  word-break: break-word;
-}
-
-.item-list .item-text {
-  margin: 0;
-  flex: 1;
-}
-
-.item-actions {
-  margin-top: 6px;
+.item-head strong {
+  font-size: 14px;
+  color: var(--text-strong);
 }
 
 .risk-cards {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
 .risk-card {
-  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  background: var(--panel-soft);
   padding: 10px 12px;
-}
-
-.unevaluated {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.unevaluated summary {
-  cursor: pointer;
-}
-
-.plain-list {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
   display: grid;
   gap: 6px;
 }
 
-.plain-list li {
-  display: flex;
-  gap: 8px;
+.risk-card.tone-danger {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
-.plain-list strong {
-  flex: none;
+.risk-obs {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
   color: var(--text);
-  font-weight: 600;
+}
+
+.risk-obs.dim {
+  color: var(--muted);
+}
+
+.cash-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 16px;
+  align-items: center;
+}
+
+.cash-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text);
+}
+
+.cash-text strong {
+  color: var(--accent);
+  font-size: 15px;
 }
 
 .cash-chart {
   width: 100%;
-  height: 260px;
+  height: 220px;
 }
 
 .quote-block {
@@ -1300,7 +1315,7 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .conclusion {
@@ -1310,9 +1325,15 @@ onMounted(() => {
   padding: 12px 14px;
 }
 
+.conclusion p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .conclusion.tone-ok {
   border-color: color-mix(in srgb, var(--ok) 40%, transparent);
-  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  background: color-mix(in srgb, var(--ok) 8%, transparent);
 }
 
 .conclusion.tone-danger {
@@ -1325,54 +1346,112 @@ onMounted(() => {
   border: 0;
   background: none;
   color: var(--accent);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   padding: 0;
+  white-space: nowrap;
+}
+
+.link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.evidence-tabs :deep(.tab) {
+  margin-bottom: 0;
+  font-size: 13px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.evidence-tabs :deep(.tab.active) {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .evidence-body {
   margin-top: 12px;
 }
 
+.evidence-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 10px;
+}
+
+.evidence-list li:last-child {
+  border-bottom: 0;
+}
+
 .evidence-text {
   flex: 1;
   display: grid;
-  gap: 4px;
+  gap: 3px;
+  min-width: 0;
 }
 
-.page-ref {
+.evidence-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
 }
 
 .excerpt {
   margin: 0;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.6;
+  color: var(--text);
   word-break: break-word;
 }
 
-.evidence-text a {
+.page-ref {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.page-ref a {
   color: var(--accent);
-  font-size: 12px;
   text-decoration: none;
 }
 
 .footnote {
   margin: 10px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.6;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1400px) {
   .strip {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .strip-stats {
+    grid-column: 1 / -1;
+    border-left: 0;
+    padding-left: 0;
   }
 
   .risk-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1200px) {
+  .analysis-grid,
+  .cash-row {
     grid-template-columns: minmax(0, 1fr);
   }
 }
