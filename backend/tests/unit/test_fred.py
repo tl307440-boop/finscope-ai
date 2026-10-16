@@ -272,7 +272,7 @@ async def _sleep(_: float) -> None:
 
 
 def test_observations_url_keeps_vintage_dates_under_fred_limit() -> None:
-    # FRED ¶Ô JSON ÏŞÖÆÇø¼äÄÚ×î¶à 2000 ¸ö°æ±¾ÈÕ£»ÈÕÆµĞòÁĞ´Ó 1776 ÄêÆğ»á³¬ÏŞ±» 400 ¾Ü¾ø¡£
+    # FRED å¯¹ JSON é™åˆ¶åŒºé—´å†…æœ€å¤š 2000 ä¸ªç‰ˆæœ¬æ—¥ï¼›æ—¥é¢‘åºåˆ—ä» 1776 å¹´èµ·ä¼šè¶…é™è¢« 400 æ‹’ç»ã€‚
     from app.providers.fred import observations_url
 
     url = observations_url(
