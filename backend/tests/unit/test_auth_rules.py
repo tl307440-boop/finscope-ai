@@ -239,6 +239,13 @@ def test_refresh_cookie_is_secure_only_in_production() -> None:
     assert refresh_cookie_secure("test") is False
 
 
+def test_refresh_cookie_secure_override_wins_over_app_env() -> None:
+    # 生产环境但只有 HTTP（无域名/证书）时，必须能显式关掉 Secure，否则浏览器丢弃刷新 cookie。
+    assert refresh_cookie_secure("production", False) is False
+    assert refresh_cookie_secure("development", True) is True
+    assert refresh_cookie_secure("production", None) is True
+
+
 def test_provider_status_does_not_reveal_secrets() -> None:
     from app.core.config import Settings
 

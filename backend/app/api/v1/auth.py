@@ -64,7 +64,7 @@ def _attach_refresh_cookie(response: Response, token: str, settings: Settings) -
         value=token,
         httponly=True,
         samesite="lax",
-        secure=refresh_cookie_secure(settings.app_env),
+        secure=refresh_cookie_secure(settings.app_env, settings.cookie_secure),
         path="/api/v1/auth",
         max_age=settings.refresh_token_days * 24 * 60 * 60,
     )
@@ -76,7 +76,7 @@ def _clear_refresh_cookie(response: Response, settings: Settings) -> None:
         path="/api/v1/auth",
         httponly=True,
         samesite="lax",
-        secure=refresh_cookie_secure(settings.app_env),
+        secure=refresh_cookie_secure(settings.app_env, settings.cookie_secure),
     )
 
 

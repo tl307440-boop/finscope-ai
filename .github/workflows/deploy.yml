@@ -1,0 +1,102 @@
+name: deploy
+
+# 合并到 master 后：先等 ci 工作流在该提交上通过，再构建镜像并部署到阿里云 ECS。
+# 需要在仓库 Settings → Secrets and variables → Actions 配置：
+#   DEPLOY_HOST        服务器公网 IP（如 121.199.8.235）
+#   DEPLOY_USER        SSH 用户（建议专用的 deploy 用户，在 docker 组内）
+#   DEPLOY_SSH_KEY     该用户的私钥（专用密钥对，仅用于部署）
+#   DEPLOY_KNOWN_HOSTS 服务器主机公钥：ssh-keyscan -t ed25519 <IP> 的输出（固定指纹，防中间人）
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      APP_DIR: /opt/finscope
+      DB_IMAGE: pgvector/pgvector:pg16
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: 计算镜像标签
+        run: echo "IMAGE_TAG=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 构建后端镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          load: true
+          tags: finscope-backend:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: 构建前端镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          load: true
+          tags: finscope-frontend:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: 配置 SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          for name in DEPLOY_HOST DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [ -z "${!name}" ]; then echo "缺少仓库 Secret：$name" >&2; exit 1; fi
+          done
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host target
+            HostName $DEPLOY_HOST
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            ServerAliveInterval 30
+          EOF
+
+      - name: 上传编排文件
+        run: |
+          ssh target "mkdir -p $APP_DIR"
+          scp deploy/docker-compose.prod.yml target:$APP_DIR/docker-compose.prod.yml
+          scp deploy/deploy.sh target:$APP_DIR/deploy.sh
+          ssh target "chmod +x $APP_DIR/deploy.sh"
+
+      - name: 传输应用镜像
+        run: |
+          docker save finscope-backend:$IMAGE_TAG finscope-frontend:$IMAGE_TAG \
+            | gzip | ssh target "gunzip | docker load"
+
+      - name: 传输数据库镜像（服务器没有时才传）
+        run: |
+          if ! ssh target "docker image inspect $DB_IMAGE >/dev/null 2>&1"; then
+            docker pull "$DB_IMAGE"
+            docker save "$DB_IMAGE" | gzip | ssh target "gunzip | docker load"
+          fi
+
+      - name: 启动并健康检查
+        run: ssh target "APP_DIR=$APP_DIR $APP_DIR/deploy.sh $IMAGE_TAG"
