@@ -1142,3 +1142,12 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 ### 下一步
 
 - 在服务器上安装 Docker、创建 `deploy` 用户与 `/opt/finscope/.env`，配置 4 个 Secret，手动触发一次 `deploy` 工作流验证。
+
+### 2026-10-16 补记：部署实测与 FRED 修复
+
+- **部署已在真实服务器跑通**：镜像标签 `332ed9f285c6`，`api`/`db` 健康，`/api/v1/health/ready` 返回 database up、worker up，`http://121.199.8.235/` 返回 200（上文「尚未跑通 / BLOCKED」已不成立）。
+- **缺陷**：配置 `FRED_API_KEY` 后，DGS10、DGS2、T10Y2Y 三条日频序列同步失败。直接请求 FRED 得到 `400 There are 5130 vintage dates in the specified real-time period: 1776-07-04 to 9999-12-31 ... exceeds the maximum ... (2000)`。
+- **修复**：`providers/fred.py` 的 `realtime_start` 由 `1776-07-04` 改为 `observation_start`（观测不可能早于其观察日发布，不丢版本；6 年窗口约 1500 个版本日）。新增单测 `test_observations_url_keeps_vintage_dates_under_fred_limit`。
+- **已知限制**：日频序列的观测窗口超过约 8 年仍会超出 2000 版本日上限；当前调度窗口为 6 年。
+- **验证**：服务器上用同样参数补抓后，DGS10 写入 1499 条、DGS2 1497 条、T10Y2Y 1500 条；`/macro/series/*/observations` 现在无需 `as_of` 即可返回数据，且 `realtime_start` 为真实发布日（如 UNRATE 2026-10-02）。本机无 Python 环境，单测由 CI 验证。
+- 新增 `docs/服务器使用与密钥配置指南.md`。

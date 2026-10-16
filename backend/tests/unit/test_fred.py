@@ -269,3 +269,18 @@ def test_public_csv_fetch_does_not_send_any_key() -> None:
 
 async def _sleep(_: float) -> None:
     return None
+
+
+def test_observations_url_keeps_vintage_dates_under_fred_limit() -> None:
+    # FRED 对 JSON 限制区间内最多 2000 个版本日；日频序列从 1776 年起会超限被 400 拒绝。
+    from app.providers.fred import observations_url
+
+    url = observations_url(
+        series_id="DGS10",
+        api_key="k",
+        observation_start=date(2020, 10, 17),
+        observation_end=date(2026, 10, 16),
+    )
+    assert "realtime_start=2020-10-17" in url
+    assert "realtime_end=9999-12-31" in url
+    assert "1776-07-04" not in url
