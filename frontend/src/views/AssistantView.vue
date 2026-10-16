@@ -21,6 +21,7 @@ import { computed, nextTick, onMounted, ref } from "vue"
 import { ChatDotRound, Cpu } from "@element-plus/icons-vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
+import { newUuid } from "../api/uuid"
 import { VChart } from "../charts"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
@@ -265,10 +266,11 @@ async function ask(): Promise<void> {
     }
     return
   }
+  // 先生成 ID 再置发送状态：HTTP 访问时 crypto.randomUUID 不存在，newUuid 有降级实现。
+  const clientMessageId = newUuid()
   sending.value = true
   streaming.value = true
   errorText.value = ""
-  const clientMessageId = crypto.randomUUID()
   activeClientId.value = clientMessageId
   turns.value = [
     ...turns.value,

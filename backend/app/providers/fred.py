@@ -11,7 +11,10 @@ from app.providers.errors import ProviderError
 from app.providers.http_client import ResilientHttpClient
 
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
-_ALL_VINTAGES_START = "1776-07-04"
+# 实时区间终点取 FRED 允许的最大值，保证拿到至今所有修订版本。
+# 起点不取 1776-07-04：FRED 对 JSON 限制区间内最多 2000 个版本日，日频序列（如 DGS10）
+# 从 1776 年算起有数千个版本日，会被 400 拒绝。一条观测不可能在其所属观察日之前发布，
+# 所以起点取 observation_start 不会漏掉任何版本。
 _ALL_VINTAGES_END = "9999-12-31"
 
 
@@ -35,7 +38,7 @@ def observations_url(
             "series_id": series_id,
             "api_key": api_key,
             "file_type": "json",
-            "realtime_start": _ALL_VINTAGES_START,
+            "realtime_start": observation_start.isoformat(),
             "realtime_end": _ALL_VINTAGES_END,
             "observation_start": observation_start.isoformat(),
             "observation_end": observation_end.isoformat(),
