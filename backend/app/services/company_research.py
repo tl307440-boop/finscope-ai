@@ -57,6 +57,16 @@ class ResearchComparison:
     unevaluated: tuple[ResearchRule, ...]
 
 
+REVENUE_NAMES = frozenset(
+    {
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+    }
+)
+
+
 def compare_periods(
     facts: tuple[SourcedAmount, ...] | list[SourcedAmount],
     period_a: date,
@@ -68,7 +78,11 @@ def compare_periods(
     )
     metrics = tuple(_compare(facts, key[0], key[1], earlier, later) for key in keys)
     revenue = next(
-        (item for item in metrics if item.unit == "USD" and item.concept.endswith("Revenues")),
+        (
+            item
+            for item in metrics
+            if item.unit in {"USD", "CNY"} and item.concept.split(":")[-1] in REVENUE_NAMES
+        ),
         None,
     )
     return ResearchComparison(

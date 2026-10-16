@@ -38,6 +38,7 @@ METRICS: dict[str, MetricDef] = {
             "营业收入",
             (
                 "RevenueFromContractWithCustomerExcludingAssessedTax",
+                "RevenueFromContractWithCustomerIncludingAssessedTax",
                 "Revenues",
                 "SalesRevenueNet",
                 "RevenueFromContractWithCustomerIncludingAssessedTax",

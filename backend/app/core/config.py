@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     access_token_minutes: int = 15
     refresh_token_days: int = 7
     fred_api_key: str = ""
+    # Tiingo 官方免费档（个人研究）：每小时 50 次、每天 1000 次、每月 500 个标的。
+    # 留空 = 美股日线不可用。
+    tiingo_api_key: str = ""
     sec_user_agent: str = "FinScopeAI research-admin@example.com"
     tushare_token: str = ""
     llm_api_base_url: str = ""
@@ -78,11 +81,27 @@ class Settings(BaseSettings):
     scheduler_us_market_exchange: str = "XNYS"
     scheduler_a_stock_close_delay_minutes: int = 30
     scheduler_a_stock_lag_trading_days: int = 1
-    scheduler_fred_series: str = "CPIAUCSL,UNRATE,FEDFUNDS,DGS10,GDPC1"
+    scheduler_fred_series: str = "GDP,UNRATE,PAYEMS,CPIAUCSL,PCEPILFE,FEDFUNDS,DGS2,DGS10,T10Y2Y"
     # 未实现的执行器默认关闭，打开后调度器才会登记对应 job；禁止假成功。
     scheduler_enable_fred: bool = True
     scheduler_enable_a_stock_bars: bool = True
-    scheduler_enable_us_sec_filings: bool = False
+    # SEC / A 股财报 / 美股日线只刷新「被关注过」的公司（自选、已抓取过、有行情的），不全市场轮询。
+    scheduler_enable_us_sec_filings: bool = True
+    scheduler_enable_cn_statements: bool = True
+    scheduler_enable_us_bars: bool = True
+    # 全市场证券清单（SEC ticker 表 + 巨潮 A 股列表）每周刷新一次。
+    scheduler_enable_universe: bool = True
+    scheduler_universe_hour: int = 6
+    scheduler_universe_minute: int = 0
+    # 美股收盘（美东 16:00）折合北京时间约凌晨 4~5 点，所以 6:30 之后取日线，周二到周六触发。
+    scheduler_us_bars_hour: int = 6
+    scheduler_us_bars_minute: int = 30
+    scheduler_cn_statements_hour: int = 20
+    scheduler_cn_statements_minute: int = 30
+    # 美股日线每轮最多登记的标的数；Tiingo 免费档每小时只有 50 次请求，留出按需抓取的余量。
+    scheduler_us_bars_max_symbols: int = 30
+    # 同一公司同一数据集失败后，按需抓取至少隔这么多分钟才允许再试，防止被反复点击打爆上游。
+    ondemand_retry_cooldown_minutes: int = 15
     scheduler_enable_financial_metrics: bool = False
     scheduler_enable_macro_regime: bool = False
     scheduler_enable_hotspot_events: bool = False

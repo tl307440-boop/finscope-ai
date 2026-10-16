@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.market import Instrument
@@ -102,6 +102,24 @@ class FilingRepository:
                 status = filing.status if filing is not None else "fixture"
                 records.append(_fact_record(row, accession, status))
             return records
+
+    def latest_edgar_period_end(self, cik: str) -> date | None:
+        with Session(self.engine) as session:
+            return session.scalar(
+                select(func.max(Filing.period_end)).where(
+                    Filing.cik == cik, Filing.status == "edgar"
+                )
+            )
+
+    def last_edgar_recorded_at(self, cik: str) -> datetime | None:
+        """最近一次真实入库一份 EDGAR 申报的时间，作为「从没走过任务队列」时的同步时间下限。"""
+
+        with Session(self.engine) as session:
+            return session.scalar(
+                select(func.max(Filing.created_at)).where(
+                    Filing.cik == cik, Filing.status == "edgar"
+                )
+            )
 
     def has_live_filings(self, cik: str) -> bool:
         with Session(self.engine) as session:

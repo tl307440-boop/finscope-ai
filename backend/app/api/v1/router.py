@@ -6,6 +6,7 @@ from app.api.v1.assistant import router as assistant_router
 from app.api.v1.auth import me_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.companies import router as company_router
+from app.api.v1.company_data import router as company_data_router
 from app.api.v1.documents import router as document_router
 from app.api.v1.filings import router as filing_router
 from app.api.v1.health import router as health_router
@@ -30,6 +31,7 @@ router.include_router(simulation_router)
 router.include_router(filing_router)
 router.include_router(metrics_router)
 router.include_router(company_router)
+router.include_router(company_data_router)
 router.include_router(document_router)
 router.include_router(auth_router)
 router.include_router(me_router)

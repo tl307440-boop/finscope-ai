@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import Engine, or_, select
+from sqlalchemy import Engine, case, or_, select
 from sqlalchemy.orm import Session
 
 from app.catalog.reference_data import CalendarSeed, InstrumentSeed
@@ -135,7 +135,21 @@ class InstrumentRepository:
                     Instrument.name_en.ilike(like, escape="\\"),
                 )
             )
-        statement = statement.order_by(Instrument.exchange, Instrument.symbol).limit(limit)
+        if key.text:
+            # 全市场清单有上万条：代码精确命中最先，其次名称以关键词开头，再按交易所与代码排。
+            text = key.text.strip()
+            prefix = f"{_escape_like(text)}%"
+            rank = case(
+                (Instrument.symbol == text.upper(), 0),
+                (Instrument.display_symbol == text.upper(), 0),
+                (Instrument.name_cn.ilike(prefix, escape="\\"), 1),
+                (Instrument.name_en.ilike(prefix, escape="\\"), 1),
+                else_=2,
+            )
+            statement = statement.order_by(rank, Instrument.exchange, Instrument.symbol)
+        else:
+            statement = statement.order_by(Instrument.exchange, Instrument.symbol)
+        statement = statement.limit(limit)
         with Session(self.engine) as session:
             return [_record(row) for row in session.scalars(statement)]
 

@@ -70,7 +70,7 @@ export interface CashProfitRow {
 export type FinanceMode = "quarter" | "annual"
 
 export interface CompanyFinancials {
-  dataStatus: "edgar" | "sample" | "empty"
+  dataStatus: "edgar" | "eastmoney" | "sample" | "empty"
   notice: string
   referenceEnd: string
   compareEnd: string
@@ -157,7 +157,7 @@ export function parseFinancials(body: unknown): CompanyFinancials | null {
   const observations = asRecord(data.rule_observations) ?? {}
   const status = asString(data.data_status)
   return {
-    dataStatus: status === "edgar" || status === "sample" ? status : "empty",
+    dataStatus: status === "edgar" || status === "eastmoney" || status === "sample" ? status : "empty",
     notice: asString(data.notice) ?? "",
     referenceEnd: asString(data.reference_end) ?? "",
     compareEnd: asString(data.compare_end) ?? "",

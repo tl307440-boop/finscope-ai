@@ -155,3 +155,10 @@
 `POST /api/v1/admin/sync-jobs` 只负责入队。同一 `dedupe_key` 在排队或执行中时，再次提交返回原来的任务，`created` 为 false。Worker 用 `FOR UPDATE SKIP LOCKED` 每次只领一条。超时或上游失败会按次数重试；校验错误和未配置密钥不重试。失败记录保留，`POST /api/v1/admin/sync-jobs/{id}/retries` 另开一条。`GET /api/v1/admin/providers` 带上 `last_health_status`。
 
 没有公开注册。管理员可由 `ADMIN_USERNAME`、`ADMIN_EMAIL`、`ADMIN_PASSWORD` 配合 `python -m app.scripts.seed` 创建；未设置这些变量时不创建账号。
+
+## 数据就绪度与按需抓取
+
+- `GET /api/v1/companies/{instrumentId}/data-status`（公开）：`datasets` 里是 `financials` 与 `bars` 两项，每项有 `state`（`fresh` / `warn` / `stale` / `missing` / `unavailable`）、`sync`（`idle` / `queued` / `running` / `failed`）、`latest_data_date`、`last_synced_at`、`message`、`can_request`；`syncing` 表示有任一项在排队或抓取。
+- `POST /api/v1/companies/{instrumentId}/data-requests`（需登录）：缺数据或已过期时登记后台抓取并返回最新状态。队列已有同一任务时不重复登记；失败后 15 分钟内不重试，上游没有这家公司时 24 小时内标 `unavailable`；活跃任务超过 200 条返回 `QUEUE_BUSY`。
+- `GET /api/v1/system/freshness`：`items` 按 `group`（`process` / `macro` / `bars` / `sync`）列出各数据源的状态，`scheduler_running` 来自调度器心跳。阈值：日线 4 天 / 10 天，财报 48 小时 / 7 天，清单 9 天 / 21 天，宏观按频率。
+- A 股公司的 `/financials` 与 `/research` 数据来自东方财富 F10（`data_status=eastmoney`，概念前缀 `cn-gaap:`，累计口径）；美股来自 SEC（`edgar`）。美股日线来源 Tiingo，没配置 `TIINGO_API_KEY` 时 `bars` 为 `unavailable`。

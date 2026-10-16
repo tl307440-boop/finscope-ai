@@ -38,7 +38,6 @@ from app.providers.http_client import ResilientHttpClient
 from app.providers.httpx_transport import HttpxTransport
 from app.providers.sec_edgar import (
     SEC_MIN_INTERVAL_SECONDS,
-    ParsedFact,
     fetch_companyfacts,
     parse_companyfacts,
     payload_sha256,
@@ -49,34 +48,12 @@ from app.repositories.instruments import InstrumentRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.news_events import NewsEventRepository
 from app.services.akshare_sync import apply_bars, fetch_bars
+from app.services.data_sync import SEC_FIRST_FISCAL_YEAR, wanted_sec_fact
 from app.services.disclosure_events import DisclosureDraft, NewsEventInput
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.utils.time import utc_now
 
 STEPS = ("bars", "fred", "sec", "disclosures")
-SEC_CONCEPTS = frozenset(
-    {
-        "us-gaap:Revenues",
-        "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
-        "us-gaap:CostOfRevenue",
-        "us-gaap:CostOfGoodsAndServicesSold",
-        "us-gaap:GrossProfit",
-        "us-gaap:OperatingIncomeLoss",
-        "us-gaap:NetIncomeLoss",
-        "us-gaap:EarningsPerShareDiluted",
-        "us-gaap:NetCashProvidedByUsedInOperatingActivities",
-        "us-gaap:Assets",
-        "us-gaap:AssetsCurrent",
-        "us-gaap:Liabilities",
-        "us-gaap:LiabilitiesCurrent",
-        "us-gaap:StockholdersEquity",
-        "us-gaap:AccountsReceivableNetCurrent",
-        "us-gaap:InventoryNet",
-        "us-gaap:ResearchAndDevelopmentExpense",
-    }
-)
-SEC_FORMS = frozenset({"10-K", "10-Q"})
-SEC_FIRST_FISCAL_YEAR = 2021
 DISCLOSURE_DAYS = 120
 
 
@@ -187,20 +164,12 @@ async def _sync_sec(engine: Engine, user_agent: str) -> None:
             assert seed.cik is not None
             try:
                 payload = await fetch_companyfacts(client, seed.cik, user_agent)
-                facts = [fact for fact in parse_companyfacts(payload) if _wanted(fact)]
+                facts = [fact for fact in parse_companyfacts(payload) if wanted_sec_fact(fact)]
                 written = repository.upsert_facts(facts, payload_sha256(payload), status="edgar")
             except (ProviderError, ProviderDisconnected) as exc:
                 print(f"  {seed.symbol:<6} 失败：{_reason(exc)}")
                 continue
             print(f"  {seed.symbol:<6} 核心科目 {len(facts):5} 条，新写入 {written}")
-
-
-def _wanted(fact: ParsedFact) -> bool:
-    return (
-        fact.concept in SEC_CONCEPTS
-        and fact.form in SEC_FORMS
-        and fact.fiscal_year >= SEC_FIRST_FISCAL_YEAR
-    )
 
 
 async def _sync_disclosures(engine: Engine, user_agent: str, today: date) -> None:

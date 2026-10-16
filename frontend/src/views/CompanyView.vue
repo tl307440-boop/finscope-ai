@@ -18,13 +18,14 @@
  * 本页不计算任何财务数字，只做「亿」等单位缩放与配色；后端配不上可比口径时显示「—」。
  * 市值 / 股本类字段任何接口都没有，只用一句话说明，不填数字。
  */
-import { computed, onMounted, ref, watch } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { EChartsOption } from "echarts"
 import VChart from "vue-echarts"
 import { useRouter } from "vue-router"
 import { ApiError, apiUrl, authorizedFetch, errorFrom, readJson } from "../api/client"
 import { asNumber, asRecord, asString, dataOf, formatAmount, formatMoment, listOf } from "../api/json"
 import { searchInstruments, type InstrumentHit } from "../api/instruments"
+import { fetchDataStatus, requestDataSync, type CompanyDataStatus } from "../api/companyData"
 import { modelNotice } from "../api/modelStatus"
 import {
   fetchFinancials,
@@ -53,6 +54,7 @@ import {
   unitLabel,
 } from "../api/secFacts"
 import { restoreSession, useSessionStore } from "../stores/auth"
+import DataReadiness from "../components/ui/DataReadiness.vue"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
@@ -216,6 +218,10 @@ const inWatchlist = ref(false)
 
 const isCn = computed<boolean>(() => instrument.value?.market === "CN")
 const hasSec = computed<boolean>(() => Boolean(instrument.value?.cik))
+/** 有财务数据可看：美股走 SEC（有 CIK），A 股走东方财富 F10 报表。 */
+const hasFinancials = computed<boolean>(() => hasSec.value || isCn.value)
+const dataStatus = ref<CompanyDataStatus | null>(null)
+const trackTimedOut = ref(false)
 const companyName = computed<string>(() => instrument.value?.nameCn || instrument.value?.nameEn || symbol.value)
 
 const heading = computed<string>(() => {
@@ -513,7 +519,7 @@ const allUnevaluated = computed<boolean>(
 
 const sectionTabs = computed(() => {
   const filings = { key: "filings", label: "原始财报", to: `/company/${encodeURIComponent(symbol.value)}/filings` }
-  if (!hasSec.value) {
+  if (!hasFinancials.value) {
     return [
       { key: "overview", label: "公司概况" },
       { key: "quote", label: "行情走势" },
@@ -521,6 +527,17 @@ const sectionTabs = computed(() => {
       { key: "finance", label: "财务总览" },
       { key: "valuation", label: "估值分析" },
       filings,
+    ]
+  }
+  if (isCn.value) {
+    return [
+      { key: "overview", label: "公司概况" },
+      { key: "quote", label: "行情走势" },
+      { key: "finance", label: "财务总览" },
+      { key: "trend", label: "财务趋势" },
+      { key: "ai", label: "AI财报解读" },
+      { key: "news", label: "最新公告" },
+      { key: "valuation", label: "估值分析" },
     ]
   }
   return [
@@ -588,6 +605,9 @@ const sourceList = computed<string[]>(() => {
   if (hasSec.value) {
     list.push("SEC EDGAR")
   }
+  if (isCn.value && financials.value && financials.value.dataStatus === "eastmoney") {
+    list.push("东方财富 F10 报表")
+  }
   if (announcements.value.some((item) => item.sourceBadge === "巨潮资讯")) {
     list.push("巨潮资讯")
   }
@@ -596,7 +616,7 @@ const sourceList = computed<string[]>(() => {
 
 const footerNote = computed<string>(() => {
   if (isCn.value) {
-    return "A 股财报数据暂未接入；行情为收盘后日线，不复权"
+    return "A 股财务为东方财富 F10 披露报表（累计口径，同比按上年同期）；行情为收盘后日线，不复权"
   }
   if (!bars.value.length) {
     return "美股日线暂未同步；财务数据为 SEC 已申报口径，同比按上一年同期计算"
@@ -699,6 +719,9 @@ async function refreshToken(): Promise<string | null> {
 }
 
 async function loadCompany(): Promise<void> {
+  stopTracking()
+  dataStatus.value = null
+  trackTimedOut.value = false
   phase.value = "loading"
   failure.value = ""
   rules.value = []
@@ -732,12 +755,16 @@ async function loadCompany(): Promise<void> {
     }
     instrument.value = hit
     const tasks: Promise<void>[] = [loadBars(hit.id), loadAnnouncements()]
+    if (hit.cik || hit.market === "CN") {
+      tasks.push(loadResearch().then(loadFinancials), loadRecentReports())
+    }
     if (hit.cik) {
-      tasks.push(loadResearch().then(loadFinancials), loadFilings(hit.cik), loadRecentReports())
+      tasks.push(loadFilings(hit.cik))
     }
     await Promise.all(tasks)
     void loadWatchState(hit.id)
     phase.value = "ready"
+    void trackData(hit, true)
   } catch (caught) {
     failure.value = caught instanceof ApiError ? caught.message : "无法连接服务器"
     phase.value = "error"
@@ -830,7 +857,7 @@ let financialsTicket = 0
 
 async function loadFinancials(): Promise<void> {
   const item = instrument.value
-  if (!item?.cik) {
+  if (!item || !hasFinancials.value) {
     return
   }
   const ticket = ++financialsTicket
@@ -935,7 +962,7 @@ async function applyFilters(): Promise<void> {
   if (!item) {
     return
   }
-  if (!item.cik) {
+  if (!hasFinancials.value) {
     await Promise.all([loadBars(item.id), loadAnnouncements()])
     return
   }
@@ -946,9 +973,88 @@ async function applyFilters(): Promise<void> {
   await Promise.all([
     loadBars(item.id),
     loadResearch().then(loadFinancials),
-    loadFilings(item.cik),
+    item.cik ? loadFilings(item.cik) : Promise.resolve(),
     loadAnnouncements(),
   ])
+}
+
+/* ---------------- 数据就绪度 ---------------- */
+
+const POLL_MS = 3000
+const POLL_LIMIT = 40
+let trackTicket = 0
+
+function stopTracking(): void {
+  trackTicket += 1
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** 抓取完成后重读页面数据；报告期清空，让「最新一期 vs 上年同期」落到新数据上。 */
+async function reloadAfterSync(item: InstrumentHit): Promise<void> {
+  periodA.value = ""
+  periodB.value = ""
+  const tasks: Promise<void>[] = [loadBars(item.id), loadAnnouncements()]
+  if (item.cik || item.market === "CN") {
+    tasks.push(loadResearch().then(loadFinancials))
+  }
+  if (item.cik) {
+    tasks.push(loadFilings(item.cik))
+  }
+  await Promise.all(tasks)
+}
+
+/**
+ * 读数据状态；已登录且缺数据 / 已过期时登记后台抓取，抓取期间每 3 秒轮询，
+ * 完成后重读页面。状态只是辅助信息，读不到就不打扰主流程。
+ */
+async function trackData(item: InstrumentHit, request: boolean): Promise<void> {
+  stopTracking()
+  const ticket = trackTicket
+  trackTimedOut.value = false
+  try {
+    let status = await fetchDataStatus(item.id)
+    if (ticket !== trackTicket) {
+      return
+    }
+    if (request && session.accessToken && status?.datasets.some((entry) => entry.canRequest)) {
+      status = (await requestDataSync(item.id, session.accessToken, refreshToken)) ?? status
+    }
+    dataStatus.value = status
+    let sawSyncing = Boolean(status?.syncing)
+    let rounds = 0
+    while (status?.syncing) {
+      if (rounds >= POLL_LIMIT) {
+        trackTimedOut.value = true
+        return
+      }
+      rounds += 1
+      await pause(POLL_MS)
+      if (ticket !== trackTicket) {
+        return
+      }
+      status = await fetchDataStatus(item.id)
+      if (ticket !== trackTicket) {
+        return
+      }
+      dataStatus.value = status
+      sawSyncing = true
+    }
+    if (sawSyncing && ticket === trackTicket) {
+      await reloadAfterSync(item)
+    }
+  } catch {
+    // 状态接口不可用时页面照常展示已入库的数据。
+  }
+}
+
+function requestNow(): void {
+  const item = instrument.value
+  if (item) {
+    void trackData(item, true)
+  }
 }
 
 /* ---------------- 自选 ---------------- */
@@ -1136,6 +1242,8 @@ onMounted(() => {
   void loadModel()
 })
 
+onBeforeUnmount(stopTracking)
+
 watch([periodA, periodB], ([earlier, later]) => {
   if (backfillingPeriods) {
     backfillingPeriods = false
@@ -1176,7 +1284,7 @@ watch(
         </button>
         <button class="ghost-btn" type="button" @click="openFilings">原始财报</button>
       </template>
-      <template v-if="hasSec" #filters>
+      <template v-if="hasFinancials" #filters>
         <label class="filter-label" for="company-as-of">观察日</label>
         <el-input id="company-as-of" v-model="asOf" type="date" size="small" class="filter-date" />
         <span class="filter-label">对比</span>
@@ -1192,6 +1300,14 @@ watch(
     </PageHeader>
 
     <p v-if="watchMessage || periodMessage" class="muted" role="status">{{ watchMessage || periodMessage }}</p>
+
+    <DataReadiness
+      v-if="phase === 'ready'"
+      :status="dataStatus"
+      :signed-in="Boolean(session.accessToken)"
+      :timed-out="trackTimedOut"
+      @request="requestNow"
+    />
 
     <StateBlock v-if="phase === 'loading'" state="loading" :rows="4" />
 
@@ -1305,7 +1421,7 @@ watch(
         </PanelCard>
       </div>
 
-      <template v-if="hasSec">
+      <template v-if="hasFinancials">
         <div class="grid-2-1 pair">
           <PanelCard id="sec-finance" title="核心财务指标" info="按所选报告期取数；单季口径优先，公司未单独披露单季时用累计口径并在卡片上注明">
             <template #icon>▤</template>

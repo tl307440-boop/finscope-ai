@@ -16,12 +16,18 @@ from datetime import datetime
 from typing import Protocol
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import Engine
 
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import create_db_engine
 from app.repositories.worker_heartbeat import WorkerHeartbeatRepository
-from app.services.scheduler import RegisteredJob, build_scheduler, register_jobs
+from app.services.scheduler import (
+    RegisteredJob,
+    build_scheduler,
+    catch_up_universe,
+    register_jobs,
+)
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -75,6 +81,7 @@ def run(
         _beat(beats, "alive", clock, process_id)
         jobs = register_jobs(runner, resolved)
         log_registered(jobs)
+        _catch_up(engine, resolved)
         # 后台调度器在自己的线程池里触发任务，主线程只等 stop_event。
         runner.start()
         while not stop.wait(IDLE_JOIN_SECONDS):
@@ -87,6 +94,16 @@ def run(
             # wait=True：等在执行的触发回调收尾，避免半途留下没写完的 queued 记录。
             runner.shutdown(wait=True)
         engine.dispose()
+
+
+def _catch_up(engine: Engine, settings: Settings) -> None:
+    try:
+        queued = catch_up_universe(engine, settings)
+        if queued:
+            logger.info("scheduler queued universe catch-up jobs=%s", queued)
+    except Exception:
+        # 补登记失败不能拦住调度器本身；周日的定时触发仍会补上。
+        logger.warning("scheduler universe catch-up failed error_type=unexpected")
 
 
 def _beat(

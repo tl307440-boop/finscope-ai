@@ -11,9 +11,17 @@ RESEARCH_NOTICE = "本地样例，不是本次从 SEC 拉取。没有数据时�
 EDGAR_NOTICE = "数据来自 SEC EDGAR companyfacts，按申报日做时点过滤。没有数据时不会编造财务数字。"
 
 
+EASTMONEY_NOTICE = (
+    "数据来自东方财富 F10 三大报表，按公告日做时点过滤；毛利是营业收入减营业成本的派生值。"
+    "没有数据时不会编造财务数字。"
+)
+
+
 def research_notice(facts: list[FactRecord]) -> str:
     if facts and all(fact.filing_status == "edgar" for fact in facts):
         return EDGAR_NOTICE
+    if facts and all(fact.filing_status == "eastmoney" for fact in facts):
+        return EASTMONEY_NOTICE
     return RESEARCH_NOTICE
 
 

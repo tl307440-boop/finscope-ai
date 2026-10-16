@@ -50,7 +50,7 @@ cd ../frontend
 npm run dev
 ```
 
-`app.workers.scheduler` 是任务调度器（规格书 §11）：它只按幂等标识往 `sync_jobs` 写 `queued` 记录，不执行任务；真正跑任务的是 `app.workers.main`，两个进程可以各自单独重启、Ctrl+C 都能干净退出。触发时刻与 `SCHEDULER_ENABLE_*` 开关在 `backend/.env` 里配置。
+`app.workers.scheduler` 是任务调度器（规格书 §11）：它只按幂等标识往 `sync_jobs` 写 `queued` 记录，不执行任务；真正跑任务的是 `app.workers.main`，两个进程可以各自单独重启、Ctrl+C 都能干净退出。触发时刻与 `SCHEDULER_ENABLE_*` 开关在 `backend/.env` 里配置。`docker compose up` 会默认带上 `scheduler` 服务；不想定时抓取就 `SCHEDULER_ENABLED=false` 或停掉该服务。
 
 前端开发服务器是 <http://localhost:5173>，`/api` 会代理到 8000 端口。
 
@@ -145,8 +145,9 @@ FRED 9 个序列近 6 年 → SEC companyfacts（8 家美股，FY2021 起的 10-
 - 行情涨跌幅、均线偏离与宏观同比 / 较上期仍由前端用接口返回的原始收盘价或观测值换算，
   与 `docs/UI-设计规范.md`「前端不算财务数字」不一致，待移到后端。
   财报类数字（同比、毛利率、负债率、规则读数、公司页区间涨跌幅）已全部由后端计算。
-- A 股财报：未接入（NOT_IMPLEMENTED），A 股公司页只有日线与公告，财务区为空态。
-- 美股日线：未接入（NOT_IMPLEMENTED），美股公司页只有 SEC 财报与公告。
+- A 股财报来自东方财富 F10 披露报表（非官方公开 API，累计口径，没有单季拆分）；解析失败会报错而不是写错数。
+- 美股日线需要 `TIINGO_API_KEY`（Tiingo 官方免费档，注册即得）。没配置时页面标「不可用」；真实请求路径未联网验证（BLOCKED：需要密钥）。
+- 美股只收 Nasdaq / NYSE；搜索全市场可用，首次登录访问某家公司会在后台抓取财报，约几十秒后自动刷新。
 - 板块强弱：成分不少于 3 只才出分，目前只有银行、非银金融、食品饮料三个板块可算。
 - 热点只按官方公告条数统计，没有媒体新闻与情绪分。
 - 调度器里的 `compute_financial_metrics`、`compute_macro_regime`、

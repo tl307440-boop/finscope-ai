@@ -25,6 +25,7 @@ import {
   Timer,
   Warning,
 } from "@element-plus/icons-vue"
+import FreshnessPanel from "../components/ui/FreshnessPanel.vue"
 import MiniRing from "../components/ui/MiniRing.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
@@ -806,6 +807,8 @@ onMounted(() => {
           </div>
         </div>
       </PanelCard>
+
+      <FreshnessPanel />
 
       <!-- 任务统计 -->
       <div class="grid-2">

@@ -34,6 +34,7 @@ services:
       ENABLE_NEWS: "true"
       FRED_API_KEY: ${FRED_API_KEY:-}
       SEC_USER_AGENT: ${SEC_USER_AGENT:-FinScopeAI research-admin@example.com}
+      TIINGO_API_KEY: ${TIINGO_API_KEY:-}
     ports:
       - "${FINSCOPE_API_PORT:-8000}:8000"
     volumes:
@@ -67,6 +68,7 @@ services:
       WORKER_HEARTBEAT_TTL_SECONDS: "30"
       FRED_API_KEY: ${FRED_API_KEY:-}
       SEC_USER_AGENT: ${SEC_USER_AGENT:-FinScopeAI research-admin@example.com}
+      TIINGO_API_KEY: ${TIINGO_API_KEY:-}
     depends_on:
       api:
         condition: service_healthy
@@ -74,26 +76,28 @@ services:
       - finscope_uploads:/app/data/uploads
     command: ["python", "-m", "app.workers.main"]
 
-  # 可选：任务调度器（规格书 §11）。它只按幂等标识往 sync_jobs 写 queued 记录，不执行任务，
-  # 所以要不要随 compose 一起拉起由你决定：需要定时登记任务时再取消下面整段的注释。
-  # 语义说明：本段与 worker 用同一个镜像、同一个上传卷；调度器停了不影响 worker 取走已排队任务，
-  # worker 停了调度器也只会继续排队（任务不会丢，恢复后照旧执行）。两者共用 finscope_uploads。
-  # scheduler:
-  #   build:
-  #     context: ./backend
-  #   environment:
-  #     APP_ENV: development
-  #     DATABASE_URL: postgresql+psycopg://finscope:change-me@db:5432/finscope
-  #     JWT_SECRET: replace-with-long-random-secret
-  #     DATA_MODE: live
-  #     LOG_LEVEL: INFO
-  #     SCHEDULER_TIMEZONE: Asia/Shanghai
-  #   depends_on:
-  #     api:
-  #       condition: service_healthy
-  #   volumes:
-  #     - finscope_uploads:/app/data/uploads
-  #   command: ["python", "-m", "app.workers.scheduler"]
+  # 任务调度器（规格书 §11）：只按幂等标识往 sync_jobs 写 queued 记录，不执行任务，任务由 worker 取走。
+  # 默认随 compose 一起启动：FRED 宏观、A 股日线、A 股财报、SEC 财报、美股日线（需 TIINGO_API_KEY）、
+  # 全市场证券清单。调度器停了不影响 worker 取走已排队任务；worker 停了调度器照常登记，恢复后补跑。
+  # 想关掉定时抓取：把 SCHEDULER_ENABLED 设为 false，或 `docker compose stop scheduler`。
+  scheduler:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://finscope:change-me@db:5432/finscope
+      JWT_SECRET: replace-with-long-random-secret
+      DATA_MODE: live
+      LOG_LEVEL: INFO
+      SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
+      SCHEDULER_TIMEZONE: Asia/Shanghai
+      TIINGO_API_KEY: ${TIINGO_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - finscope_uploads:/app/data/uploads
+    command: ["python", "-m", "app.workers.scheduler"]
 
   frontend:
     build:

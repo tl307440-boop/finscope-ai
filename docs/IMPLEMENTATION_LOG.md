@@ -967,3 +967,80 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 把行情涨跌幅和宏观同比移到后端，消除上面的偏差。
 - 拿到模型密钥后用 `engine=tradingagents` 跑同一组网格，与规则引擎对比。
+
+## 2026-10-16 全市场可搜索、按需抓取、A 股财报、美股日线源、调度器默认启用、新鲜度监控
+
+### 本轮范围
+
+用户问「搜任意公司就给研究报告」是否已实现，并要求补齐：美股用 SEC 官方 ticker 表变成全部可搜索，首次搜索在后台抓财报；A 股补财务区；补美股行情源；调度器默认启用并进 compose；监控数据新鲜度。
+
+### 变更
+
+**一、证券清单（`providers/universe.py`、`repositories/universe.py`）**
+
+- 美股：SEC `company_tickers_exchange.json`，只保留 Nasdaq / NYSE，每个 CIK 一个代码（`uq_instruments_cik` 不允许重复，GOOG 与 GOOGL 只留先出现的）。
+- A 股：巨潮 `szse_stock.json`，沪深主板 / 创业板 / 科创板；B 股与北交所不收。
+- 只补缺，不覆盖已有行。首次灌入后美股 6,047 只、A 股 5,578 只。
+- 调度器首次启动发现美股不足 1,000 只时补登记一次清单任务，不用等周日。
+- 证券搜索排序：代码精确命中 → 名称前缀 → 其余。
+
+**二、A 股财报（`providers/eastmoney_statements.py`、表 `cn_statement_facts`）**
+
+- 东方财富 F10 `RPT_F10_FINANCE_G{INCOME,BALANCE,CASHFLOW}`（通用报表，银行 / 券商 / 保险也能取）。
+- 映射成与 SEC 同形的事实（概念前缀 `cn-gaap:`）：营业收入、营业成本、毛利（`收入 − 成本`，`source_field` 写明是推导）、营业利润、归母净利润、稀释 EPS、研发费用、资产负债各项、经营现金流。
+- 报表是年初累计口径：一季 / 中报 / 三季 / 年报分别是 3 / 6 / 9 / 12 个月累计，复用现有「期间长度相近才配对」的同比规则。
+- 公告日用 `NOTICE_DATE`，没有公告日的行不入库，时间旅行 `filed <= as_of` 照常生效。
+- `/companies/{id}/financials`、`/research`、`/analysis/filing` 统一走 `facts_for_instrument`；`data_status` 新增 `eastmoney`，页面注明来源与累计口径。
+- 推演里的基本面分析师读同一批数据（桥接层只把前缀 `cn-gaap:` 改成 `us-gaap:`，数值、期间、公告日、链接不变）。
+
+**三、美股日线（`providers/tiingo_bars.py`）**
+
+- 没有找到不需要密钥又合规的美股日线：Stooq 现在要过 JS 校验，Yahoo 是非官方接口。选了 Tiingo 官方免费档（个人研究用，约 50 次/小时）。
+- 需要 `TIINGO_API_KEY`。没配置时数据状态是 `unavailable` 并写明原因，**不造数据**。每轮最多登记 30 只，按最久未更新轮流。
+
+**四、按需抓取与数据就绪度（`services/company_data.py`）**
+
+- `GET /companies/{id}/data-status`（公开）：财报与日线各自的状态 `fresh / warn / stale / missing / unavailable`、是否在排队 / 抓取、最新数据日期。
+- `POST /companies/{id}/data-requests`（需登录）：缺数据或已过期时登记后台抓取，优先级高于定时任务。
+- 防滥用：队列按幂等键去重；失败后冷却 15 分钟；上游「没有这家公司」冷却 24 小时并标不可用；活跃任务超过 200 条返回 `QUEUE_BUSY`。
+- 公司页：进入时读状态，已登录且缺数据就登记，抓取期间每 3 秒轮询，完成后自动重读；未登录只提示「登录后会自动登记抓取」。
+
+**五、调度器与新鲜度**
+
+- `docker-compose.yml` 新增 `scheduler` 服务，默认启用。`SCHEDULER_ENABLED=false` 或 `docker compose stop scheduler` 可关。
+- 新触发器：A 股财报（每日）、美股日线（周二至周六）、证券清单（周日）；FRED 默认 9 个序列全开；SEC 与 A 股日线只刷新「被关注过」的标的。
+- A 股日线不再依赖交易日历判断开市日（日历只存开市日，用完就会静默停摆），改为从最后一根日线次日补到今天，休市日上游返回空按成功收尾。
+- 新鲜度（参考 dbt source freshness 的两级阈值）：日线 4 天告警 / 10 天过期，财报 48 小时 / 7 天，清单 9 / 21 天，宏观按发布频率（日 5/10、周 12/24、月 60/100、季 200/270 天）。
+- `GET /system/freshness` 返回进程心跳、宏观、日线、各同步任务；数据中心页新增「数据新鲜度」面板。
+
+**六、顺手修复**
+
+- `rows_written` 曾出现负数（`-637`、`-7`）：psycopg 对 upsert 的 `rowcount` 返回 `-1`。仓库层改用 `RETURNING` 计数，并有集成测试覆盖。
+- 财报概念补了 `RevenueFromContractWithCustomerIncludingAssessedTax`（CrowdStrike 等用这个科目），否则营收一栏为空。
+- 研究页营收亮点原来只认 `*Revenues`，现在认四个营收科目名；A 股营收单位 `CNY` 也能识别。
+- `bootstrap_data.py` 与调度器共用同一份 SEC 科目清单，避免两处漂移。
+
+### 验证
+
+- 后端：`ruff check`、`ruff format --check`、`mypy app`（165 个源文件）通过；`pytest` 对开发库全部通过（跳过 2 例，原因同上一轮）。
+  - 新增 `tests/unit/test_data_readiness.py`（清单解析、东方财富报表、Tiingo、新鲜度阈值、按需抓取判定）与 `tests/integration/test_data_readiness_api.py`（清单幂等不覆盖、A 股事实时间旅行与更正、`data-status` 公开 / `data-requests` 需登录 / `freshness`）。
+- 前端：`vue-tsc` 与 `vitest`（22 个文件 90 例）通过。
+- 真机联调（容器重建后）：
+  - 清单任务两条成功，库里 CN 5,578 / US 6,047；搜 `CRWD`、`002594`、`比亚迪` 都能命中非种子公司。
+  - 登录后对 CrowdStrike 与比亚迪各发一次 `data-requests`，约 45 秒内两家财务都入库：比亚迪 2026 中报营收 3,448.15 亿元、毛利率 18.85%、资产负债率 70.96%；CrowdStrike 营收 14.7 亿美元、毛利率 74.57%。
+  - 美股日线没有 `TIINGO_API_KEY`，页面与接口都显示「不可用：未配置美股行情源密钥」。
+  - 未登录打开一家没抓过的美股，页面显示「尚无数据」和登录提示，没有空壳按钮。
+
+### 已知局限
+
+- **Tiingo 路径没有联网验证**：没有密钥，解析与错误映射由单测覆盖，真实请求未跑过（BLOCKED：需要 `TIINGO_API_KEY`）。
+- A 股报表是累计口径，没有单季拆分；东方财富 F10 不是官方公开 API，字段变化时解析会报 `UPSTREAM_PAYLOAD` 而不是写错数。
+- 美股只收 Nasdaq / NYSE，OTC 与 ADR 之外的外国发行人（20-F / 6-K）财报科目不全，营收等可能缺。
+- 财报入库的科目清单扩充后，已入库公司要等下一次刷新（每日）才补到新科目。
+- 中国宏观六个序列仍没有数据源；`financial_metrics`、`macro_regime`、`hotspot` 三类调度任务仍没有执行器。
+- 公司页「立即抓取」只对已登录用户有效，匿名访问不会触发后台抓取（避免被刷）。
+
+### 下一项
+
+- 注册 Tiingo 免费密钥，写进 `.env` 的 `TIINGO_API_KEY` 后验证美股日线。
+- 搜索框对「正在抓取」的公司给出提示，而不只在公司页提示。

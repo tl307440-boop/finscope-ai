@@ -377,8 +377,11 @@ const sourceList = computed<string[]>(() => {
   if (instrument.value?.cik) {
     list.push("SEC EDGAR")
   }
+  if (instrument.value?.market === "CN") {
+    list.push("东方财富 F10 报表")
+  }
   if (bars.value.length) {
-    list.push("AKShare 日线")
+    list.push(instrument.value?.market === "US" ? "Tiingo 日线" : "AKShare 日线")
   }
   return list
 })

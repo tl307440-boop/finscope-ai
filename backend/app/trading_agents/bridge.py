@@ -5,7 +5,7 @@
 引用（Citation）带可查验的锚点：交易日、accession、公告 URL 或序列代码 + 观测日。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
@@ -15,6 +15,7 @@ from app.db.models.industry import Industry, IndustryMembership
 from app.db.models.market import Instrument
 from app.db.models.news import NewsEvent
 from app.providers.vintage import VintagePoint, select_visible
+from app.repositories.cn_financials import CnFinancialRepository
 from app.repositories.filings import FactRecord, FilingRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.market_bars import MarketBarRepository
@@ -92,7 +93,6 @@ class DataStore:
     _members: dict[UUID, list[UUID]] | None = None
     _industry_names: dict[UUID, str] | None = None
     _macro: dict[str, list[VintagePoint]] | None = None
-    _provider_id: UUID | None = None
 
     def instruments(self) -> list[Instrument]:
         if self._instruments is None:
@@ -107,11 +107,10 @@ class DataStore:
         if cached is not None:
             return cached
         repository = MarketBarRepository(self.engine)
-        if self._provider_id is None:
-            self._provider_id = repository.ensure_akshare_provider()
+        market = next((row.market for row in self.instruments() if row.id == instrument_id), "CN")
         rows, _truncated = repository.list_daily(
             instrument_id=instrument_id,
-            provider_id=self._provider_id,
+            provider_id=repository.provider_id_for_market(market),
             adjustment="none",
             start=None,
             end=None,
@@ -214,6 +213,15 @@ class FinScopeDataBridge:
         return "000300.SH", visible[-limit:]
 
     def facts(self, subject: Subject) -> list[FactRecord]:
+        if subject.market == "CN":
+            # A 股报表与 SEC 事实同形；分析师按 us-gaap 概念名取数，这里只改前缀做适配，
+            # 数值、期间、公告日和来源链接保持上游原样。
+            return [
+                replace(item, concept=item.concept.replace("cn-gaap:", "us-gaap:", 1))
+                for item in CnFinancialRepository(self.store.engine).list_facts(
+                    subject.instrument_id, self.as_of
+                )
+            ]
         if not subject.cik:
             return []
         repository = FilingRepository(self.store.engine)

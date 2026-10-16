@@ -27,6 +27,7 @@ class JobSnapshot:
     error_summary: str | None
     progress_stage: str
     requested_at: datetime
+    finished_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class SyncJobRepository:
         requested_by: UUID | None,
         now: datetime,
         max_attempts: int = 3,
+        priority: int = 0,
     ) -> tuple[JobSnapshot, bool]:
         try:
             with Session(self.engine) as session, session.begin():
@@ -62,7 +64,7 @@ class SyncJobRepository:
                     scope=scope,
                     dedupe_key=dedupe_key,
                     status="queued",
-                    priority=0,
+                    priority=priority,
                     requested_by=requested_by,
                     requested_at=now,
                     started_at=None,
@@ -109,6 +111,55 @@ class SyncJobRepository:
             session.add(provider)
             session.flush()
             return provider.id
+
+    def ensure_provider(
+        self, *, code: str, name: str, enabled: bool, config_public: dict[str, object]
+    ) -> UUID:
+        """取数据源主键；缺失时按真实配置登记（密钥未配置就是 enabled=False）。"""
+
+        with Session(self.engine) as session, session.begin():
+            found = session.scalars(
+                select(DataProvider).where(DataProvider.code == code)
+            ).one_or_none()
+            if found is not None:
+                if found.enabled != enabled:
+                    found.enabled = enabled
+                return found.id
+            provider = DataProvider(
+                id=uuid.uuid5(uuid.NAMESPACE_URL, f"https://finscope.local/provider/{code}"),
+                code=code,
+                name=name,
+                enabled=enabled,
+                config_public=config_public,
+            )
+            session.add(provider)
+            session.flush()
+            return provider.id
+
+    def latest_for(self, job_type: str, display_symbol: str) -> JobSnapshot | None:
+        """某个标的某类任务最近登记的一条（不论状态），用来判断是否在跑、是否刚失败。"""
+
+        with Session(self.engine) as session:
+            job = session.scalars(
+                select(SyncJob)
+                .where(
+                    SyncJob.job_type == job_type,
+                    SyncJob.scope["display_symbol"].astext == display_symbol,
+                )
+                .order_by(SyncJob.requested_at.desc())
+                .limit(1)
+            ).first()
+            return None if job is None else _snapshot(job)
+
+    def count_active(self) -> int:
+        """排队中与执行中的任务总数，按需抓取据此做全局背压。"""
+
+        with Session(self.engine) as session:
+            return len(
+                session.scalars(
+                    select(SyncJob.id).where(SyncJob.status.in_(("queued", "running")))
+                ).all()
+            )
 
     def claim(self, now: datetime) -> JobSnapshot | None:
         with Session(self.engine) as session, session.begin():
@@ -298,4 +349,5 @@ def _snapshot(job: SyncJob) -> JobSnapshot:
         error_summary=job.error_summary,
         progress_stage=stage if isinstance(stage, str) else "queued",
         requested_at=job.requested_at,
+        finished_at=job.finished_at,
     )

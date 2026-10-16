@@ -298,6 +298,7 @@ export function formLabel(form: string): string {
 
 const FILING_STATUS_LABELS: Record<string, string> = {
   edgar: "SEC 官方",
+  eastmoney: "东方财富",
   sample: "样例",
 }
 

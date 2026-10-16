@@ -35,6 +35,7 @@ SCORE_DAMPING = 2
 REVENUE_CONCEPTS = (
     "us-gaap:Revenues",
     "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+    "us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax",
 )
 POSITIVE_WORDS = ("回购", "增持", "预增", "扭亏", "中标", "分红", "派息")
 NEGATIVE_WORDS = (
