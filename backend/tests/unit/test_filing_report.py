@@ -1,7 +1,7 @@
 import json
 from datetime import date
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.repositories.filings import FactRecord
 from app.schemas.research import RESEARCH_NOTICE
@@ -65,7 +65,9 @@ def test_rules_report_uses_only_stored_sample_numbers() -> None:
     earlier = _fact("80", date(2022, 12, 31), "0000320193-23-000001")
     later = _fact("120", date(2023, 12, 31), "0000320193-24-000099")
     draft = compose_filing_report(
-        user_id=uuid4(),
+        # user_id 固定下来：报告正文里会带上它，随机 UUID 有小概率含 "999"，
+        # 那会让下面「模型编的 999 没进报告」这条断言随机变红。
+        user_id=UUID("00000000-0000-4000-8000-0000000000ab"),
         symbol="NASDAQ:AAPL",
         name_cn="苹果",
         as_of=date(2024, 6, 1),

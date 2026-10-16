@@ -19,6 +19,7 @@ class Vector1536(UserDefinedType):
     def get_col_spec(self, **kw: object) -> str:
         return "vector(1536)"
 
+
 revision: str = "20261015_0009"
 down_revision: str | None = "20261015_0008"
 branch_labels: str | Sequence[str] | None = None

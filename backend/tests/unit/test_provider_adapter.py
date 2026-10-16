@@ -3,9 +3,16 @@ from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
-from app.providers.errors import ProviderError, ProviderTimeout
+import httpx
+from app.providers.errors import ProviderDisconnected, ProviderError, ProviderTimeout
 from app.providers.fixtures import FIXTURE_NOTICE, fixture_bars
-from app.providers.http_client import RawResponse, ResilientHttpClient, Transport
+from app.providers.http_client import (
+    OutboundRequest,
+    RawResponse,
+    ResilientHttpClient,
+    Transport,
+)
+from app.providers.httpx_transport import HttpxTransport
 from app.providers.quality import RawBar, accept_bar, classify_bar
 from app.services.ingest import ingest_bars
 from app.services.provider_probe import probe_upstream
@@ -22,6 +29,8 @@ class ScriptedTransport(Transport):
         step = self.steps.pop(0)
         if step == "timeout":
             raise ProviderTimeout()
+        if step == "disconnect":
+            raise ProviderDisconnected()
         assert isinstance(step, RawResponse)
         return step
 
@@ -118,6 +127,56 @@ def test_timeout_is_retried_then_reported() -> None:
     assert error.code == "UPSTREAM_TIMEOUT"
     assert error.status_code == 504
     assert error.attempts == 3
+
+
+def test_disconnect_is_retried_then_succeeds() -> None:
+    # 代理或上游偶尔不发响应就断流；这类失败必须重试，不能直接 500。
+    transport = ScriptedTransport(["disconnect", RawResponse(200, {}, b"ok")])
+
+    async def scenario() -> bytes:
+        client = ResilientHttpClient(transport, sleeper=_no_sleep, max_attempts=3)
+        return await client.get("https://upstream.invalid/bars")
+
+    assert _run(scenario()) == b"ok"
+    assert transport.calls == 2
+
+
+def test_exhausted_disconnect_is_reported_as_upstream_disconnected() -> None:
+    transport = ScriptedTransport(["disconnect", "disconnect", "disconnect"])
+
+    async def scenario() -> ProviderError:
+        client = ResilientHttpClient(transport, sleeper=_no_sleep, max_attempts=3)
+        try:
+            await client.get("https://upstream.invalid/bars")
+        except ProviderError as exc:
+            return exc
+        raise AssertionError("should fail")
+
+    error = _run(scenario())
+    assert isinstance(error, ProviderError)
+    assert error.code == "UPSTREAM_DISCONNECTED"
+    assert error.status_code == 502
+    assert error.attempts == 3
+    assert transport.calls == 3
+
+
+def test_httpx_transport_maps_broken_connections_to_disconnect() -> None:
+    # 实测缺陷：上游断流时 HttpxTransport 只捕获超时，
+    # RemoteProtocolError 会冒泡成未处理异常 -> 500。
+    class BrokenClient:
+        async def request(self, *_args: object, **_kwargs: object) -> object:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+    async def scenario() -> object:
+        try:
+            await HttpxTransport(BrokenClient()).send(  # type: ignore[arg-type]
+                OutboundRequest(method="GET", url="https://upstream.invalid/bars")
+            )
+        except Exception as exc:  # noqa: BLE001 - 断言的就是异常类型
+            return exc
+        raise AssertionError("should fail")
+
+    assert isinstance(_run(scenario()), ProviderDisconnected)
 
 
 def test_client_error_is_not_retried() -> None:

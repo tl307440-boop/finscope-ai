@@ -3,38 +3,59 @@
   color-scheme: dark;
   --bg: #0b1220;
   --panel: #121e30;
+  --panel-soft: #16233a;
+  --panel-deep: #0e1729;
+  --panel-raise: #1d2c46;
   --text: #e7edf8;
   --muted: #95a6be;
   --accent: #3b82f6;
+  --accent-soft: rgb(59 130 246 / 14%);
   --ok: #34d399;
   --warn: #fbbf24;
   --danger: #f87171;
   --rise: #f87171;
   --fall: #34d399;
   --line: rgb(231 237 248 / 12%);
+  --line-soft: rgb(231 237 248 / 6%);
+  --shadow-card: none;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f4f7fb;
   --panel: #ffffff;
+  --panel-soft: #f7f9fd;
+  --panel-deep: #eef2f9;
+  --panel-raise: #e8eef8;
   --text: #122033;
   --muted: #5c6b80;
   --accent: #1d4ed8;
+  --accent-soft: rgb(29 78 216 / 10%);
   --ok: #047857;
   --warn: #a16207;
   --danger: #b91c1c;
   --rise: #dc2626;
   --fall: #15803d;
   --line: rgb(18 32 51 / 12%);
+  --line-soft: rgb(18 32 51 / 7%);
+  --shadow-card: 0 1px 2px rgb(18 32 51 / 6%);
 }
 
 :root {
+  /* 效果图的骨架尺寸，页面不得自行发明 */
+  --rail: 240px;
+  --rail-collapsed: 72px;
+  --topbar: 64px;
+  --gap: 16px;
+  --radius: 12px;
+  --radius-sm: 8px;
+
   font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   line-height: 1.5;
   background: var(--bg);
   color: var(--text);
 }
+
 
 * {
   box-sizing: border-box;

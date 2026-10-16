@@ -32,13 +32,27 @@ DAILY_TARGETS: tuple[DailyTarget, ...] = (
     DailyTarget("000300.SH", "SSE", "000300", "沪深300"),
 )
 
+# 交易所由代码后缀决定，不靠前缀猜：600519.SH 在上交所，000858.SZ 在深交所，
+# 而 000001.SH 是上证指数、000001.SZ 是平安银行——同一串数字分属两个市场。
+_SUFFIX_EXCHANGE = {"SH": "SSE", "SZ": "SZSE"}
+_KNOWN_NAMES = {target.display_symbol: target.name_cn for target in DAILY_TARGETS}
+
+# 代码格式不合法时统一用这句话，避免多处各写一份说明。
+UNSUPPORTED_SYMBOL_MESSAGE = "只支持 600519.SH / 000858.SZ 这类六位代码加交易所后缀"
+
 
 def target_for(display_symbol: str) -> DailyTarget | None:
+    """把 `600519.SH` 形式的代码解析成抓取目标。
+
+    形如 `NNNNNN.SH` / `NNNNNN.SZ` 的代码一律可抓，不再限制在固定几只；
+    代码格式不合法（位数不对、市场后缀不认识）才返回 None。
+    """
     code = display_symbol.strip().upper()
-    for target in DAILY_TARGETS:
-        if target.display_symbol == code:
-            return target
-    return None
+    symbol, _, suffix = code.partition(".")
+    exchange = _SUFFIX_EXCHANGE.get(suffix)
+    if exchange is None or len(symbol) != 6 or not symbol.isdigit():
+        return None
+    return DailyTarget(code, exchange, symbol, _KNOWN_NAMES.get(code, ""))
 
 
 def secid_for(exchange: str, symbol: str) -> str:
@@ -46,7 +60,7 @@ def secid_for(exchange: str, symbol: str) -> str:
     if market is None:
         raise ProviderError(
             code="VALIDATION_ERROR",
-            message="这三只股票以外的日线尚未开放",
+            message="日线抓取只支持 SSE 与 SZSE 两个交易所",
             status_code=422,
         )
     return f"{market}.{symbol}"

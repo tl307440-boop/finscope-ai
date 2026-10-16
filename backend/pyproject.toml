@@ -5,13 +5,16 @@ description = "FinScope AI 金融投研辅助平台"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.14",
+    "apscheduler>=3.11.3",
     "argon2-cffi>=25.1.0",
     "fastapi>=0.115",
     "httpx>=0.28.1",
+    "pdfplumber>=0.11.10",
     "psycopg[binary]>=3.2",
     "pydantic>=2.10",
     "pydantic-settings>=2.6",
     "pyjwt>=2.15.1",
+    "pymupdf>=1.28.2",
     "pypdf>=6.20.1",
     "python-multipart>=0.0.32",
     "sqlalchemy>=2.0",
@@ -63,6 +66,23 @@ disallow_any_generics = true
 [[tool.mypy.overrides]]
 module = ["pypdf", "pypdf.*", "tradingagents", "tradingagents.*"]
 ignore_missing_imports = true
+
+# apscheduler 3.x 没有 py.typed，也没有官方类型存根；调度器只用到 add_job/start/shutdown，
+# 对它做一层薄适配即可，不在严格模式下逐个标注第三方 API。
+[[tool.mypy.overrides]]
+module = ["apscheduler", "apscheduler.*"]
+ignore_missing_imports = true
+
+# PyMuPDF 与 pdfplumber 是 C 扩展，类型信息不完整（py.typed 存在但函数未标注）。
+# 这一层本来就是给无类型解析器做适配的边界，允许在这里调用无类型函数。
+[[tool.mypy.overrides]]
+module = [
+    "app.services.pdf_text",
+    "app.services.pdf_upload",
+    "app.services.scheduler",
+    "app.workers.scheduler",
+]
+disallow_untyped_calls = false
 
 [tool.uv.sources]
 tradingagents = { git = "https://github.com/TauricResearch/TradingAgents.git", rev = "1394a3f72aa4393e1a98f51b382434c4b4c2d972" }

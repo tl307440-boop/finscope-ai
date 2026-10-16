@@ -696,6 +696,163 @@ T22：多行业板块强弱、市场温度和可解释评分。没有足够样�
 - 市场温度依赖已经入库的日线。成分不够时页面就是无法判断。
 - 中国宏观和社融没有导入正式文件，所以保持不可用。
 
+## 2026-10-15 T34–T35
 
+### 本轮范围
 
+落地规格书 §11「任务调度设计」与 §12.1 的上传安全检查，并按技术选型表把文档解析换成 PyMuPDF + pdfplumber。只做这两处，不动研究看板、宏观接口和中国宏观仓库。
 
+### 变更
+
+- 新增 `backend/app/services/scheduler.py`：APScheduler 把 §11 表格里的 7 个任务登记成 job（`sync_fred_series` / `sync_a_stock_bars` / `sync_us_sec_filings` / `parse_document` / `compute_financial_metrics` / `compute_macro_regime` / `refresh_hotspot_events`）。每个 job 只做一件事：按该行的幂等标识往 `sync_jobs` 写一条 `queued` 记录，自己不抓数据、不解析文件。
+- 幂等标识逐行对上表格：`provider+series+date`、`provider+instrument+trade_date+adjustment`、`company+filing accession`、`sha256+parser_version`、`instrument+period+metric_version`、`as_of+model_version`、`date+source`。
+- 幂等由数据库唯一约束兜底：沿用 `20261015_0005_sync_job_lease.py` 建的部分唯一索引 `uq_sync_jobs_active_dedupe`（`ON sync_jobs(dedupe_key) WHERE status IN ('queued','running')`），配 `SyncJobRepository.enqueue` 的先查后插，`IntegrityError` 再查一次。同一幂等键重复触发只有一条 queued 记录；失败或完成后同一键可以重新登记，历史行保留。
+- 交易日判断复用已有 `trading_calendars`（`InstrumentRepository.calendar_open`）。A 股按「上一交易日收盘后延迟 `SCHEDULER_A_STOCK_CLOSE_DELAY_MINUTES`」登记；日历没有记录时打印 `unknown` 并跳过，不用星期几顶替交易所日历。
+- 新增进程入口 `backend/app/workers/scheduler.py`（`python -m app.workers.scheduler`）：SIGINT/SIGTERM 走 `scheduler.shutdown(wait=True)`，按 `stopped` 写心跳后返回 0。它和 worker 分开跑，谁重启都不影响另一个。
+- FRED、SEC、计算类任务未接执行器时只告警不建任务（`scheduler task unavailable`），不写假成功；`SCHEDULER_ENABLE_*` 默认只开已接好的 fred / a 股 / 解析三类。
+- `backend/app/services/pdf_text.py` 重写：主提取器 pdfplumber（正文 + 表格，表格转成可检索文本），PyMuPDF 作第二提取器并做页数快速校验，pypdf 降为最后回退；返回值带 `parser_name` / `parser_version`。历史接口 `PageText` / `extract_pages` / `has_extractable_text` / `PdfTextError` 签名不变，`pdf_chunks`、`document_index` 不用改调用方式。
+- `backend/app/services/pdf_upload.py` 补 §12.1 校验：魔数、mime、大小上限、最大页数、解析时间预算，外加加密与损坏各自的状态码（`REJECTED_MIME`、`ENCRYPTED`、`DAMAGED`、`REJECTED_BUDGET`）。超限是结构化 `AppError`，不是 500。
+- 新增配置项 12 个（`UPLOAD_PARSE_TIME_BUDGET_SECONDS`、`SCHEDULER_ENABLED`、`SCHEDULER_TIMEZONE`、`SCHEDULER_RUN_ON_STARTUP`、各任务开关与触发时刻等），`backend/.env` 与 `.env.example` 都带中文注释，`Settings` 里加了时区名与时间预算的校验。
+- 文档、启动方式和 compose 说明同步：`README.md` 补调度器启动语句，`docker-compose.yml` 加一段注释掉的可选 `scheduler` 服务（不改现有 worker 语义）。
+
+### 验证
+
+- `alembic upgrade head` 无待执行迁移（head 是同事的 `20261015_0017`）；本任务不需要新迁移——`lease_expires_at` 与幂等唯一索引在 `0005` 就已经存在。
+- `ruff check .` / `ruff format --check .` / `mypy app` 全绿（mypy strict，141 个文件零错误）。
+- `pytest` 210 例通过（新增调度器与 PDF 解析用例）。
+- 真起过调度器：日志打出 `scheduler registered 3 jobs`（fred / a 股 / 解析）以及 `scheduler tick done task=sync_a_stock_bars created=7`，数据库里确实出现 7 条 `queued`，幂等键形如 `akshare:600519.SH:none:2026-10-14:2026-10-14`；同一键再触发一次是 `created=0`。SIGINT 后日志是 `scheduler stopped jobs=3` + `Scheduler has been shut down`，退出码 0。
+- 自检写入的任务行与占位数据源已清理，`trading_calendars` 里为自检补的「2026-10-14 开市」记录保留（交易日历本来就是这么入库的）。
+
+### 已知局限
+
+- `compute_financial_metrics`、`compute_macro_regime`、`refresh_hotspot_events` 只有登记与幂等键，执行器还没接，默认 `SCHEDULER_ENABLE_*=false`，触发时只告警。`refresh_hotspot_events` 还要先有合法来源（`SCHEDULER_HOTSPOT_SOURCE`）。
+- `sync_us_sec_filings` 的执行器依赖 SEC 公平访问策略下的限速，当前默认关闭。
+- pdfplumber 的表抽取按行拼成文本入库，不保留单元格坐标；扫描件仍走 `OCR_REQUIRED`，没有引入 OCR。
+- 本轮未跑前端构建，前端未改动。
+
+## 2026-10-15 T23/T24 热点事件与中国宏观数据通路
+
+### 本轮范围
+
+把规格书里写了、服务层也写了、但没有数据通路的两条链路接上：中国宏观的正式 CSV 导入，以及合规公告事件的热度聚合。两条链路在库里都是零数据，本轮不填任何编造值。
+
+### 变更
+
+- `app/services/china_macro.py`：新增六条序列的目录 `china_series_catalog()` / `series_spec()`，`CHINA_SERIES` 改为由它派生，避免中文名和单位写两处。新增 `STALE_DAYS=60`、`is_stale()` 和 `public_status()`；`parse_macro_csv` 与 `series_status(code, stored)` 的既有语义不动。
+- 新增 `app/repositories/macro_china.py`：登记 6 条中国序列到**现有的** `macro_series` / `macro_observations`（没有平行表、没有新迁移），提供 `ensure_catalog()`、`import_observations()`、`list_series_summary()`、`count_since()`。幂等靠 `(series_code, observation_date, published_at)` 三元组的存在性判断，重复行按错误明细返回。中国序列的 provider 是 `china_macro` 且 `enabled=false`，这样不会混进 `/api/v1/macro/series` 的美国目录。
+- `app/api/v1/macro.py`：新增 `POST /api/v1/macro/china/observations`（`require_admin`），请求体就是 CSV 原文，返回 `accepted` / `duplicate_count` / `errors` / 每条序列导入后的状态。解析失败的行只进 `errors`，不落库。
+- `app/api/v1/research_board.py`：`GET /macro/china` 改为查真实条数和最新值，按 `stored` / `unavailable` / `stale` 返回，并给出最新值、观测日、来源、公布日、已存条数。库里没有数据时六个序列如实 `unavailable`，`notice` 指向导入接口。
+- 新增 `app/repositories/news_events.py`：按 `dedupe_hash` 幂等写入、按发布日期区间查询，另加 `industry_exists()` 防悬空外键。
+- `app/services/disclosure_events.py`：新增来源徽标、事件类型标签、事件类型白名单、`validate_import()`、`group_by_type()`；`validate_disclosure` 仍只认 `cninfo`/`sse`/`szse`/`sec` 且必须 https。
+- `app/api/v1/research_board.py`：新增 `POST /api/v1/market/hotspots/events`（`require_admin`），先过合规校验，不合规逐条报错、不落库。`GET /market/hotspots` 改为真实按日聚合，支持 `start` / `end` / `industry_id`，返回主题热度、事件时间线、来源徽标和事件明细。`enable_news=false` 时不读新闻、返回空列表并说明原因。
+- 迁移 `20261015_0017`：只给 `news_events` 加 `industry_id`（可空，外键到 `industries.id`，带索引），这样热点页能按行业过滤。
+- `GET /me/digest` 接上真实数据：报告标题来自 `ReportRepository.list_owned`，公告计数来自第 2 步的真实按日计数。
+
+### 验证
+
+在 `backend` 目录：
+
+- `ruff check .` 全部通过；`ruff format --check .` 本文件范围内通过。
+- `mypy app` 通过，141 个源文件无问题。
+- `pytest -q` 212 例全通过，无失败、无跳过。
+- 新增用例：`tests/unit/test_china_macro_import.py`、`tests/unit/test_disclosure_events.py`、`tests/integration/test_board_data_flow.py`（正常路径 + 缺数据/不合规路径各一）。
+- 真起过一次 uvicorn。`GET /macro/china` 导入前六个序列全是 `unavailable`、`observation_count=0`；导入含一行合法 CPI 的 CSV 后 `accepted=1`、`errors` 里有“第 3 行日期或数值无法解析”“第 4 行不在已登记的中国宏观序列里”，该序列变成 `stale`（1990 年的观测，距今超过 60 天）并带 `latest_value=0.800000`；重放同一份 CSV 时 `accepted=0`、`duplicate_count=1`，说明幂等成立。匿名调用该接口返回 401。
+- `POST /market/hotspots/events` 传 1 条合规 + 1 条不合规，返回 `accepted=1`、`errors=["第 2 条：这个来源不在允许的公告名单里"]`；随后 `GET /market/hotspots` 返回 `count=1` 和真实时间线。空窗口查询返回 `count=0`、空列表。`ENABLE_NEWS=false` 时返回空列表并说明数据源未开启。
+
+### 已知局限
+
+- 中国宏观仍然没有正式 CSV 入库，六个序列在页面上是 `unavailable`，这是真实状态，不是缺实现。
+- `stale` 统一按 60 天判断，6 条序列都是月频口径，季频来源需要重新定阈值。
+- 热点事件只接受 `cninfo`/`sse`/`szse`/`sec` 四个来源，其他媒体源仍然不入库。
+- 本轮没有改前端，页面是否已经渲染新字段要前端同学确认。
+- 集成测试之间有共享数据库状态：`sync_jobs` 里残留的 `failed` 行会让 `test_sync_jobs.py` 的领取用例失败，`test_sec_fixture.py` 清掉的申报会让后跑的 `test_industry_thesis.py` 失败。这两种失败在干净库上跑一次全量就消失，与本轮改动无关。
+
+### 下一项
+
+T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据源许可后自动导入公告。
+
+## 2026-10-15 T36–T38 效果图对齐、第二条行情源、显示精度
+
+### 本轮范围
+
+用户放进来十张效果图（`系统设计\ChatGPT 图像 2026年10月15日 21_48_*.png`），要求界面按效果图做；
+同时发现行情页大面积空态，追下去是唯一的上游（东方财富 `push2his.eastmoney.com`）被限流到不可达。
+
+### 变更
+
+**一、把效果图固化成可执行的规范（先规范后改码）**
+
+- 新增 `docs/UI-设计规范.md`：十张图到路由的对照表、栅格尺寸（左栏 240px / 折叠 72px、顶栏 64px、
+  内容区 `max-width: 1680px` + `padding: 20px 24px`、卡片圆角 12px、间距 16px）、字号与字重、
+  状态色到 token 的映射、组件清单、图表规则，以及硬约束（不编造数据、前端不做金融计算、
+  空态必须写后端给的原因）。
+- 新增 `frontend/src/components/ui/` 共 11 个组件：`PageHeader`、`PanelCard`、`StatCard`、
+  `MetricTile`、`DeltaValue`、`StatusPill`、`SectionTabs`、`StateBlock`、`SourceFooter`、
+  `MiniSpark`、`MiniRing`。迷你走势和圆环是纯 SVG —— 一页几百个实例，用 ECharts 会卡。
+- `app-shell` 左栏改成与效果图一致的一行一个一级导航（当前组的子路由在下面展开），
+  顶栏加全局搜索、数据时间、任务状态、通知、账号菜单，底部加数据来源条。
+- 20 条路由对应的 20 个页面全部按效果图重排；没有效果图的次级页沿用同一套语言。
+
+**二、加第二条行情源（东财不可达时的备用）**
+
+- 新增 `app/providers/tencent_bars.py`：腾讯 `web.ifzq.gtimg.cn` 日线适配器，
+  字段顺序是 日期,开,收,高,低,量（不是 OHLC），`market_code()` 按交易所给 `sh`/`sz` 前缀。
+- `RawBar.amount` 与 `market_bars.amount` 改为可空：腾讯只给成交量、不给成交额。
+  缺成交额时存 `NULL`，页面渲染「—」，**不用 量×价 补一个看起来合理的数字**。
+- `app/services/akshare_sync.py` 的 `_SOURCES` 改成按顺序尝试的源列表，
+  每个源失败都记下来，全部失败时把每个源的失败原因一起报出来（`UPSTREAM_UNAVAILABLE`）。
+- 数据源行如实改名：`data_providers` 里 `code='akshare'` 那一行的 name 改成
+  「A股日线（东方财富 / 腾讯行情）」，`config_public.upstreams` 列出两个上游域名。
+  `code` 保持不变，因为它已经被 `market_bars.provider_id` 引用。
+- 修掉一个真实缺陷：`httpx_transport` 原来只捕获 `httpx.TimeoutException`，
+  上游断流（`RemoteProtocolError`）会冒泡成 500。现在转成 `ProviderDisconnected` 并可重试。
+- 顺带清掉集成测试在共享库上留下的 51 行 `probe-*` 僵尸数据源。
+
+**三、显示精度**
+
+- `bar_indicators.moving_average` / `simple_return` 四舍五入到 4 位与 6 位：
+  Decimal 除法精度是 28 位，60 日均线原来会输出 `1295.7418333333333333333`。
+- `market_temperature._mean` 同样定刻度，因为 MA20/MA60 会直接写进证据串。
+- `DeltaValue` 不再暴露浮点尾巴（涨跌幅固定两位），且**只有真的在表达变化时才补 `+`**：
+  收盘价读 `3,707.48`，涨跌幅读 `-1.59%`。负号永远保留，色盲也能读方向。
+- 后端用英文代码传单位，界面统一映射：`hand` → 手。
+
+### 验证
+
+在 `backend` 目录：
+
+- `ruff check .` 全部通过；`ruff format --check .` 213 个文件已格式化。
+- `mypy app` 通过，142 个源文件无问题。
+- `pytest -p no:randomly` **225 例全通过**（新增 `tests/unit/test_tencent_bars.py` 13 例、
+  `tests/unit/test_bar_indicators.py` 2 例）。
+
+在 `frontend` 目录：
+
+- `npm run typecheck` 退出码 0；`npm test` 18 个文件 48 例全通过；`npm run build` 成功。
+- `npm run e2e` 15 例全通过（8 条关键流程 + 7 组截图）。
+
+真数据验证（服务由 `windows-deploy\start.bat` 起）：
+
+- 24 个 A 股标的全量同步成功，`market_bars` 里是真实交易日，
+  例如 600519.SH 最新一根 2026-10-15 收盘 1312.97，`ma5=1355.534`、`ma60=1422.7618`、
+  `simple_return=-0.002283`，没有浮点尾巴。
+- 驾驶舱 A股市场温度从「—」变成 43.6/100；指数走势图上四条真实指数曲线；
+  `/market/indices` 四张指数卡、K 线、均线全部有值。
+- `docs/screenshots/` 重新生成 24 张，全部是真数据。
+
+### 已知局限
+
+- **成交额缺失**：腾讯不返回成交额，所以走备用源入库的日线 `amount` 是 `NULL`，
+  页面上显示「—」。没有用 量×价 之类的办法补。
+- **`source` 字段仍是 `akshare`**：`market_bars` 只存 `provider_id`，不存每根线的上游，
+  所以 `GET /market/bars/{id}` 的 `source` 还是那一行的 code。要按根区分上游得加字段和迁移。
+- **FRED / 中国宏观仍然是真实的空态**：`FRED_API_KEY` 与官方 CSV 都没有提供，
+  六个中国宏观序列在页面上就是 `unavailable`，这是真实状态。
+- **热点页是空态**：`ENABLE_NEWS=false` 且没有合规公告导入，`count=0` 会照实显示。
+- **效果图里没有数据支撑的字段一律留空**：相关性、置信度、报告字数、情景概率这些
+  后端没有的口径全部渲染成「未计算」/「—」，没有为了让图好看而编数。
+
+### 下一项
+
+拿到 `FRED_API_KEY` 后跑一次 `POST /admin/fred-syncs`，美国宏观那几张卡就会有值；
+拿到官方中国宏观 CSV 后走导入接口。两者都不需要改代码。

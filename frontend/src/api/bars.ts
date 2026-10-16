@@ -86,12 +86,21 @@ export function candleMarks(bars: DailyBar[]): CandleMark[] {
   })
 }
 
+/** 后端用英文代码传单位（hand / share），界面一律显示中文。 */
+export function volumeUnitLabel(unit: string | null | undefined): string {
+  if (!unit) {
+    return ""
+  }
+  const table: Record<string, string> = { hand: "手", share: "股", lot: "份" }
+  return table[unit] ?? unit
+}
+
 export function summarizeBars(input: { emptyMessage: string | null; bars: DailyBar[] }): string[] {
   if (input.bars.length === 0) {
     return [input.emptyMessage ?? "暂无已同步的日线。未同步的日期不会用演示价格填补。"]
   }
   return input.bars.map((bar) => {
-    const unit = bar.volume_unit === "hand" ? "手" : bar.volume_unit
+    const unit = volumeUnitLabel(bar.volume_unit)
     return `${bar.trade_date} 开${bar.open} 高${bar.high} 低${bar.low} 收${bar.close} ${bar.currency} 量${bar.volume}${unit}`
   })
 }

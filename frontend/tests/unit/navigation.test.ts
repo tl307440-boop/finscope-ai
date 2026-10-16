@@ -1,7 +1,7 @@
 import { createMemoryHistory, createRouter } from "vue-router"
 import { afterEach, describe, expect, it } from "vitest"
 import { installGuard, routes, decideNavigation } from "../../src/router"
-import { clearSession, safeRedirect, session } from "../../src/stores/auth"
+import { clearSession, safeRedirect, useSessionStore } from "../../src/stores/auth"
 
 afterEach(() => {
   clearSession()
@@ -19,6 +19,7 @@ describe("路由守卫", () => {
   it("研究者不能进入管理页", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes })
     installGuard(router, async () => false)
+    const session = useSessionStore()
     session.accessToken = "token"
     session.role = "researcher"
     await router.push("/data-center")
@@ -28,6 +29,7 @@ describe("路由守卫", () => {
   it("管理员可以进入管理页", async () => {
     const router = createRouter({ history: createMemoryHistory(), routes })
     installGuard(router, async () => false)
+    const session = useSessionStore()
     session.accessToken = "token"
     session.role = "admin"
     await router.push("/data-center")
@@ -38,9 +40,11 @@ describe("路由守卫", () => {
     expect(decideNavigation({ fullPath: "/", meta: {} }, { authenticated: false, role: null })).toBe(true)
   })
 
-  it("只接受站内回跳地址", () => {
+  it("只接受站内回跳地址，非法地址落到总览驾驶舱", () => {
     expect(safeRedirect("/settings")).toBe("/settings")
-    expect(safeRedirect("https://evil.example")).toBe("/settings")
-    expect(safeRedirect("//evil.example")).toBe("/settings")
+    expect(safeRedirect("/company/600519.SH")).toBe("/company/600519.SH")
+    expect(safeRedirect("https://evil.example")).toBe("/dashboard")
+    expect(safeRedirect("//evil.example")).toBe("/dashboard")
+    expect(safeRedirect(undefined)).toBe("/dashboard")
   })
 })

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,9 +8,42 @@ from app.core.security import PasswordService
 from app.db.session import create_db_engine
 from app.main import create_app
 from app.repositories.accounts import AccountRepository
+from app.trading_agents.graph import DebateRound, RiskNote, SimulationResult, Trace
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+
+
+def _fake_simulation(symbol: str, as_of: date, max_debate_rounds: int = 1) -> SimulationResult:
+    """确定性桩。规格书 §14.2 要求集成测试不依赖外网，TradingAgents 图会走外部行情。"""
+
+    del symbol, as_of, max_debate_rounds
+    traces = (
+        Trace("Market Analyst", "行情报告：样本不足，不做趋势判断。"),
+        Trace("Sentiment Analyst", "情绪报告：没有合规标题。"),
+        Trace("News Analyst", "新闻报告：没有不晚于 as_of 的标题。"),
+        Trace("Fundamentals Analyst", "财报报告：没有已核对的口径。"),
+        Trace("Bull Researcher", "多方：估值处于历史低位区间。"),
+        Trace("Bear Researcher", "空方：增速放缓尚未证伪。"),
+        Trace("Research Manager", "研究经理：两边都缺证据，维持观察。"),
+        Trace("Trader", "交易员：不建议下单。"),
+        Trace("Aggressive Analyst", "激进：可以分批建仓。"),
+        Trace("Conservative Analyst", "保守：等下一期财报再动手。"),
+        Trace("Neutral Analyst", "中性：维持现状。"),
+        Trace("Portfolio Manager", "组合经理：Hold。"),
+    )
+    return SimulationResult(
+        rating="Hold",
+        decision="Rating: Hold\n这是研究评级，不是下单指令。",
+        traces=traces,
+        debates=(DebateRound(1, "多方：估值处于历史低位区间。", "空方：增速放缓尚未证伪。"),),
+        risks=(
+            RiskNote("Aggressive Analyst", "激进：可以分批建仓。"),
+            RiskNote("Conservative Analyst", "保守：等下一期财报再动手。"),
+            RiskNote("Neutral Analyst", "中性：维持现状。"),
+        ),
+        events=tuple(f"node_started:{item.node_name}" for item in traces) + ("rating_ready:Hold",),
+    )
 
 
 def _ready() -> bool:
@@ -87,7 +121,9 @@ def test_mock_simulation_persists_rating_without_an_order() -> None:
     )
     engine.dispose()
     try:
-        with TestClient(create_app()) as client:
+        application = create_app()
+        application.state.simulation_runner = _fake_simulation
+        with TestClient(application) as client:
             token = client.post(
                 "/api/v1/auth/login",
                 json={"username": username, "password": "correct-password"},
@@ -117,8 +153,15 @@ def test_mock_simulation_persists_rating_without_an_order() -> None:
                 headers=headers,
             )
             assert backtest.status_code == 200
-            assert backtest.json()["data"]["quality_flag"] == "insufficient"
-            assert "actual_return" not in backtest.json()["data"]
+            # 前向窗口有没有被真实日线覆盖，取决于本机已经同步了哪些行情，所以这里断言的是
+            # 不变量而不是固定值：没有实际收益就必须是 insufficient，有实际收益才允许 measured。
+            # 这一条正是「数据不足时不编造收益」的回归保护。
+            backtest_data = backtest.json()["data"]
+            assert backtest_data["quality_flag"] in {"insufficient", "measured"}
+            if "actual_return" in backtest_data:
+                assert backtest_data["quality_flag"] == "measured"
+            else:
+                assert backtest_data["quality_flag"] == "insufficient"
             assert "event: node_started" in stream.text
             assert "Market Analyst" in stream.text
             other_token = client.post(

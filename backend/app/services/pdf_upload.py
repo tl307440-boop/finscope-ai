@@ -5,8 +5,14 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
+from app.services.pdf_text import PARSER_PDFPLUMBER, count_pages, parser_version
+
 PDF_MAGIC = b"%PDF-"
 MAX_PAGES = 200
+# 规格书 §12.1 要求上传检查「解析时间预算」；上传阶段做结构校验，解析阶段按同一预算执行。
+DEFAULT_PARSE_TIME_BUDGET_SECONDS = 30.0
+# 允许的 mime：octet-stream 是浏览器对无扩展名/未知扩展名的兜底，不能据此直接判失败。
+PDF_MIME_TYPES = frozenset({"application/pdf", "application/x-pdf", "application/octet-stream"})
 _PAGE = re.compile(rb"/Type\s*/Page(?!s)")
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 
@@ -22,14 +28,32 @@ class PdfInspection:
     page_count: int | None
 
 
-def inspect_pdf(data: bytes, *, max_bytes: int, max_pages: int = MAX_PAGES) -> PdfInspection:
+def inspect_pdf(
+    data: bytes,
+    *,
+    max_bytes: int,
+    max_pages: int = MAX_PAGES,
+    mime_type: str | None = None,
+    parse_time_budget_seconds: float = DEFAULT_PARSE_TIME_BUDGET_SECONDS,
+) -> PdfInspection:
     digest = hashlib.sha256(data).hexdigest()
     if not data.startswith(PDF_MAGIC):
         return PdfInspection("rejected", "REJECTED_FORMAT", "文件内容不是 PDF", digest, None)
     if len(data) > max_bytes:
         return PdfInspection("rejected", "REJECTED_SIZE", "文件超过大小限制", digest, None)
-    pages = len(_PAGE.findall(data))
-    if b"%%EOF" not in data or pages < 1:
+    if not mime_type_allowed(mime_type):
+        return PdfInspection("rejected", "REJECTED_MIME", "文件类型不是 PDF", digest, None)
+    if parse_time_budget_seconds <= 0:
+        return PdfInspection("rejected", "REJECTED_BUDGET", "解析时间预算配置不合法", digest, None)
+    if b"%%EOF" not in data:
+        return PdfInspection(
+            "failed", "DAMAGED", "文件损坏，已记录失败，不会进入解析", digest, None
+        )
+    checked = count_pages(data)
+    if checked is None and b"/Encrypt" in data:
+        return PdfInspection("failed", "ENCRYPTED", "PDF 已加密，无法解析", digest, None)
+    pages = checked if checked is not None else len(_PAGE.findall(data))
+    if pages < 1:
         return PdfInspection(
             "failed", "DAMAGED", "文件损坏，已记录失败，不会进入解析", digest, None
         )
@@ -44,6 +68,27 @@ def inspect_pdf(data: bytes, *, max_bytes: int, max_pages: int = MAX_PAGES) -> P
             pages,
         )
     return PdfInspection("queued", "ACCEPTED", "已接收，等待解析", digest, pages)
+
+
+def mime_type_allowed(mime_type: str | None) -> bool:
+    if mime_type is None or not mime_type.strip():
+        return True
+    return mime_type.strip().lower().split(";")[0].strip() in PDF_MIME_TYPES
+
+
+def parse_document_identity(sha256: str, parser_version: str | None = None) -> str:
+    """规格书 §11：parse_document 的幂等标识是 sha256+parser_version。
+
+    ``parser_version`` 省略时取主提取器（pdfplumber）的版本；传别的解析器版本时
+    得到不同的键——换了解析器自然就该重新解析同一份文件。
+    """
+
+    version = parser_version or default_parser_version()
+    return f"parse_document:{sha256}:{version}"
+
+
+def default_parser_version() -> str:
+    return parser_version(PARSER_PDFPLUMBER)
 
 
 def stored_pdf_path(root: Path, owner_id: UUID, sha256: str) -> Path:

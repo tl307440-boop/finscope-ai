@@ -158,6 +158,93 @@ def test_failed_ingest_and_bad_revision_do_not_replace_good_bar() -> None:
                 text("DELETE FROM instruments WHERE id = :instrument_id"),
                 {"instrument_id": instrument_id},
             )
+            # 探测用数据源也要清掉：漏了这一句，每跑一次集成就往 data_providers
+            # 里落一条 probe-xxxxxxxx，跑几十次之后数据中心页会列出一堆僵尸源。
+            connection.execute(
+                text("DELETE FROM data_providers WHERE id = :provider_id"),
+                {"provider_id": provider_id},
+            )
+        engine.dispose()
+
+
+@pytest.mark.integration
+def test_daily_limit_keeps_the_most_recent_bars() -> None:
+    """limit 是「最近的 N 条」，不是「最早的 N 条」。
+
+    反了的话，公司研究页拿 limit=60 就会把两三年前那一段的收盘价当成「最新收盘」。
+    """
+    if not _ready():
+        pytest.skip("PostgreSQL 不可用")
+    engine = create_db_engine(get_settings().database_url)
+    provider_id = uuid4()
+    instrument_id = uuid4()
+    repository = MarketBarRepository(engine)
+    dates = [date(2024, 1, day) for day in (2, 3, 4, 5, 8)]
+    try:
+        with Session(engine) as session:
+            moment = datetime(2024, 1, 1, tzinfo=UTC)
+            session.add(
+                DataProvider(
+                    id=provider_id,
+                    code=f"probe-{provider_id.hex[:8]}",
+                    name="probe",
+                    enabled=True,
+                    config_public={},
+                    last_health_at=None,
+                    last_health_status=None,
+                )
+            )
+            session.add(
+                Instrument(
+                    id=instrument_id,
+                    market="CN",
+                    exchange="SSE",
+                    symbol=f"L{provider_id.hex[:6]}",
+                    display_symbol=f"L{provider_id.hex[:6]}.SH",
+                    name_cn="探测样例",
+                    name_en="probe",
+                    instrument_type="STOCK",
+                    currency="CNY",
+                    industry_id=None,
+                    is_active=True,
+                    list_date=None,
+                    delist_date=None,
+                    created_at=moment,
+                    updated_at=moment,
+                )
+            )
+            session.commit()
+        bars = [
+            _sample(str(10 + index)).model_copy(update={"trade_date": trade_date})
+            for index, trade_date in enumerate(dates)
+        ]
+        written = repository.upsert(bars, instrument_id=instrument_id, provider_id=provider_id)
+        assert written == len(bars)
+        rows, truncated = repository.list_daily(
+            instrument_id=instrument_id,
+            provider_id=provider_id,
+            adjustment="none",
+            start=None,
+            end=None,
+            pit=date(2025, 1, 1),
+            limit=2,
+        )
+        assert truncated is True
+        assert [row.trade_date for row in rows] == [dates[-2], dates[-1]]
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM market_bars WHERE instrument_id = :instrument_id"),
+                {"instrument_id": instrument_id},
+            )
+            connection.execute(
+                text("DELETE FROM instruments WHERE id = :instrument_id"),
+                {"instrument_id": instrument_id},
+            )
+            connection.execute(
+                text("DELETE FROM data_providers WHERE id = :provider_id"),
+                {"provider_id": provider_id},
+            )
         engine.dispose()
 
 

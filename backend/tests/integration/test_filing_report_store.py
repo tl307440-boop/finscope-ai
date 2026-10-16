@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -122,7 +123,9 @@ def test_saved_report_keeps_the_sample_filing_sources() -> None:
             assert "0000320193-23-000001" in data["body"]
             assert "0000320193-24-000099" in data["body"]
             assert "本地样例" in data["body"]
-            assert "999" not in data["body"]
+            # 正文里带着 run/user 的 UUID，随机 UUID 有小概率碰巧含 "999"，
+            # 所以按「独立的 999」判定：模型编的数字不许出现在规则报告里。
+            assert not re.search(r"\b999\b", data["body"])
             detail = client.get(f"/api/v1/analysis/runs/{data['run_id']}", headers=headers)
             assert detail.status_code == 200
             assert detail.json()["data"]["body"] == data["body"]

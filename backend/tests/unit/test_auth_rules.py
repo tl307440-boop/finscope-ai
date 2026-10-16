@@ -209,10 +209,13 @@ def test_access_token_does_not_contain_the_password_and_rejects_bad_signatures()
     service, _sessions = _service(user)
     result = service.login(username="researcher", password="correct-password")
     assert "correct-password" not in result.access_token
+    # 令牌固定由注入的时钟（2026-10-15T08:00Z + 15 分钟）签发，这里只检查载荷是否泄露口令，
+    # 不做时效校验：否则真实时间一过 exp，PyJWT 就会抛 ExpiredSignatureError 让测试变成定时炸弹。
     payload = jwt.decode(
         result.access_token,
         "test-secret-not-for-production-32ch",
         algorithms=["HS256"],
+        options={"verify_exp": False},
     )
     assert "password" not in payload
     forged = jwt.encode(

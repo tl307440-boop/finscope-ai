@@ -29,10 +29,35 @@ class MemoryWriter:
 def test_secid_uses_the_exchange_not_a_guess() -> None:
     assert secid_for("SSE", "600519") == "1.600519"
     assert secid_for("SZSE", "000858") == "0.000858"
-    assert target_for("600519.sh") is not None
-    assert target_for("000001.SH") is not None
     assert secid_for("SSE", "000001") == "1.000001"
-    assert target_for("000001.SZ") is None
+    assert secid_for("SZSE", "000001") == "0.000001"
+
+
+def test_target_for_reads_the_exchange_from_the_suffix() -> None:
+    # 同一串数字分属两个市场：000001.SH 是上证指数，000001.SZ 是平安银行。
+    # 交易所只能由后缀决定，不能靠前缀猜。
+    shanghai = target_for("600519.sh")
+    assert shanghai is not None
+    assert (shanghai.display_symbol, shanghai.exchange, shanghai.symbol) == (
+        "600519.SH",
+        "SSE",
+        "600519",
+    )
+    index = target_for("000001.SH")
+    assert index is not None and index.exchange == "SSE"
+    bank = target_for("000001.SZ")
+    assert bank is not None and bank.exchange == "SZSE"
+
+
+def test_target_for_accepts_any_well_formed_code() -> None:
+    # 不再是固定几只的白名单：数据库里任意 A 股代码都应该能解析出抓取目标。
+    for code in ("600519.SH", "601318.SH", "000858.SZ", "300750.SZ", "688981.SH"):
+        assert target_for(code) is not None, code
+
+
+def test_target_for_rejects_malformed_codes() -> None:
+    for code in ("", "600519", "600519.XX", "60051.SH", "6005190.SH", "ABC519.SH", "600519.US"):
+        assert target_for(code) is None, code
 
 
 def test_kline_url_requests_daily_unadjusted_bars() -> None:

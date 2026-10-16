@@ -3,7 +3,13 @@ from pathlib import Path
 from uuid import UUID
 
 from app.repositories.documents import DocumentRepository
-from app.services.pdf_upload import PdfInspection, display_name, inspect_pdf, stored_pdf_path
+from app.services.pdf_upload import (
+    DEFAULT_PARSE_TIME_BUDGET_SECONDS,
+    PdfInspection,
+    display_name,
+    inspect_pdf,
+    stored_pdf_path,
+)
 
 
 @dataclass(frozen=True)
@@ -25,8 +31,16 @@ def receive_pdf(
     root: Path,
     max_bytes: int,
     max_pages: int,
+    mime_type: str | None = None,
+    parse_time_budget_seconds: float = DEFAULT_PARSE_TIME_BUDGET_SECONDS,
 ) -> UploadOutcome:
-    inspection = inspect_pdf(data, max_bytes=max_bytes, max_pages=max_pages)
+    inspection = inspect_pdf(
+        data,
+        max_bytes=max_bytes,
+        max_pages=max_pages,
+        mime_type=mime_type,
+        parse_time_budget_seconds=parse_time_budget_seconds,
+    )
     if inspection.status == "rejected":
         return _from_inspection(inspection, None)
     existing = repository.find(owner_id, inspection.sha256)

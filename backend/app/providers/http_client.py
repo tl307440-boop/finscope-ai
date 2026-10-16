@@ -1,7 +1,7 @@
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 
-from app.providers.errors import ProviderError, ProviderTimeout
+from app.providers.errors import ProviderDisconnected, ProviderError, ProviderTimeout
 
 Sleep = Callable[[float], Awaitable[None]]
 
@@ -26,7 +26,7 @@ class Transport:
 
 
 class ResilientHttpClient:
-    """有限次重试。只对 429、503 和超时重试，不会无限循环。"""
+    """有限次重试。只对 429、503、超时和连接中断重试，不会无限循环。"""
 
     def __init__(
         self,
@@ -60,6 +60,13 @@ class ResilientHttpClient:
                     code="UPSTREAM_TIMEOUT",
                     message="上游超时",
                     status_code=504,
+                    attempts=attempt,
+                )
+            except ProviderDisconnected:
+                last_error = ProviderError(
+                    code="UPSTREAM_DISCONNECTED",
+                    message="上游连接中断",
+                    status_code=502,
                     attempts=attempt,
                 )
             else:

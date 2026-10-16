@@ -16,7 +16,9 @@ class RawBar(BaseModel):
     low: Decimal
     close: Decimal
     volume: Decimal
-    amount: Decimal
+    # 不同来源提供的字段不同：东方财富给成交额，腾讯只给成交量。
+    # 缺成交额时留空，界面渲染「—」，绝不用 量×价 之类的办法倒推。
+    amount: Decimal | None = None
     adjustment: Adjustment = "none"
     currency: str = Field(min_length=3, max_length=8)
     unit: str = "price"
@@ -30,7 +32,7 @@ class CheckedBar(BaseModel):
     low: Decimal
     close: Decimal
     volume: Decimal
-    amount: Decimal
+    amount: Decimal | None
     adjustment: Adjustment
     currency: str
     unit: str
@@ -40,9 +42,14 @@ class CheckedBar(BaseModel):
 
 
 def classify_bar(bar: RawBar) -> QualityFlag:
-    """OHLC 不合法或数量为负时拒绝入库。复权后价格偏离过大则进入待审。"""
+    """OHLC 不合法或数量为负时拒绝入库。复权后价格偏离过大则进入待审。
+
+    成交额可以缺（部分来源不提供），但一旦给了负数就照样拒绝。
+    """
     prices = (bar.open, bar.high, bar.low, bar.close)
-    if any(price <= 0 for price in prices) or bar.volume < 0 or bar.amount < 0:
+    if any(price <= 0 for price in prices) or bar.volume < 0:
+        return "rejected"
+    if bar.amount is not None and bar.amount < 0:
         return "rejected"
     if bar.high < max(bar.open, bar.close) or bar.low > min(bar.open, bar.close):
         return "rejected"

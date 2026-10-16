@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import sys
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,7 +34,17 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+def _force_utf8(stream: Any) -> None:
+    """中文日志按 UTF-8 输出，避免 Windows 控制台按 GBK 解码成乱码。"""
+
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
+
+
 def configure_logging(level: str) -> None:
+    _force_utf8(sys.stdout)
+    _force_utf8(sys.stderr)
     root = logging.getLogger()
     root.handlers.clear()
     handler = logging.StreamHandler()

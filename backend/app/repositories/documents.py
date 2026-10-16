@@ -111,9 +111,17 @@ class DocumentRepository:
             {"document_id": document_id, "owner_id": owner_id},
         )
 
-    def claim_next_queued(self, path_prefix: str) -> OwnedFile | None:
+    def claim_next_queued(
+        self, path_prefix: str, document_id: UUID | None = None
+    ) -> OwnedFile | None:
+        """领取一个 queued 文件。给了 document_id 就只领这一份（parse_document 任务用）。"""
+
+        guard = "" if document_id is None else "AND id = :document_id"
+        params: dict[str, object] = {"prefix": path_prefix}
+        if document_id is not None:
+            params["document_id"] = document_id
         return self._claim(
-            """
+            f"""
             UPDATE documents
             SET parse_status = 'parsing', parse_error = NULL
             WHERE id = (
@@ -122,6 +130,7 @@ class DocumentRepository:
                 WHERE parse_status = 'queued'
                   AND storage_path IS NOT NULL
                   AND strpos(storage_path, :prefix) = 1
+                  {guard}
                 ORDER BY uploaded_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
@@ -129,7 +138,7 @@ class DocumentRepository:
             RETURNING id, owner_id, title, storage_path, parse_status, parse_error,
                       page_count, uploaded_at
             """,
-            {"prefix": path_prefix},
+            params,
         )
 
     def _claim(self, statement: str, params: dict[str, object]) -> OwnedFile | None:

@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/vue"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { routes } from "../../src/router"
-import { clearSession, session } from "../../src/stores/auth"
+import { clearSession, useSessionStore } from "../../src/stores/auth"
 import SettingsView from "../../src/views/SettingsView.vue"
 
 function profile(role: "admin" | "researcher") {
@@ -32,6 +32,7 @@ afterEach(() => {
 })
 
 async function renderSettings(role: "admin" | "researcher"): Promise<void> {
+  const session = useSessionStore()
   session.accessToken = "token"
   session.role = role
   vi.stubGlobal(
@@ -58,7 +59,8 @@ describe("账号设置入口", () => {
 
   it("研究者看不到数据源管理入口", async () => {
     await renderSettings("researcher")
-    await screen.findByRole("button", { name: "退出" })
+    // 等账号资料真正加载完（标题是静态的，不能拿它当加载完成的信号）。
+    await screen.findByText("researcher@example.com")
     expect(screen.queryByRole("link", { name: "打开数据源管理" })).toBeNull()
   })
 })
