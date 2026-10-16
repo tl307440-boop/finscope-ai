@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -11,8 +11,19 @@ from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.repositories.chat import ChatRepository, MessageRecord, SessionRecord
+from app.services.assistant_context import macro_chat_evidence
 from app.services.auth_types import UserRecord
-from app.services.chat_reply import event_stream, rules_reply
+from app.services.chat_model import complete_chat
+from app.services.chat_reply import (
+    NO_OBSERVATION_REPLY,
+    answer_with_evidence,
+    event_stream,
+    match_macro_codes,
+    rules_reply,
+)
+from app.services.llm_gateway import model_availability
+from app.services.runtime_settings import effective_settings
+from app.utils.time import utc_now
 
 router = APIRouter(prefix="/assistant", tags=["问答"])
 
@@ -98,7 +109,7 @@ def create_message(
             session_id,
             body.client_message_id,
             body.content,
-            rules_reply,
+            _composer(_engine(request)),
         )
     except ValueError as exc:
         raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
@@ -133,6 +144,31 @@ def cancel_message(
             ),
         ),
     )
+
+
+def _composer(engine: Engine) -> Callable[[str], str]:
+    """没配模型时保持固定说明。配了也只许转述白名单宏观序列，调用发生在入库之前。"""
+
+    def compose(question: str) -> str:
+        settings = effective_settings(engine)
+        available, _message = model_availability(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_api_base_url,
+            model=settings.llm_model,
+        )
+        if not available:
+            return rules_reply(question)
+        codes = match_macro_codes(question)
+        evidence = macro_chat_evidence(engine, codes, utc_now())
+        if codes and not evidence:
+            return NO_OBSERVATION_REPLY
+        return answer_with_evidence(
+            question,
+            evidence,
+            lambda prompt: complete_chat(settings, prompt),
+        )
+
+    return compose
 
 
 def _events(text: str) -> Iterator[str]:
