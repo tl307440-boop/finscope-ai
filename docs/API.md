@@ -162,3 +162,31 @@
 - `POST /api/v1/companies/{instrumentId}/data-requests`（需登录）：缺数据或已过期时登记后台抓取并返回最新状态。队列已有同一任务时不重复登记；失败后 15 分钟内不重试，上游没有这家公司时 24 小时内标 `unavailable`；活跃任务超过 200 条返回 `QUEUE_BUSY`。
 - `GET /api/v1/system/freshness`：`items` 按 `group`（`process` / `macro` / `bars` / `sync`）列出各数据源的状态，`scheduler_running` 来自调度器心跳。阈值：日线 4 天 / 10 天，财报 48 小时 / 7 天，清单 9 天 / 21 天，宏观按频率。
 - A 股公司的 `/financials` 与 `/research` 数据来自东方财富 F10（`data_status=eastmoney`，概念前缀 `cn-gaap:`，累计口径）；美股来自 SEC（`edgar`）。美股日线来源 Tiingo，没配置 `TIINGO_API_KEY` 时 `bars` 为 `unavailable`。
+
+## 账号与注册
+
+| 方法 | 地址 | 说明 |
+|---|---|---|
+| GET | `/api/v1/auth/options` | 公开：`{allow_registration}`，登录页据此决定是否显示注册入口。 |
+| POST | `/api/v1/auth/register` | `{username,email,password}`。永远创建 `researcher`，账号名小写化，密码至少 8 位且含字母与数字；成功后自动登录（同 login 的返回）。关闭注册时 403 `REGISTRATION_CLOSED`；同一 IP 每小时超过 `REGISTER_MAX_PER_HOUR` 次 429。 |
+| POST | `/api/v1/me/password` | `{current_password,new_password}`。成功后撤销该用户所有会话再为当前设备重新签发。 |
+
+## 密钥与数据源配置（仅管理员）
+
+| 方法 | 地址 | 说明 |
+|---|---|---|
+| GET | `/api/v1/admin/integrations` | 列出可管理项：来源（界面 / 环境变量 / 未配置）、是否已配置、掩码值（`••••a1b2`）。**永远不返回明文。** |
+| PUT | `/api/v1/admin/integrations/{key}` | `{value}` 加密保存。`key` 在白名单内：`TIINGO_API_KEY`、`FRED_API_KEY`、`SEC_USER_AGENT`、`LLM_API_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`、`ALLOW_REGISTRATION`。 |
+| DELETE | `/api/v1/admin/integrations/{key}` | 清除界面保存的值，退回环境变量。 |
+| POST | `/api/v1/admin/integrations/{key}/test` | 用当前生效的值真实探测一次对应服务，只回报成功与否和原因，不回显密钥。 |
+
+## 中国宏观与宏观状态快照
+
+- 中国宏观六序列（CPI、PPI、PMI、M2、工业增加值、社会融资规模）由 `china_macro` 任务从东方财富数据中心与商务部公开接口抓取。接口没有发布日期，`published_at` 取保守上界（CPI/PPI 次月 15 日、PMI 次月 1 日、M2/工业增加值/社融 次月 20 日）；`GET /api/v1/macro/china/...` 的时间旅行以该日期为准。
+- `GET /api/v1/macro/regime-history?limit=60`：定时任务保存的宏观状态判断快照（`as_of`、`regime_code`、增长/通胀/流动性得分、规则版本、计算时间），同一 `(as_of, model_version)` 重算只更新一行。
+
+## 财务体检快照
+
+`GET /api/v1/companies/{instrument_id}/metrics?as_of=YYYY-MM-DD`
+
+返回定时任务 `financial_metrics` 写入的最新一期指标：`revenue_yoy`、`net_income_yoy`、`gross_margin`、`debt_ratio`、`current_ratio`、`cfo_to_net_income`。每项含 `value`（字符串小数，算不出为 null）、`unit`（`%` 或 `x`）、`quality_flag`（`ok` / `unavailable`）、`reason`（算不出的原因）、`published_at` 与 `inputs`（取数来源：科目、申报单号、来源链接）。只在 `published_at <= as_of` 时可见；没有真实披露的公司返回 `status=empty`，不会用样例补。

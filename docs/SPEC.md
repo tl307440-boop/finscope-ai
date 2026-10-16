@@ -567,7 +567,15 @@ ENABLE_NEWS=false
 DATA_MODE=live
 UPLOAD_MAX_MB=30
 LOG_LEVEL=INFO
+SETTINGS_ENCRYPTION_KEY=
+ALLOW_REGISTRATION=true
+REGISTER_MAX_PER_HOUR=5
+ADMIN_USERNAME=
+ADMIN_EMAIL=
+ADMIN_PASSWORD=
 ```
+
+`SETTINGS_ENCRYPTION_KEY` 为空时用 `JWT_SECRET` 派生；管理员在「数据管理」里填写的密钥（TIINGO / FRED / SEC_USER_AGENT / LLM_*）用它加密后存进 `app_settings` 表，优先于环境变量，只返回掩码，api / worker / scheduler 共用同一份并在几秒内生效。更换主密钥会让已存密文无法解密，需要重新填写。`ADMIN_*` 在 API 启动时创建首个管理员（已存在则跳过，不覆盖密码）；自助注册永远只产生 `researcher` 角色。
 
 `research-admin@example.com` 是占位符，生产/联网上线前必须改为真实且有效的联系标识；默认 `DATA_MODE=live` 时不可偷偷回退到 mock。demo 模式应在 UI 顶部显著展示“演示数据/非实时”。
 

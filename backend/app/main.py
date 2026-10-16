@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import cast
@@ -5,11 +6,12 @@ from typing import cast
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import Engine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 from app.api.v1.router import router as api_router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import (
     AppError,
     app_error_handler,
@@ -19,10 +21,28 @@ from app.core.exceptions import (
 )
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware
+from app.core.security import PasswordService
 from app.db.session import create_db_engine
+from app.repositories.accounts import AccountRepository
+from app.services.accounts import bootstrap_admin
 from app.services.login_limiter import LoginRateLimiter
 
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
+
+
+def _bootstrap_admin(engine: Engine, settings: Settings) -> None:
+    """环境变量里给了 ADMIN_* 就在启动时创建首个管理员；数据库没就绪时只告警，不阻止启动。"""
+
+    try:
+        bootstrap_admin(
+            AccountRepository(engine),
+            PasswordService(settings.app_env),
+            username=settings.admin_username,
+            email=settings.admin_email,
+            password=settings.admin_password,
+        )
+    except Exception:
+        logging.getLogger(__name__).warning("admin bootstrap skipped: database not ready")
 
 
 def create_app() -> FastAPI:
@@ -37,6 +57,15 @@ def create_app() -> FastAPI:
             max_failures=settings.login_max_failures,
             window_seconds=settings.login_failure_window_seconds,
         )
+        app.state.register_limiter = LoginRateLimiter(
+            max_failures=settings.register_max_per_hour,
+            window_seconds=3600,
+        )
+        app.state.password_limiter = LoginRateLimiter(
+            max_failures=settings.login_max_failures,
+            window_seconds=settings.login_failure_window_seconds,
+        )
+        _bootstrap_admin(engine, settings)
         yield
         engine.dispose()
 
@@ -50,7 +79,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
         expose_headers=["X-Request-ID"],
     )

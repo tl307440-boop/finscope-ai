@@ -1,5 +1,5 @@
 import { defineStore } from "pinia"
-import { apiUrl, errorFrom, readJson } from "../api/client"
+import { apiUrl, authorizedFetch, errorFrom, readJson } from "../api/client"
 
 export type Role = "researcher" | "admin"
 
@@ -73,6 +73,75 @@ export async function login(
     throw errorFrom(body, response.headers.get("X-Request-ID"))
   }
   useSessionStore().apply(body)
+}
+
+/** 登录页要不要显示「注册」；接口失败时按未开放处理，不让用户点进一个走不通的流程。 */
+export async function fetchRegistrationOpen(fetcher: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const response = await fetcher(apiUrl("/api/v1/auth/options"))
+    if (!response.ok) {
+      return false
+    }
+    const data = asRecord(asRecord(await readJson(response))?.data)
+    return data?.registration_open === true
+  } catch {
+    return false
+  }
+}
+
+export async function register(
+  username: string,
+  email: string,
+  password: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetcher(apiUrl("/api/v1/auth/register"), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, email, password }),
+  })
+  const body = await readJson(response)
+  if (!response.ok) {
+    throw errorFrom(body, response.headers.get("X-Request-ID"))
+  }
+  useSessionStore().apply(body)
+}
+
+/** 改密码成功后服务端已作废其它设备的登录，并给本机签发了新令牌。 */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const session = useSessionStore()
+  const response = await authorizedFetch(
+    "/api/v1/me/password",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    },
+    session.accessToken,
+    async () => ((await restoreSession(fetcher)) ? session.accessToken : null),
+    fetcher,
+  )
+  const body = await readJson(response)
+  if (!response.ok) {
+    throw errorFrom(body, response.headers.get("X-Request-ID"))
+  }
+  session.apply(body)
+}
+
+/** 前端先拦一遍明显不合格的密码，真正的校验在服务端。 */
+export function passwordHint(password: string): string | null {
+  if (password.length < 8) {
+    return "密码至少 8 位"
+  }
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    return "密码需要同时包含字母和数字"
+  }
+  return null
 }
 
 export async function restoreSession(fetcher: typeof fetch = fetch): Promise<boolean> {

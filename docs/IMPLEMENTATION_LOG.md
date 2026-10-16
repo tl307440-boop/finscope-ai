@@ -1044,3 +1044,74 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 注册 Tiingo 免费密钥，写进 `.env` 的 `TIINGO_API_KEY` 后验证美股日线。
 - 搜索框对「正在抓取」的公司给出提示，而不只在公司页提示。
+
+## 2026-10-16 界面管理密钥、注册、中国宏观数据源、三类调度执行器、外国发行人财报
+
+### 本轮范围
+
+- 把密钥填写逻辑放进客户端（管理员在界面填写，加密存库）。
+- 登录页补上「注册新账号」和修改密码，打通首个管理员的创建。
+- 补齐中国宏观六序列的数据源。
+- `financial_metrics`、`macro_regime`、`hotspot` 三类调度任务补上执行器。
+- 美股外国发行人（20-F / 40-F / 6-K）的 IFRS 科目归一。
+- 新增 `docs/使用说明.md`。
+
+### 变更
+
+**界面管理密钥**
+
+- 新表 `app_settings`（迁移 `20261016_0021`），值用 Fernet 加密；主密钥取 `SETTINGS_ENCRYPTION_KEY`，为空用 `JWT_SECRET` 派生。
+- `effective_settings(engine)` = 环境变量 `Settings` 叠加数据库里的值，数据库优先，带 5 秒缓存；api / worker / scheduler 三个进程读同一份，保存后几秒内全部生效，不需要重启。
+- 管理员接口 `GET/PUT/DELETE /admin/integrations`、`POST /admin/integrations/{key}/test`；接口只返回掩码，不返回明文，不进日志；`httpx` 日志降到 WARNING（上游密钥在查询串里）。只有白名单内的键可管理。
+- 前端「数据管理 → 密钥与数据源配置」面板，含测试连接、清除（退回环境变量）、开放注册开关。
+
+**注册与账号**
+
+- `POST /auth/register`（永远创建 `researcher`、账号小写化、密码强度校验、每 IP 每小时限额）、`GET /auth/options`、`POST /me/password`（成功后撤销所有会话再为当前设备重发）。
+- API 启动时按 `ADMIN_*` 自动创建首个管理员；已存在则跳过，不覆盖密码；密码不满足策略则告警并跳过。
+- 登录页新增注册入口，是否显示由 `ALLOW_REGISTRATION` / 界面开关决定。
+
+**中国宏观六序列**
+
+- `providers/china_macro_sources.py`：东方财富数据中心 `RPT_ECONOMY_*`（CPI、PPI、PMI、M2、工业增加值）+ 商务部 `shrzgmQuery`（社会融资规模，单位亿元）。
+- 上游没有发布日期，`published_at` 取保守上界（CPI/PPI 次月 15 日、PMI 次月 1 日、M2/工业增加值/社融 次月 20 日）；按「序列 + 观察月 + 可见日」幂等写入。
+- `china_macro` 调度任务（每日）；部分来源失败时保留已成功写入的，再抛 `UPSTREAM_PARTIAL`。中国序列的 `MacroSeries.enabled` 保持 False（该字段同时控制美国目录）。
+
+**三类调度执行器**
+
+- `financial_metrics`：对被关注的美股和 A 股逐家计算营收同比、净利润同比、毛利率、资产负债率、流动比率、经营现金流 / 净利润，写入 `financial_metrics`。只读真实披露事实（`company_facts.live_facts`），没有就写 0 行；算不出的存 NULL 并写明原因；每项带取数来源；没有自己来源的指标用整套事实最晚的披露日当可见日期，避免时间旅行时提前露面。新接口 `GET /companies/{id}/metrics`，公司页新增「体检快照」面板。
+- `macro_regime`：迁移 `20261016_0022` 新表 `macro_regime_snapshots`，`(as_of, model_version)` 唯一，重算只更新该行；`GET /macro/regime-history`；宏观情景页新增「判断历史」面板。
+- `hotspot_events`：只收巨潮资讯 / SEC EDGAR 官方披露（近 14 天，每个市场最多 60 家被关注公司），限速、重试、失败项如实写进任务信息；`SCHEDULER_HOTSPOT_SOURCE` 默认 `disclosures`，来源为空时如实标不可用。
+- 三个开关默认开启；`system_freshness` 增加三项任务的新鲜度；任务用本地派生来源 `derived_local`。
+- `facts_for_instrument`、`visible_sample_facts`、`LIVE_STATUSES` 从 `api/v1/companies.py` 移到 `services/company_facts.py`，接口、分析、定时任务共用同一口径。
+
+**外国发行人（20-F / 40-F / 6-K）**
+
+- `SEC_FORMS` 增加 20-F、40-F、6-K；`SEC_CONCEPTS` 之外接受已映射的 `ifrs-full` 概念。
+- `services/ifrs.py`：读取时把 IFRS 概念映射成内部 us-gaap 短名（归母净利润优先于合并净利润等），并且一家公司只保留一种报告币种，不做汇率换算；库里仍保留原始概念与币种。接口、体检快照、分析师桥接都走同一归一函数。
+- 修了营收概念列表里重复的 `RevenueFromContractWithCustomerIncludingAssessedTax`。
+- 前端补充新台币、日元、丹麦克朗等币种名称；柱状图不再只限 USD / CNY。
+
+**部署与文档**
+
+- `docker-compose.yml` 透传 `ADMIN_*`、`SETTINGS_ENCRYPTION_KEY`、`ALLOW_REGISTRATION`，`JWT_SECRET`、数据库口令、`APP_ENV`、`FRONTEND_ORIGIN` 改为可由环境变量覆盖；`.env.example` 同步。
+- 新增 `docs/使用说明.md`；`README.md`、`docs/API.md`、`docs/SPEC.md` 同步。
+
+### 验证
+
+- 后端：`ruff check`、`ruff format --check`、`mypy app` 通过；`pytest` 在开发库上全绿（仅有 2 个按设计跳过的用例，原因是缺少 AAPL 的真实 EDGAR 财报）。新增单元测试（`test_metrics_snapshot`、`test_ifrs`、`test_secret_box`、`test_account_rules`、`test_china_macro_sources`）和集成测试（`test_scheduled_executors`、`test_integrations_api`、`test_registration_api`、`test_china_macro_sync`），集成测试自己清理造的数据，并还原开发库里管理员填过的设置。
+- 前端：`vue-tsc`、`vitest`（112 个）、`vite build` 通过。
+- 联网实测：TSM（20-F，新台币）和 NVO（20-F，丹麦克朗）真实抓取后，体检快照能算出营收同比、毛利率等；TSM 2024 财年营收同比 33.89%、毛利率 56.12%，与公开披露一致。
+
+### 已知局限
+
+- 中国宏观的发布日是保守上界，不是官方真实发布日。
+- 20-F / 6-K 公司只覆盖已映射的核心科目，用了自定义科目的公司对应指标会为空；不做汇率换算，界面按报告币种展示。
+- 热点只统计官方披露条数；单次最多处理 60 家 A 股和 60 家美股被关注公司，其余下一轮。
+- 更换 `SETTINGS_ENCRYPTION_KEY`（或未设置时更换 `JWT_SECRET`）会让库里已加密的密钥无法解密，需要管理员重新填写。
+- 密钥保存、测试连接对真实第三方服务的联通性取决于使用者自己的密钥，本轮没有用真实付费密钥验证。
+
+### 下一步
+
+- 把宏观同比、行情涨跌幅等仍在前端换算的数字移到后端。
+- 为 `ifrs` 归一补充更多科目（如利息、折旧）与 6-K 季度口径核对。

@@ -8,16 +8,18 @@ from sqlalchemy import Engine
 
 from app.api.deps import require_admin
 from app.api.responses import success_response
-from app.core.config import get_settings
 from app.core.exceptions import AppError
-from app.providers.vintage import VintagePoint, pit_date, select_visible
+from app.providers.vintage import pit_date, select_visible
 from app.repositories.macro import MacroRepository
 from app.repositories.macro_china import MacroChinaRepository
+from app.repositories.macro_regime import MacroRegimeRepository
 from app.schemas.auth import fred_availability
 from app.schemas.macro import build_assessment, build_catalog, build_observations
 from app.services.auth_types import UserRecord
 from app.services.china_macro import CHINA_SERIES, parse_macro_csv, public_status
-from app.services.macro_rules import MacroPoint, assess_macro
+from app.services.macro_regime import assess_as_of
+from app.services.macro_rules import RULE_NOTICE
+from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
 
 router = APIRouter(prefix="/macro", tags=["宏观"])
@@ -55,7 +57,8 @@ def _repository(request: Request) -> MacroRepository:
 @router.get("/series", summary="美国宏观序列目录")
 def read_macro_series(request: Request) -> JSONResponse:
     seeds = _repository(request).list_series()
-    payload = build_catalog(seeds, availability=fred_availability(get_settings()))
+    settings = effective_settings(cast(Engine, request.app.state.engine))
+    payload = build_catalog(seeds, availability=fred_availability(settings))
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 
@@ -83,27 +86,56 @@ def read_macro_assessment(
     as_of: Annotated[str | None, Query()] = None,
 ) -> JSONResponse:
     pit = _parse_as_of(as_of)
-    repository = _repository(request)
-    points: list[MacroPoint] = []
-    for series_code in ("GDP", "CPIAUCSL", "FEDFUNDS"):
-        rows = repository.list_vintages(series_code, start=None, end=None)
-        if rows is None:
-            continue
-        points.extend(_points(series_code, select_visible(rows, pit)))
-    payload = build_assessment(assess_macro(points), pit)
+    payload = build_assessment(assess_as_of(_repository(request), pit), pit)
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 
-def _points(series_code: str, rows: list[VintagePoint]) -> list[MacroPoint]:
-    return [
-        MacroPoint(
-            series_code=series_code,
-            observation_date=row.observation_date,
-            value=row.value,
-            realtime_start=row.realtime_start,
-        )
-        for row in rows
-    ]
+class RegimeHistoryItem(BaseModel):
+    as_of: date
+    model_version: str
+    rule_version: str
+    regime_code: str
+    growth: int | None = None
+    inflation: int | None = None
+    liquidity: int | None = None
+    computed_at: datetime
+
+
+class RegimeHistory(BaseModel):
+    items: list[RegimeHistoryItem]
+    notice: str
+
+
+def _score_of(payload: dict[str, object], key: str) -> int | None:
+    block = payload.get(key)
+    value = block.get("value") if isinstance(block, dict) else None
+    return value if isinstance(value, int) else None
+
+
+@router.get("/regime-history", summary="定时任务留下的宏观状态判断快照（按观察日倒序）")
+def read_regime_history(
+    request: Request,
+    limit: Annotated[int, Query(ge=1, le=366)] = 60,
+) -> JSONResponse:
+    engine = cast(Engine, request.app.state.engine)
+    rows = MacroRegimeRepository(engine).history(limit)
+    payload = RegimeHistory(
+        items=[
+            RegimeHistoryItem(
+                as_of=row.as_of,
+                model_version=row.model_version,
+                rule_version=row.rule_version,
+                regime_code=row.regime_code,
+                growth=_score_of(row.payload, "growth"),
+                inflation=_score_of(row.payload, "inflation"),
+                liquidity=_score_of(row.payload, "liquidity"),
+                computed_at=row.computed_at,
+            )
+            for row in rows
+        ],
+        notice=RULE_NOTICE,
+    )
+    return JSONResponse(status_code=200, content=success_response(request, payload))
 
 
 def _parse_as_of(value: str | None) -> date:

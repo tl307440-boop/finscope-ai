@@ -2,22 +2,33 @@ from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import Engine
 
-from app.api.deps import device_label_from, get_auth_service, get_current_user
+from app.api.deps import (
+    device_label_from,
+    get_account_service,
+    get_auth_service,
+    get_current_user,
+)
 from app.api.responses import success_response
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.core.security import REFRESH_COOKIE, refresh_cookie_secure
 from app.schemas.auth import (
+    AuthOptions,
+    ChangePasswordRequest,
     LoginData,
     LoginRequest,
     MeData,
     PreferencePublic,
     PreferenceUpdate,
+    RegisterRequest,
     UserPublic,
 )
+from app.services.accounts import AccountService
 from app.services.auth import AuthService, LoginResult
 from app.services.auth_types import PreferenceRecord, UserRecord
+from app.services.runtime_settings import effective_settings
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 me_router = APIRouter(tags=["认证"])
@@ -40,9 +51,9 @@ def _public_preferences(preferences: PreferenceRecord) -> PreferencePublic:
     )
 
 
-def _login_body(request: Request, result: LoginResult) -> JSONResponse:
+def _login_body(request: Request, result: LoginResult, status_code: int = 200) -> JSONResponse:
     payload = LoginData(access_token=result.access_token, user=_public_user(result.user))
-    response = JSONResponse(status_code=200, content=success_response(request, payload))
+    response = JSONResponse(status_code=status_code, content=success_response(request, payload))
     _attach_refresh_cookie(response, result.refresh_token, get_settings())
     return response
 
@@ -83,6 +94,39 @@ def login(
     return _login_body(request, result)
 
 
+def _registration_open(request: Request) -> bool:
+    return effective_settings(cast(Engine, request.app.state.engine)).allow_registration
+
+
+@router.get("/options", summary="登录页需要的公开选项（是否开放注册）")
+def auth_options(request: Request) -> JSONResponse:
+    payload = AuthOptions(registration_open=_registration_open(request))
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.post("/register", summary="注册研究员账号并自动登录")
+def register(
+    body: RegisterRequest,
+    request: Request,
+    service: Annotated[AccountService, Depends(get_account_service)],
+) -> JSONResponse:
+    if not _registration_open(request):
+        raise AppError(
+            code="REGISTRATION_CLOSED",
+            message="当前不开放注册，请联系管理员创建账号",
+            status_code=403,
+        )
+    client = request.client.host if request.client else "unknown"
+    result = service.register(
+        username=body.username,
+        email=body.email,
+        password=body.password,
+        client_key=f"reg:{client}",
+        device_label=device_label_from(request),
+    )
+    return _login_body(request, result, status_code=201)
+
+
 @router.post("/refresh", summary="刷新访问令牌")
 def refresh(
     request: Request,
@@ -112,6 +156,22 @@ def read_me(
     preferences = service.preferences_for(user.id)
     payload = MeData(user=_public_user(user), preferences=_public_preferences(preferences))
     return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@me_router.post("/me/password", summary="修改密码（其它设备的登录会失效）")
+def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+    service: Annotated[AccountService, Depends(get_account_service)],
+) -> JSONResponse:
+    result = service.change_password(
+        user=user,
+        current_password=body.current_password,
+        new_password=body.new_password,
+        device_label=device_label_from(request),
+    )
+    return _login_body(request, result)
 
 
 @me_router.patch("/me/preferences", summary="更新个人偏好")

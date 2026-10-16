@@ -9,7 +9,6 @@ from sqlalchemy import Engine
 
 from app.api.deps import get_current_user
 from app.api.responses import success_response
-from app.api.v1.companies import facts_for_instrument
 from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.repositories.document_chunks import ChunkRepository
@@ -17,9 +16,11 @@ from app.repositories.instruments import InstrumentRepository
 from app.repositories.reports import ReportRepository, SavedReport
 from app.schemas.research import RESEARCH_NOTICE
 from app.services.auth_types import UserRecord
+from app.services.company_facts import facts_for_instrument
 from app.services.document_index import search_owned_documents
 from app.services.filing_report import compose_filing_report
 from app.services.llm_gateway import LanguageModel, model_availability
+from app.services.runtime_settings import effective_settings
 
 router = APIRouter(prefix="/analysis", tags=["分析"])
 
@@ -74,7 +75,7 @@ def _run_data(saved: SavedReport) -> AnalysisRunData:
 
 @router.get("/model-status", summary="模型是否已配置")
 def model_status(request: Request) -> JSONResponse:
-    settings = get_settings()
+    settings = effective_settings(cast(Engine, request.app.state.engine))
     available, message = model_availability(
         api_key=settings.llm_api_key,
         base_url=settings.llm_api_base_url,

@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select, update
 from sqlalchemy.orm import Session
 
 from app.db.models.account import RefreshSession, User, UserPreference
@@ -20,7 +20,13 @@ class AccountRepository:
 
     def get_by_username(self, username: str) -> UserRecord | None:
         with Session(self.engine) as session:
-            row = session.scalars(select(User).where(User.username == username)).one_or_none()
+            # 账号不区分大小写；有精确同名的老账号时优先用它。
+            row = session.scalars(
+                select(User)
+                .where(func.lower(User.username) == username.lower())
+                .order_by((User.username == username).desc())
+                .limit(1)
+            ).first()
             return None if row is None else _user_record(row)
 
     def get_by_id(self, user_id: uuid.UUID) -> UserRecord | None:
@@ -70,6 +76,26 @@ class AccountRepository:
         if created is None:
             raise RuntimeError("user disappeared after insert")
         return created
+
+    def set_password(self, user_id: uuid.UUID, password_hash: str, now: datetime) -> None:
+        with Session(self.engine) as session:
+            row = session.get(User, user_id)
+            if row is None:
+                return
+            row.password_hash = password_hash
+            row.updated_at = now
+            session.commit()
+
+    def admin_count(self) -> int:
+        with Session(self.engine) as session:
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(User)
+                    .where(User.role == "admin", User.is_active.is_(True))
+                )
+                or 0
+            )
 
     def deactivate(self, user_id: uuid.UUID, now: datetime) -> None:
         with Session(self.engine) as session:
@@ -166,6 +192,18 @@ class RefreshSessionRepository:
                 return
             row.revoked_at = now.astimezone(UTC)
             session.commit()
+
+    def revoke_all(self, user_id: uuid.UUID, now: datetime) -> int:
+        """改密码后让这个账号所有设备上的登录凭证失效。"""
+
+        with Session(self.engine) as session:
+            result = session.execute(
+                update(RefreshSession)
+                .where(RefreshSession.user_id == user_id, RefreshSession.revoked_at.is_(None))
+                .values(revoked_at=now.astimezone(UTC))
+            )
+            session.commit()
+            return int(getattr(result, "rowcount", 0) or 0)
 
 
 def _user_record(row: User) -> UserRecord:

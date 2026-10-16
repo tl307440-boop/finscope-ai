@@ -19,6 +19,7 @@ from app.repositories.cn_financials import CnFinancialRepository
 from app.repositories.filings import FactRecord, FilingRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.market_bars import MarketBarRepository
+from app.services.ifrs import normalize_facts
 from app.services.macro_rules import MacroAssessment, MacroPoint, assess_macro
 from app.services.market_temperature import (
     PriceBar,
@@ -229,7 +230,8 @@ class FinScopeDataBridge:
             return []
         # 随包样例（status=fixture）只服务于离线测试，不能混进真实推演。
         facts = repository.list_facts(subject.cik, self.as_of)
-        return [item for item in facts if item.filing_status == "edgar"]
+        # 20-F / 6-K 的 IFRS 概念和多币种在这里归一，分析师只认 us-gaap 短名。
+        return normalize_facts([item for item in facts if item.filing_status == "edgar"])
 
     def announcements(self, subject: Subject, days: int = 90) -> list[Announcement]:
         start = self.cutoff - timedelta(days=days)
