@@ -1,0 +1,24 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 5,
+        "examples": [
+          "div.state.denied「研究假设属于个人记录，登录后可以写下假设并附上财」（外层 section.card.flush）",
+          "div.state.empty「成分公司的财报事实尚未入库（目前只收录美股 SE」（外层 section.card.tone-accent）",
+          "div.state.denied「登录并为假设附上依据后，这里按日期展示事件节点」（外层 section.card.tone-orange）"
+        ]
+      }
+    ]
+  }
+]

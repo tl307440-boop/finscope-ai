@@ -1,0 +1,61 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh",
+      "横向溢出：页面宽 3301px，视口 1600px"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 25,
+        "examples": [
+          "div.state.empty「最新收盘 暂无已同步的日线。未同步的日期不会用演」（外层 section.card.tone-accent）",
+          "div.tile「应收账款 ? 15 期已申报 218370000」（外层 section#sec-finance.card.tone-ok）",
+          "div.tile「总资产 ? 15 期已申报 3374110000」（外层 section#sec-finance.card.tone-ok）"
+        ]
+      },
+      {
+        "rule": "englishLabel",
+        "label": "中文界面里的英文大写标签",
+        "count": 2,
+        "examples": [
+          "dd「NASDAQ · US」",
+          "em「SEC EDGAR」"
+        ]
+      },
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 1,
+        "examples": [
+          "p.footnote「接口本次返回 15 个概念：应收账款（USD）、」（12px）"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 2,
+        "examples": [
+          "p.footnote「接口本次返回 15 个概念：应收账款（USD）、」（每行约 70 字）",
+          "p「PE / PB / PS 需要总市值或股价×股本」（每行约 73 字）"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 6,
+        "examples": [
+          "span.pill.tone-muted「not_evaluated」（4.41:1）",
+          "span.pill.tone-muted「not_evaluated」（4.41:1）",
+          "span.pill.tone-muted「not_evaluated」（4.41:1）"
+        ]
+      }
+    ]
+  }
+]

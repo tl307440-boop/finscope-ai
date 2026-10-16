@@ -1,0 +1,32 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 6,
+        "examples": [
+          "div.state.empty「暂无核心财务指标 该证券没有 CIK，接口不会返」（外层 section#sec-finance.card.tone-ok）",
+          "div.state.empty「接口未返回风险标记 本地样例，不是本次从 SEC」（外层 section#sec-risks.card.tone-danger）",
+          "div.state.empty「暂无可画趋势的已申报数值 该证券没有 CIK，接」（外层 section#sec-trend.card.tone-ok）"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 1,
+        "examples": [
+          "p「PE / PB / PS 需要总市值或股价×股本」（每行约 73 字）"
+        ]
+      }
+    ]
+  }
+]

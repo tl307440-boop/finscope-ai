@@ -1,0 +1,24 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 5,
+        "examples": [
+          "div.model-banner「模型暂不可用 未配置模型，不会生成 AI 段落。」（外层 section.card.flush）",
+          "div.tile「美国10年期国债收益率 2026-10-14 5」（外层 section.card.tone-accent）",
+          "div.tile「美国2年期国债收益率 2026-10-14 4.」（外层 section.card.tone-accent）"
+        ]
+      }
+    ]
+  }
+]

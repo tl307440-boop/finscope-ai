@@ -1,0 +1,24 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 4,
+        "examples": [
+          "div.tile「美国消费者物价指数 2026-09-01 336」（外层 section.card.compact）",
+          "div.tile「美国10年期国债收益率 2026-10-14 5」（外层 section.card.compact）",
+          "div.tile「美国2年期国债收益率 2026-10-14 4.」（外层 section.card.compact）"
+        ]
+      }
+    ]
+  }
+]

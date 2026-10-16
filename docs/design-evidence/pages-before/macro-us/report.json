@@ -1,0 +1,33 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "smallText",
+        "label": "正文小于 13px",
+        "count": 5,
+        "examples": [
+          "p.chart-note「纵轴是「指数水平」而不是同比百分比，所以 2% 」（12px）",
+          "p.chart-note「效果图里的「基准/乐观/悲观 概率 25%–50」（12px）",
+          "p.chart-note「后端接口只返回 regime_code / re」（12px）"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 2,
+        "examples": [
+          "p.chart-note「横轴固定为 3M/6M/1Y/2Y/3Y/5Y/」（每行约 52 字）",
+          "span.note「注：指标带取序列原始口径的观测值，较上期为相邻两」（每行约 108 字）"
+        ]
+      }
+    ]
+  }
+]

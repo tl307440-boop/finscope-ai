@@ -1,0 +1,32 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "englishLabel",
+        "label": "中文界面里的英文大写标签",
+        "count": 3,
+        "examples": [
+          "div.cell「FEDFUNDS」",
+          "div.cell「CPIAUCSL」",
+          "div.cell「PCEPILFE」"
+        ]
+      },
+      {
+        "rule": "longMeasure",
+        "label": "正文行太长",
+        "count": 1,
+        "examples": [
+          "p.doc-text「后端序列目录里没有「货币供应量 / 流动性总量」」（每行约 99 字）"
+        ]
+      }
+    ]
+  }
+]

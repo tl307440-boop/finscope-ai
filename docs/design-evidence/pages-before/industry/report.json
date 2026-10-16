@@ -1,0 +1,32 @@
+[
+  {
+    "file": "page.png",
+    "state": null,
+    "size": "1600x1000",
+    "zoom": 1,
+    "animationWaitMs": 0,
+    "issues": [
+      "加载错误：Failed to load resource: the server responded with a status of 401 (Unauthorized) http://localhost:5173/api/v1/auth/refresh"
+    ],
+    "lint": [
+      {
+        "rule": "nestedCards",
+        "label": "卡片里套卡片",
+        "count": 3,
+        "examples": [
+          "div.state.denied「研究假设属于登录用户自己的记录，登录后可以写下假」（外层 section.card.tone-accent）",
+          "div.state.denied「时间线来自你为假设附上的依据，登录后才会出现节点」（外层 section.card.tone-orange）",
+          "div.state.empty「还没有假设，因此没有状态分布」（外层 section.card.tone-accent）"
+        ]
+      },
+      {
+        "rule": "contrastLow",
+        "label": "文字对比度不达标（正文低于 4.5:1，大字低于 3:1）",
+        "count": 1,
+        "examples": [
+          "a「登录后可以写假设并附依据」（4.39:1）"
+        ]
+      }
+    ]
+  }
+]

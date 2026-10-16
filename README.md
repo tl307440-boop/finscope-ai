@@ -87,9 +87,10 @@ uv run python -m app.scripts.seed
 
 - `docs/SPEC.md`：完整详细设计规格书。
 - `docs/TASKS.md`：T00 起的分阶段任务与验收清单。
-- `docs/API.md`：接口说明。
+- `docs/API.md`：接口说明（含 `/companies/{id}/financials` 与 `/simulation/*`）。
 - `docs/UI-设计规范.md`：界面规范。栅格尺寸、颜色 token、组件清单、图表规则，
   以及十张效果图到路由的对照表。改页面前先看这一份。
+- `docs/design-evidence/`：界面改版的截图取证（改前 / 每轮 / 改后）。
 - `docs/IMPLEMENTATION_LOG.md`：每轮的变更、验证和已知局限。
 - `docs/thesis/`：论文与答辩材料（测试与图表、结构图、ER 图、架构图、业务流程图、
   用例图、部署与演示）。
@@ -105,15 +106,49 @@ A 股日线按顺序尝试两个免费上游，第一个通了就用：
 腾讯不返回成交额时，`amount` 存 `NULL`、界面显示「—」，
 不用 量×价 之类的办法补一个看起来合理的数字。
 
-美国宏观走 FRED（需要 `FRED_API_KEY`），中国宏观只接受官方导出的 CSV 导入。
-没有配置时接口返回 `unavailable` 并说明原因，页面照实显示空态。
+美国宏观走 FRED：配置了 `FRED_API_KEY` 用官方 API（带 ALFRED 历史版本）；
+没配置时改用 FRED 官方公开 CSV（`fredgraph.csv`，免密钥），availability 标为 `public_csv`。
+公开 CSV 只有最新修订值，没有历史版本，所以每次抓取都把可见起点记为抓取当天
+（纽约时间 6 点前算前一天），历史时点回看时不会提前看到数据。
+中国宏观只接受官方导出的 CSV 导入。
+
+公告只收官方披露平台：巨潮资讯（A 股，`hisAnnouncement/query`）和 SEC EDGAR submissions（美股），
+标题按关键词归类为业绩 / 分红 / 问询 / 定期报告 / 治理 / 其他，保留原文链接。
+
+行业归属用申万一级行业（2021 版），只覆盖参考证券池里的 20 只 A 股，人工整理
+（`backend/app/catalog/industry_reference.py`，来源标记 `sw2021-curated`）。
+
+### 一键灌入真实数据
+
+数据库为空时，在 API 容器里跑一遍引导脚本（只访问上面列出的公开上游）：
+
+```powershell
+docker compose exec api python -m app.scripts.bootstrap_data            # 全部
+docker compose exec api python -m app.scripts.bootstrap_data --only fred,sec
+docker compose exec api python -m app.scripts.bootstrap_data --only none # 只写证券、日历、行业目录
+```
+
+步骤：参考证券与行业目录 → 24 个 A 股标的日线（默认 2025-01-02 起，`--since` 可改）并由上证指数有成交的日子推出开市日 →
+FRED 9 个序列近 6 年 → SEC companyfacts（8 家美股，FY2021 起的 10-K/10-Q 关键科目）→
+巨潮 20 只 A 股 + SEC 8 家美股近 120 天公告。SEC 请求需要 `SEC_USER_AGENT`（带联系邮箱）。
 
 ## 尚未实现
 
-- 美国宏观：没有 `FRED_API_KEY`，`/macro/us` 的观测值拿不到。
+- 美国宏观：没有 `FRED_API_KEY` 时只有公开 CSV 的最新修订值，没有 ALFRED 历史版本（BLOCKED：需要密钥）。
 - 中国宏观：没有官方 CSV 入库，六个序列都是 `unavailable`。
 - AI 段落：没有配置 `LLM_*`，财报解读走规则分支，不会生成模型文字。
-- 热点与公告：`ENABLE_NEWS=false` 且未导入合规公告，`/hotspots` 是空态。
+- 推演沙盘（`/simulation/mvp`）：默认是确定性规则引擎，分析师 → 多空辩论 → 交易员 → 风控三方 → 组合经理，
+  另有决策记忆和网格实验，不调用模型。
+  - TradingAgents 原版图（`engine=tradingagents`）需要 `LLM_*`，没配置时接口返回 `LLM_NOT_CONFIGURED`，
+    真实模型路径未验证（BLOCKED：需要密钥）。
+  - 人在回路干预与 `/graph`、`/debates` 子路由未实现（NOT_IMPLEMENTED）。
+- 行情涨跌幅、均线偏离与宏观同比 / 较上期仍由前端用接口返回的原始收盘价或观测值换算，
+  与 `docs/UI-设计规范.md`「前端不算财务数字」不一致，待移到后端。
+  财报类数字（同比、毛利率、负债率、规则读数、公司页区间涨跌幅）已全部由后端计算。
+- A 股财报：未接入（NOT_IMPLEMENTED），A 股公司页只有日线与公告，财务区为空态。
+- 美股日线：未接入（NOT_IMPLEMENTED），美股公司页只有 SEC 财报与公告。
+- 板块强弱：成分不少于 3 只才出分，目前只有银行、非银金融、食品饮料三个板块可算。
+- 热点只按官方公告条数统计，没有媒体新闻与情绪分。
 - 调度器里的 `compute_financial_metrics`、`compute_macro_regime`、
   `refresh_hotspot_events` 只登记了触发与幂等键，执行器未接，默认关闭。
 - 报告没有 PDF 导出接口。

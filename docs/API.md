@@ -98,6 +98,32 @@
 
 `GET /api/v1/companies/{instrumentId}/research?as_of=2024-06-01&period_a=2022-12-31&period_b=2023-12-31` 对比两个报告期。每个数字带 `accession_no`、`filed` 和 `source_url`。两个报告期相同会返回 422。没有现金流、毛利率或负债数据时，规则状态是 `not_evaluated`，不会被写成没有风险。样例收入不是苹果公司的真实报表。
 
+两期变化率由后端算，规则是：同一概念、同一单位，并且期间长度相差不超过 20 天（单季对单季、全年对全年，时点对时点）。同一期末既有单季又有累计时优先单季。期间长度不同的两期返回 `change_reason=incomparable_period`，不给数。基数不为正时沿用 `year_over_year` 的口径，返回 `sign_change` / `loss_widened` / `prior_not_positive`，不给百分比。
+
+`GET /api/v1/companies/{instrumentId}/financials?as_of=&reference=&compare=` 是公司页和 AI 财报解读页用的财务总览，页面不再自己算同比和比率。
+
+- `as_of` 之后申报的事实不参与计算。库里有 EDGAR 真实事实时只用真实事实，否则用随包样例，`data_status` 是 `edgar` / `sample` / `empty`。
+- `reference` 不填时取最新一个期末。`compare` 不填时取上一年同期（容差 14 天），`delta_label` 是「同比」；手动指定时是「较 yyyy-mm-dd」。
+- `tiles` 依次是营业收入、净利润、经营现金流、毛利率、稀释 EPS、资产负债率。每个读数都带 `formula` 和来源（form、filed、accession_no、source_url、期间）。
+- `trend` 和 `table` 分单季 / 全年两种口径。单季口径下，流量指标只比单季，不和累计数混比。
+- `cash_vs_profit` 是近五个财年的经营现金流、净利润和倍数。净利润不为正时 `multiple` 为空。比率类读数（毛利率、负债率、流动比率）在分母不为正时同样不出数。
+- `rule_observations` 是 R001–R006 的读数文字，只陈述数字，判定仍以 `/research` 的规则引擎为准。
+- 没有任何可见事实时返回 200、`data_status=empty`，并在 `notice` 说明原因。证券不存在时返回 404。
+
+`GET /api/v1/market/bars/{id}` 的 `window_returns` 是近 22 / 66 / 130 / 250 个交易日的区间收益率（最后一根收盘 ÷ 倒数第 N+1 根收盘 − 1）。日线不足 N+1 根时没有该键，不用更短的区间顶替。`GET /api/v1/analysis/runs/{runId}` 返回报告生成时的 `as_of`，解读页的规则读数与现金流对比按这个日期取数。
+
+## 推演沙盘
+
+全部接口需要登录，只能看到自己的记录。结果仅用于研究与教学，不会发送委托。
+
+- `POST /api/v1/simulation/runs`：`symbol`、`as_of`、`max_debate_rounds`（1–3）、`holding_days`（5–180，自然日）、`risk_strictness`（`moderate` / `conservative`）、`use_memory`、`engine`（`rules` / `tradingagents`）。
+  - `engine=rules` 是确定性规则引擎，不调用模型。
+  - `engine=tradingagents` 跑已安装的 TradingAgents 原版图，没有配置 `LLM_API_KEY` / `LLM_MODEL` 时返回 409 `LLM_NOT_CONFIGURED`，不会退回 Mock 结果。
+- `GET /api/v1/simulation/runs`：历史列表。`GET /api/v1/simulation/runs/{runId}`：单次结果，含分析师报告、辩论、风控修正链、决策和记忆。
+- `GET /api/v1/simulation/runs/{runId}/report`：Markdown 报告。`GET /api/v1/simulation/runs/{runId}/stream`：按落库顺序重放节点（SSE）。
+- `POST /api/v1/simulation/runs/{runId}/backtest`：用已入库收盘价结算，基准是沪深 300。持有期没走完时如实返回「尚未到期」。
+- `POST /api/v1/simulation/experiments`：网格回测，在 `start`–`end` 内每 `step` 个交易日推演一次，比较多角色推演和单一技术面信号的命中率与多空收益差。持有期没走完或缺日线的样本放进 `skipped`，不计入统计。
+
 ## 上传 PDF
 
 `POST /api/v1/documents` 需要登录。内容不是 `%PDF-` 时返回 422，`REJECTED_FORMAT`。超过 `UPLOAD_MAX_MB` 或 200 页分别是 `REJECTED_SIZE`、`REJECTED_PAGES`，文件不落盘。同一用户相同 SHA256 返回 `duplicate`，不另存一份。扫描件状态是 `ocr_required`。损坏文件记录 `failed`，不保存路径。文字 PDF 状态是 `queued`。保存路径是 `data/uploads/<用户>/<sha256>.pdf`，不用原始文件名。
