@@ -1159,3 +1159,11 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - **修复**：新增 `frontend/src/api/uuid.ts` 的 `newUuid()`（无 `randomUUID` 时用 `crypto.getRandomValues` 生成 v4）；`ask()` 先生成 ID 再置发送状态。新增 `tests/unit/uuid.test.ts`（3 个用例）。
 - **验证**：在 `node:22-alpine` 容器里 `npm ci`、`vitest run`（28 个文件 / 115 个用例通过）、`vue-tsc --noEmit` 无错误。
 - **NOT_IMPLEMENTED**：后端 `services/chat_reply.py` 的 `rules_reply` 始终返回固定句「未配置模型，不能根据这个问题编造财务数字…」，**AI 助手问答并没有接入大模型**。配置 LLM 后，只有研究报告 / 推演等走模型的路径会用到它；助手聊天要真正调用模型，需要单独实现（带白名单工具与引用校验），本轮未做。
+
+## 2026-10-16 ASSIST 助手按已入库宏观序列调用模型
+
+- **现象**：模型三项都已配置，`/analysis/model-status` 为 available，但助手仍回答「未配置模型」。原因是 `rules_reply` 不读配置。
+- **行为**：`effective_settings` 判定模型可用后，`match_macro_codes` 只按白名单别名匹配美国宏观序列，`macro_chat_evidence` 读取当前时点可见的最近观测，再调用 OpenAI 兼容的 `/chat/completions`。模型正文里每个数字都必须出现在资料中，否则整段丢弃并改为列出观测。对不上序列、或序列尚不可见时，不调用模型。未配置模型时仍是原来的固定句。
+- **变更**：`chat_reply.py`、`assistant_context.py`、`chat_model.py`、`api/v1/assistant.py`、`tests/unit/test_chat_reply.py`、使用指南。
+- **验证**：`docker run` 挂载新代码到 `finscope-backend:local`，安装 pytest 后 `python -m pytest tests/unit/test_chat_reply.py -q` 为 7 passed；ruff check / format 通过；mypy 检查这 4 个文件无错误。集成测试未跑（需要 PostgreSQL）。
+- **局限**：助手暂不回答公司财报类问题；不提供自由 SQL/联网工具。
