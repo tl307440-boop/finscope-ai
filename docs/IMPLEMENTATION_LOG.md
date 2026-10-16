@@ -1115,3 +1115,30 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 把宏观同比、行情涨跌幅等仍在前端换算的数字移到后端。
 - 为 `ifrs` 归一补充更多科目（如利息、折旧）与 6-K 季度口径核对。
+
+## 2026-10-16 DEPLOY 阿里云 ECS 自动部署
+
+目标：合并到 `master` 且 `ci` 通过后，自动部署到 ECS `i-bp14vxhakpcfmn2llzyc`（121.199.8.235，杭州）。
+
+### 变更文件
+
+- `.github/workflows/deploy.yml`：`workflow_run`（ci 在 master 成功）+ `workflow_dispatch`；runner 构建后端/前端镜像，经 SSH `docker save | docker load` 传到服务器（服务器无需访问 Docker Hub / GitHub / PyPI），再调用 `deploy.sh`。使用 `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS` 四个仓库 Secret，主机指纹固定（`StrictHostKeyChecking yes`）。
+- `deploy/docker-compose.prod.yml`：只用预构建镜像；数据库不映射端口；前端映射 80。
+- `deploy/deploy.sh`：写入 `.release.env`、`up -d`、探测 `/api/v1/health/live`，失败自动回滚到上一个标签，只保留最近 3 个镜像版本。
+- `deploy/env.production.example`：服务器 `.env` 模板（真实 `.env` 只放服务器，不入库）。
+- `backend/app/core/config.py`、`security.py`、`api/v1/auth.py`：新增可选 `COOKIE_SECURE`。生产环境默认仍带 Secure；纯 HTTP（无域名/证书）时浏览器会丢弃 Secure 刷新 cookie，导致登录 15 分钟后掉线，因此允许显式关闭，上 HTTPS 后应移除该覆盖。
+- `backend/tests/unit/test_auth_rules.py`：新增覆盖开关的单测。
+
+### 验证
+
+- 本机 shell 没有 uv / Python venv / Docker，**未在本机运行 pytest 与 docker compose**；单测由 CI 的 `ruff / mypy / pytest` 验证。
+- 部署链路 **尚未在真实服务器上跑通**（BLOCKED：需要服务器 SSH 访问、安装 Docker、配置 Secrets、放行安全组 80 端口）。
+
+### 已知局限
+
+- 暂无域名与 HTTPS，使用 `COOKIE_SECURE=false` 的 HTTP 访问；上线前建议配置域名 + 证书。
+- 镜像经 SSH 传输，首次约数百 MB；后续有 GHA 层缓存，但传输仍是整镜像。
+
+### 下一步
+
+- 在服务器上安装 Docker、创建 `deploy` 用户与 `/opt/finscope/.env`，配置 4 个 Secret，手动触发一次 `deploy` 工作流验证。

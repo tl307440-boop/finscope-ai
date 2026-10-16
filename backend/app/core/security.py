@@ -82,7 +82,16 @@ def hash_refresh_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def refresh_cookie_secure(app_env: str) -> bool:
+def refresh_cookie_secure(app_env: str, override: bool | None = None) -> bool:
+    """刷新 cookie 是否带 Secure。
+
+    默认只有 production 才开；``override`` 来自 ``COOKIE_SECURE``，用于「生产环境但暂时只有 HTTP」
+    （例如还没有域名与证书、直接用公网 IP 访问）。纯 HTTP 下浏览器会丢弃 Secure cookie，
+    此时必须显式设为 false；上了 HTTPS 之后应删掉该覆盖。
+    """
+
+    if override is not None:
+        return override
     return app_env == "production"
 
 

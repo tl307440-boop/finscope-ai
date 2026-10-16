@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     jwt_secret: str = PLACEHOLDER_JWT_SECRET
     access_token_minutes: int = 15
     refresh_token_days: int = 7
+    # 留空 = 按 APP_ENV 决定（production 才带 Secure）；纯 HTTP 部署需显式设为 false。
+    cookie_secure: bool | None = None
     # 开放注册：关掉后只有管理员预先创建的账号能登录。界面里的开关（库里的值）优先于这里。
     allow_registration: bool = True
     # 界面填写的密钥在库里用它加密；留空时用 JWT_SECRET 派生。
