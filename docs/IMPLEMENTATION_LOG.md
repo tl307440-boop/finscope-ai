@@ -1151,3 +1151,11 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - **已知限制**：日频序列的观测窗口超过约 8 年仍会超出 2000 版本日上限；当前调度窗口为 6 年。
 - **验证**：服务器上用同样参数补抓后，DGS10 写入 1499 条、DGS2 1497 条、T10Y2Y 1500 条；`/macro/series/*/observations` 现在无需 `as_of` 即可返回数据，且 `realtime_start` 为真实发布日（如 UNRATE 2026-10-02）。本机无 Python 环境，单测由 CI 验证。
 - 新增 `docs/服务器使用与密钥配置指南.md`。
+
+### 2026-10-16 补记：AI 助手点发送一直转圈
+
+- **现象**：服务器上 AI 投研助手点发送后按钮一直转圈；api 与 nginx 日志里都没有对应的 POST。
+- **根因**：`AssistantView.vue` 的 `ask()` 调用 `crypto.randomUUID()`，该函数只在安全上下文（HTTPS / localhost）存在；服务器当前走 `http://121.199.8.235`，它是 `undefined`，抛错发生在 `try` 之外，`sending` 已置 true 且不会复位，请求也没发出。
+- **修复**：新增 `frontend/src/api/uuid.ts` 的 `newUuid()`（无 `randomUUID` 时用 `crypto.getRandomValues` 生成 v4）；`ask()` 先生成 ID 再置发送状态。新增 `tests/unit/uuid.test.ts`（3 个用例）。
+- **验证**：在 `node:22-alpine` 容器里 `npm ci`、`vitest run`（28 个文件 / 115 个用例通过）、`vue-tsc --noEmit` 无错误。
+- **NOT_IMPLEMENTED**：后端 `services/chat_reply.py` 的 `rules_reply` 始终返回固定句「未配置模型，不能根据这个问题编造财务数字…」，**AI 助手问答并没有接入大模型**。配置 LLM 后，只有研究报告 / 推演等走模型的路径会用到它；助手聊天要真正调用模型，需要单独实现（带白名单工具与引用校验），本轮未做。
