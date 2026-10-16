@@ -138,7 +138,7 @@ export function chartableMetrics(metrics: ReportMetric[], limit = 8): ReportMetr
   return metrics
     .filter(
       (metric) =>
-        (metric.unit === "USD" || metric.unit === "CNY") &&
+        /^[A-Z]{3}$/.test(metric.unit) &&
         metric.earlier?.value != null &&
         metric.later?.value != null,
     )

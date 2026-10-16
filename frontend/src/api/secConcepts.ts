@@ -33,6 +33,17 @@ const UNIT_NAMES: Record<string, string> = {
   shares: "股",
   "USD/shares": "美元/股",
   "CNY/shares": "元/股",
+  TWD: "新台币",
+  JPY: "日元",
+  EUR: "欧元",
+  GBP: "英镑",
+  CHF: "瑞士法郎",
+  CAD: "加元",
+  DKK: "丹麦克朗",
+  "TWD/shares": "新台币/股",
+  "EUR/shares": "欧元/股",
+  "JPY/shares": "日元/股",
+  "GBP/shares": "英镑/股",
 }
 
 export function unitLabel(unit: string): string {

@@ -17,10 +17,10 @@ from sqlalchemy import Engine
 
 from app.api.deps import get_current_user
 from app.api.responses import success_response
-from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.repositories.simulations import RunSummary, SimulationRepository, StoredRun
 from app.services.auth_types import UserRecord
+from app.services.runtime_settings import effective_settings
 from app.trading_agents.graph import SimulationResult
 from app.trading_agents.pipeline import ENGINE_LABEL, PipelineConfig
 from app.trading_agents.service import evaluate, run_and_save, run_grid
@@ -129,8 +129,8 @@ def _engine(request: Request) -> Engine:
     return cast(Engine, request.app.state.engine)
 
 
-def _llm_ready() -> bool:
-    settings = get_settings()
+def _llm_ready(engine: Engine) -> bool:
+    settings = effective_settings(engine)
     return bool(settings.llm_api_key and settings.llm_model)
 
 
@@ -172,7 +172,7 @@ def create_simulation(
     # 集成测试用 app.state.simulation_runner 换成确定性桩（规格书 §14.2 不依赖外网）。
     runner = getattr(request.app.state, "simulation_runner", None)
     if runner is None and body.engine == "tradingagents":
-        if not _llm_ready():
+        if not _llm_ready(engine):
             raise AppError(
                 code="LLM_NOT_CONFIGURED",
                 message=(

@@ -41,7 +41,6 @@ METRICS: dict[str, MetricDef] = {
                 "RevenueFromContractWithCustomerIncludingAssessedTax",
                 "Revenues",
                 "SalesRevenueNet",
-                "RevenueFromContractWithCustomerIncludingAssessedTax",
             ),
         ),
         MetricDef("cost", "营业成本", ("CostOfGoodsAndServicesSold", "CostOfRevenue")),

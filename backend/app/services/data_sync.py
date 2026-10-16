@@ -13,7 +13,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from app.db.models.market import Instrument
-from app.providers import eastmoney_statements, tiingo_bars, universe
+from app.providers import china_macro_sources, eastmoney_statements, tiingo_bars, universe
 from app.providers.errors import ProviderError
 from app.providers.http_client import ResilientHttpClient
 from app.providers.httpx_transport import HttpxTransport
@@ -26,8 +26,11 @@ from app.providers.sec_edgar import (
 )
 from app.repositories.cn_financials import CnFinancialRepository
 from app.repositories.filings import FilingRepository
+from app.repositories.macro_china import MacroChinaRepository
 from app.repositories.market_bars import MarketBarRepository
 from app.repositories.universe import UniverseRepository
+from app.services.china_macro import CsvObservation
+from app.services.ifrs import IFRS_CONCEPTS
 from app.services.ingest import ingest_bars
 
 # 只保留研究页用得到的核心科目与 10-K / 10-Q，不把整份 companyfacts 全灌进库。
@@ -55,7 +58,8 @@ SEC_CONCEPTS = frozenset(
         "us-gaap:CashAndCashEquivalentsAtCarryingValue",
     }
 )
-SEC_FORMS = frozenset({"10-K", "10-Q"})
+# 20-F / 40-F / 6-K 是外国发行人的年报与中报，披露口径多为 IFRS，读取时由 services/ifrs.py 归一。
+SEC_FORMS = frozenset({"10-K", "10-Q", "20-F", "40-F", "6-K"})
 SEC_FIRST_FISCAL_YEAR = 2021
 # 首次抓美股日线回看的自然日数（约两年），之后只补增量。
 FIRST_BARS_LOOKBACK_DAYS = 730
@@ -63,7 +67,7 @@ FIRST_BARS_LOOKBACK_DAYS = 730
 
 def wanted_sec_fact(fact: ParsedFact) -> bool:
     return (
-        fact.concept in SEC_CONCEPTS
+        (fact.concept in SEC_CONCEPTS or fact.concept in IFRS_CONCEPTS)
         and fact.form in SEC_FORMS
         and fact.fiscal_year >= SEC_FIRST_FISCAL_YEAR
     )
@@ -114,6 +118,37 @@ async def sync_cn_statements(engine: Engine, *, display_symbol: str) -> int:
     if not facts:
         raise ProviderError(code="NOT_FOUND", message="东方财富没有这只证券的财报", status_code=404)
     return CnFinancialRepository(engine).upsert_facts(instrument_id, facts)
+
+
+async def sync_china_macro(engine: Engine) -> int:
+    """抓取中国宏观六序列（东方财富 + 商务部），按「序列 + 观察月 + 公布日上界」幂等写入。
+
+    先把抓到的写进去，再对失败的序列统一报错：一个源挂了不影响其它序列入库，任务会按重试策略重来。
+    """
+
+    raw, client = _client(trust_env=False, timeout=20.0, min_interval=0.5, attempts=3)
+    collected: list[CsvObservation] = []
+    failures: list[str] = []
+    async with raw:
+        for spec in china_macro_sources.EASTMONEY_SPECS:
+            try:
+                collected.extend(await china_macro_sources.fetch_eastmoney(client, spec))
+            except ProviderError as exc:
+                failures.append(f"{spec.series_code}: {exc.message}")
+        try:
+            collected.extend(await china_macro_sources.fetch_social_financing(client))
+        except ProviderError as exc:
+            failures.append(f"SOCIAL_FINANCING: {exc.message}")
+    written = 0
+    if collected:
+        written, _duplicates = MacroChinaRepository(engine).import_observations(collected)
+    if failures:
+        raise ProviderError(
+            code="UPSTREAM_PARTIAL",
+            message=f"已写入 {written} 条；以下序列抓取失败：" + "；".join(failures),
+            status_code=502,
+        )
+    return written
 
 
 async def sync_us_bars(

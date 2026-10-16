@@ -56,6 +56,7 @@ import {
 import { restoreSession, useSessionStore } from "../stores/auth"
 import DataReadiness from "../components/ui/DataReadiness.vue"
 import DeltaValue from "../components/ui/DeltaValue.vue"
+import MetricSnapshotPanel from "../components/ui/MetricSnapshotPanel.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
@@ -81,7 +82,7 @@ const EXCHANGE_LABELS: Record<string, string> = {
 
 const MARKET_LABELS: Record<string, string> = { CN: "A股", US: "美股", HK: "港股" }
 const TYPE_LABELS: Record<string, string> = { STOCK: "股票", INDEX: "指数", ETF: "ETF" }
-const CURRENCY_LABELS: Record<string, string> = { CNY: "人民币", USD: "美元", HKD: "港元" }
+const CURRENCY_LABELS: Record<string, string> = { CNY: "人民币", USD: "美元", HKD: "港元", TWD: "新台币", EUR: "欧元", JPY: "日元", GBP: "英镑" }
 const BAR_SOURCES: Record<string, string> = { akshare: "AKShare", tushare: "Tushare" }
 
 const SPARK_WIDTH = 72
@@ -1481,6 +1482,8 @@ watch(
               </ul>
             </template>
           </PanelCard>
+
+          <MetricSnapshotPanel v-if="instrument" :instrument-id="instrument.id" />
         </div>
 
         <div class="grid-2-1 pair">

@@ -26,6 +26,7 @@ import {
   Warning,
 } from "@element-plus/icons-vue"
 import FreshnessPanel from "../components/ui/FreshnessPanel.vue"
+import IntegrationsPanel from "../components/ui/IntegrationsPanel.vue"
 import MiniRing from "../components/ui/MiniRing.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
@@ -809,6 +810,9 @@ onMounted(() => {
       </PanelCard>
 
       <FreshnessPanel />
+
+      <!-- 密钥与数据源配置：在界面里填，不用改服务器 .env -->
+      <IntegrationsPanel />
 
       <!-- 任务统计 -->
       <div class="grid-2">

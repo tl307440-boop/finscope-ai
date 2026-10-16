@@ -1,19 +1,56 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { ApiError } from "../api/client"
-import { login, safeRedirect } from "../stores/auth"
+import { fetchRegistrationOpen, login, passwordHint, register, safeRedirect } from "../stores/auth"
 
 const route = useRoute()
 const router = useRouter()
+const mode = ref<"login" | "register">("login")
+const registrationOpen = ref<boolean | null>(null)
 const username = ref("")
+const email = ref("")
 const password = ref("")
+const confirm = ref("")
 const error = ref("")
 const submitting = ref(false)
 
+const isRegister = computed(() => mode.value === "register")
+
+onMounted(async () => {
+  registrationOpen.value = await fetchRegistrationOpen()
+})
+
+function switchMode(next: "login" | "register"): void {
+  mode.value = next
+  error.value = ""
+  password.value = ""
+  confirm.value = ""
+}
+
+function registerProblem(): string | null {
+  if (!/^[A-Za-z0-9_.-]{3,30}$/.test(username.value.trim())) {
+    return "账号用 3-30 位字母、数字、下划线、点或短横线"
+  }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.value.trim())) {
+    return "请输入正确的邮箱"
+  }
+  const hint = passwordHint(password.value)
+  if (hint) {
+    return hint
+  }
+  return password.value === confirm.value ? null : "两次输入的密码不一致"
+}
+
 async function submit(): Promise<void> {
   error.value = ""
-  if (username.value.trim().length < 3 || password.value.length === 0) {
+  if (isRegister.value) {
+    const problem = registerProblem()
+    if (problem) {
+      error.value = problem
+      return
+    }
+  } else if (username.value.trim().length < 3 || password.value.length === 0) {
     error.value = "请输入账号和密码"
     password.value = ""
     return
@@ -21,8 +58,13 @@ async function submit(): Promise<void> {
   submitting.value = true
   const secret = password.value
   password.value = ""
+  confirm.value = ""
   try {
-    await login(username.value.trim(), secret)
+    if (isRegister.value) {
+      await register(username.value.trim(), email.value.trim(), secret)
+    } else {
+      await login(username.value.trim(), secret)
+    }
     await router.push(safeRedirect(route.query.redirect))
   } catch (caught) {
     error.value = caught instanceof ApiError ? caught.message : "无法连接接口"
@@ -55,11 +97,17 @@ async function submit(): Promise<void> {
       </aside>
 
       <form class="form" @submit.prevent="submit">
-        <h1>登录账号</h1>
-        <p class="muted intro">使用管理员分配的投研账号登录</p>
+        <h1>{{ isRegister ? "注册新账号" : "登录账号" }}</h1>
+        <p class="muted intro">
+          {{ isRegister ? "注册后为研究员账号，可使用全部研究功能" : "使用已有账号登录；没有账号可在下方注册" }}
+        </p>
         <label>
           账号
           <input v-model="username" name="username" autocomplete="username" placeholder="请输入账号" />
+        </label>
+        <label v-if="isRegister">
+          邮箱
+          <input v-model="email" name="email" type="email" autocomplete="email" placeholder="用于账号找回和通知" />
         </label>
         <label>
           密码
@@ -67,14 +115,31 @@ async function submit(): Promise<void> {
             v-model="password"
             name="password"
             type="password"
-            autocomplete="current-password"
-            placeholder="请输入密码"
+            :autocomplete="isRegister ? 'new-password' : 'current-password'"
+            :placeholder="isRegister ? '至少 8 位，含字母和数字' : '请输入密码'"
+          />
+        </label>
+        <label v-if="isRegister">
+          确认密码
+          <input
+            v-model="confirm"
+            name="confirm"
+            type="password"
+            autocomplete="new-password"
+            placeholder="再输入一次密码"
           />
         </label>
         <p v-if="error" class="alert" role="alert">{{ error }}</p>
         <button class="primary-button" type="submit" :disabled="submitting">
-          {{ submitting ? "登录中…" : "登录" }}
+          {{ submitting ? (isRegister ? "注册中…" : "登录中…") : isRegister ? "注册并登录" : "登录" }}
         </button>
+        <p v-if="registrationOpen === true && !isRegister" class="foot muted">
+          还没有账号？<button class="link-btn" type="button" @click="switchMode('register')">注册新账号</button>
+        </p>
+        <p v-else-if="isRegister" class="foot muted">
+          已有账号？<button class="link-btn" type="button" @click="switchMode('login')">返回登录</button>
+        </p>
+        <p v-else-if="registrationOpen === false" class="foot muted">当前不开放注册，请联系管理员创建账号。</p>
         <p class="foot muted">数据来源为公开渠道；行情存在延迟，仅供参考。</p>
       </form>
     </section>
@@ -230,6 +295,19 @@ async function submit(): Promise<void> {
 .primary-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.link-btn {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
 }
 
 .foot {

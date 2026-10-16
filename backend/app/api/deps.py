@@ -8,6 +8,7 @@ from app.core.exceptions import AppError
 from app.core.security import PasswordService, TokenService
 from app.repositories.accounts import AccountRepository, RefreshSessionRepository
 from app.repositories.worker_heartbeat import WorkerHeartbeatRepository
+from app.services.accounts import AccountService
 from app.services.auth import AuthService
 from app.services.auth_types import UserRecord
 from app.services.health import HealthService
@@ -37,6 +38,21 @@ def get_auth_service(request: Request) -> AuthService:
         tokens=TokenService(settings.jwt_secret, settings.access_token_minutes),
         limiter=limiter,
         refresh_token_days=settings.refresh_token_days,
+    )
+
+
+def get_account_service(request: Request) -> AccountService:
+    settings = get_settings()
+    engine = cast(Engine, request.app.state.engine)
+    passwords = PasswordService(settings.app_env)
+    sessions = RefreshSessionRepository(engine)
+    return AccountService(
+        users=AccountRepository(engine),
+        sessions=sessions,
+        passwords=passwords,
+        auth=get_auth_service(request),
+        register_limiter=cast(LoginRateLimiter, request.app.state.register_limiter),
+        password_limiter=cast(LoginRateLimiter, request.app.state.password_limiter),
     )
 
 

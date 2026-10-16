@@ -12,7 +12,7 @@
  *      data = { series_code, pit_date, time_precision, observations[], empty_message, truncated }
  *      · 与 FRED 共用同一张观测表；按观测日升序，limit 保留最近 N 条
  *
- * 不编造数据：中国宏观序列只能由管理员导入 CSV（POST /api/v1/macro/china/observations），
+ * 不编造数据：中国宏观序列由后台任务从东方财富 / 商务部公开接口自动同步（也可由管理员 POST /api/v1/macro/china/observations 导入 CSV），
  * 导入前本页保持诚实空态；走势图只在真的取到 ≥2 个观测值时才画。
  */
 import { computed, onMounted, ref } from "vue"
@@ -53,7 +53,7 @@ const TABS = [
   { key: "scenarios", label: "宏观综合判断", to: "/macro/scenarios" },
 ]
 
-const IMPORT_HINT = "需管理员在数据中心导入国家统计局官方 CSV"
+const IMPORT_HINT = "后台每天从公开接口自动同步，首次同步完成前显示为暂无数据"
 
 const phase = ref<Phase>("loading")
 const failure = ref("")
@@ -87,20 +87,20 @@ const latestDate = computed<string>(
 /** 与后端 public_status 的三档一一对应。 */
 function statusPill(row: ChinaSeries): { text: string; tone: "ok" | "warn" | "muted" } {
   if (row.status === "stored") {
-    return { text: "已导入", tone: "ok" }
+    return { text: "已同步", tone: "ok" }
   }
   if (row.status === "stale") {
     return { text: "数据陈旧", tone: "warn" }
   }
-  return { text: "未导入", tone: "muted" }
+  return { text: "暂无数据", tone: "muted" }
 }
 
 function statusNote(row: ChinaSeries): string {
   if (row.status === "stored") {
-    return `已导入 ${row.count} 期，最新 ${row.latestDate || "—"}`
+    return `已同步 ${row.count} 期，最新 ${row.latestDate || "—"}`
   }
   if (row.status === "stale") {
-    return `已导入 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 60 天`
+    return `已同步 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 60 天（上游更新滞后或同步失败）`
   }
   return `暂无数据，${IMPORT_HINT}`
 }
@@ -110,6 +110,9 @@ function formatValue(value: string | number, unit: string): string {
   if (!Number.isFinite(parsed)) {
     return typeof value === "string" && value ? value : "—"
   }
+  if (unit === "亿元") {
+    return parsed.toLocaleString("zh-CN", { maximumFractionDigits: 0 })
+  }
   if (unit === "CNY") {
     return formatAmount(parsed, "元")
   }
@@ -117,6 +120,9 @@ function formatValue(value: string | number, unit: string): string {
 }
 
 function tileUnit(row: ChinaSeries): string {
+  if (row.unit === "亿元") {
+    return row.latestValue ? "亿元" : ""
+  }
   if (!row.latestValue || row.unit === "CNY") {
     return ""
   }
@@ -287,7 +293,7 @@ onMounted(() => {
       </template>
       <template #filters>
         <span class="source-hint" :class="{ off: !anyAvailable }">
-          <i aria-hidden="true" />数据来源：国家统计局（{{ anyAvailable ? `已导入，最新 ${latestDate}` : "尚未导入" }}）
+          <i aria-hidden="true" />数据来源：东方财富 / 商务部公开接口（{{ anyAvailable ? `已同步，最新 ${latestDate}` : "尚未同步" }}）
         </span>
       </template>
     </PageHeader>
@@ -304,8 +310,8 @@ onMounted(() => {
           <StateBlock
             v-if="!anyAvailable"
             state="empty"
-            title="中国宏观数据尚未导入"
-            :message="`CPI、PPI、PMI、M2、工业增加值、社融暂无数据，${IMPORT_HINT}后自动显示。`"
+            title="中国宏观数据尚未同步"
+            :message="`CPI、PPI、PMI、M2、工业增加值、社融暂无数据：${IMPORT_HINT}。`"
           />
 
           <div class="grid-6">
@@ -339,7 +345,7 @@ onMounted(() => {
                 </el-select>
               </template>
 
-              <p v-if="!anyAvailable" class="empty-note">导入数据后在此显示走势</p>
+              <p v-if="!anyAvailable" class="empty-note">同步到数据后在此显示走势</p>
               <StateBlock v-else-if="detailPhase === 'loading'" state="loading" message="正在查询观测值" />
               <StateBlock
                 v-else-if="detailPhase === 'error'"
@@ -356,7 +362,7 @@ onMounted(() => {
               </template>
             </PanelCard>
 
-            <PanelCard title="指标清单" info="已导入 / 数据陈旧（最新一期距今超过 60 天）/ 未导入">
+            <PanelCard title="指标清单" info="已同步 / 数据陈旧（最新一期距今超过 60 天）/ 暂无数据">
               <template #icon><span class="panel-icon">▤</span></template>
               <el-table :data="rows" @row-click="(row: ChinaSeries) => anyAvailable && selectSeries(row.code)">
                 <el-table-column prop="name" label="指标" min-width="170" />
@@ -374,16 +380,16 @@ onMounted(() => {
                   </template>
                 </el-table-column>
               </el-table>
-              <p class="chart-note">已导入 {{ availableRows.length }} / {{ rows.length }} 项。</p>
+              <p class="chart-note">已同步 {{ availableRows.length }} / {{ rows.length }} 项。</p>
             </PanelCard>
           </div>
         </template>
 
         <SourceFooter
           :as-of="latestDate || appliedAsOf"
-          :sources="['国家统计局（管理员导入 CSV）']"
+          :sources="['东方财富数据中心（国家统计局、中国人民银行）', '商务部数据中心（社会融资规模）']"
           :stale="!anyAvailable"
-          :note="anyAvailable ? '观察日只显示当天已公布的数据。' : IMPORT_HINT"
+          :note="anyAvailable ? '公布日按保守上界计算（如 CPI 取次月 15 日），回看只会晚看到、不会提前看到。' : IMPORT_HINT"
         />
       </template>
     </div>

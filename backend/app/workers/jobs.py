@@ -5,7 +5,6 @@ from uuid import UUID
 
 from sqlalchemy import Engine
 
-from app.core.config import get_settings
 from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, AdjustmentCode, target_for
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
@@ -13,6 +12,7 @@ from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_bars, fetch_bars
 from app.services.data_sync import (
+    sync_china_macro,
     sync_cn_statements,
     sync_cn_universe,
     sync_sec_facts,
@@ -21,6 +21,10 @@ from app.services.data_sync import (
 )
 from app.services.document_index import index_document_by_id
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
+from app.services.hotspot_sync import sync_hotspot_events
+from app.services.macro_regime import compute_macro_regime
+from app.services.metrics_snapshot import snapshot_company_metrics
+from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
 
 # 与 app.api.v1.documents 的默认上传根目录保持一致（都在 backend 目录下起进程）。
@@ -28,10 +32,12 @@ UPLOAD_ROOT = Path("data/uploads")
 
 
 def execute_job(engine: Engine, job: JobSnapshot) -> int:
+    # 每个任务都读最新配置（带 5 秒缓存）：界面里填的密钥不用重启 worker 就生效。
+    settings = effective_settings(engine)
     if job.job_type == "akshare_daily":
         return _akshare(engine, job.scope)
     if job.job_type == "fred_series":
-        return _fred(engine, job.scope)
+        return _fred(engine, job.scope, settings.fred_api_key)
     if job.job_type == "parse_document":
         return _parse_document(engine, job.scope)
     if job.job_type == "sec_filings":
@@ -39,7 +45,7 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
             sync_sec_facts(
                 engine,
                 cik=_text(job.scope, "cik"),
-                user_agent=get_settings().sec_user_agent,
+                user_agent=settings.sec_user_agent,
             )
         )
     if job.job_type == "cn_statements":
@@ -53,13 +59,32 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
                 display_symbol=_text(job.scope, "display_symbol"),
                 start=_day(job.scope, "observation_start"),
                 end=_day(job.scope, "observation_end"),
-                token=get_settings().tiingo_api_key,
+                token=settings.tiingo_api_key,
             )
         )
     if job.job_type == "us_universe":
-        return asyncio.run(sync_us_universe(engine, user_agent=get_settings().sec_user_agent))
+        return asyncio.run(sync_us_universe(engine, user_agent=settings.sec_user_agent))
     if job.job_type == "cn_universe":
         return asyncio.run(sync_cn_universe(engine))
+    if job.job_type == "china_macro":
+        return asyncio.run(sync_china_macro(engine))
+    if job.job_type == "financial_metrics":
+        return snapshot_company_metrics(
+            engine, _text(job.scope, "instrument_id"), _day(job.scope, "as_of")
+        )
+    if job.job_type == "macro_regime":
+        return compute_macro_regime(
+            engine, as_of=_day(job.scope, "as_of"), model_version=_text(job.scope, "model_version")
+        )
+    if job.job_type == "hotspot_events":
+        return asyncio.run(
+            sync_hotspot_events(
+                engine,
+                source=_text(job.scope, "source"),
+                observed_on=_day(job.scope, "observed_on"),
+                user_agent=settings.sec_user_agent,
+            )
+        )
     raise ProviderError(code="VALIDATION_ERROR", message="不认识的任务类型", status_code=422)
 
 
@@ -89,8 +114,7 @@ def _akshare(engine: Engine, scope: dict[str, object]) -> int:
     return outcome.rows_written
 
 
-def _fred(engine: Engine, scope: dict[str, object]) -> int:
-    settings = get_settings()
+def _fred(engine: Engine, scope: dict[str, object], api_key: str) -> int:
     series_code = _text(scope, "series_code")
     start = _day(scope, "observation_start")
     end = _day(scope, "observation_end")
@@ -102,7 +126,7 @@ def _fred(engine: Engine, scope: dict[str, object]) -> int:
         observation_end: date,
     ) -> tuple[FredVintage, ...]:
         return await fetch_from_fred(
-            settings.fred_api_key,
+            api_key,
             code,
             observation_start,
             observation_end,

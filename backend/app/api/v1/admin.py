@@ -7,7 +7,6 @@ from sqlalchemy import Engine
 
 from app.api.deps import require_admin
 from app.api.responses import success_response
-from app.core.config import get_settings
 from app.core.exceptions import AppError
 from app.providers.akshare_bars import AdjustmentCode
 from app.providers.errors import ProviderError
@@ -23,6 +22,7 @@ from app.services.akshare_sync import apply_bars, fetch_bars, valid_window
 from app.services.auth_types import UserRecord
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.services.provider_probe import probe_details, probe_upstream
+from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
 
 router = APIRouter(prefix="/admin", tags=["管理"])
@@ -33,8 +33,9 @@ def read_providers(
     request: Request,
     _: Annotated[UserRecord, Depends(require_admin)],
 ) -> JSONResponse:
-    payload = list_provider_credentials(get_settings())
-    health = SyncJobRepository(cast(Engine, request.app.state.engine)).provider_health()
+    engine = cast(Engine, request.app.state.engine)
+    payload = list_provider_credentials(effective_settings(engine))
+    health = SyncJobRepository(engine).provider_health()
     providers = []
     for item in payload.providers:
         record = health.get(item.code)
@@ -70,7 +71,7 @@ async def sync_fred(
     request: Request,
     _: Annotated[UserRecord, Depends(require_admin)],
 ) -> JSONResponse:
-    settings = get_settings()
+    settings = effective_settings(cast(Engine, request.app.state.engine))
     repository = MacroRepository(cast(Engine, request.app.state.engine))
 
     async def fetch(series_code: str, start: date, end: date) -> tuple[FredVintage, ...]:

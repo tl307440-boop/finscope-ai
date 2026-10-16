@@ -62,7 +62,7 @@ describe("运行状态页", () => {
     resolveReady(jsonResponse(ready))
     expect(await screen.findByRole("heading", { name: "运行正常" })).toBeTruthy()
     // 业务覆盖只做定性说明（后端没有覆盖率汇总接口），这里核对它确实写明了边界。
-    expect(screen.getByText("需管理员在数据中心导入国家统计局等官方 CSV，导入前显示为不可用。")).toBeTruthy()
+    expect(screen.getByText("后台每天从东方财富、商务部公开接口同步六个序列，也可由管理员导入官方 CSV；没同步到的显示为不可用。")).toBeTruthy()
     expect(screen.getByText("实时数据模式，未使用演示数据")).toBeTruthy()
     expect(screen.getByText("延迟 4 毫秒（就绪检查实测）")).toBeTruthy()
   })

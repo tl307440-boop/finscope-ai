@@ -84,7 +84,7 @@ def china_series_catalog() -> tuple[CsvSeriesSpec, ...]:
             name_en="China Aggregate Financing to the Real Economy",
             category="money",
             frequency="Monthly",
-            base_unit="CNY",
+            base_unit="亿元",
             seasonal_adjustment="Not Seasonally Adjusted",
             source_agency="中国人民银行",
         ),

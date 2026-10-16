@@ -50,7 +50,6 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.db.models.document import Document
-from app.db.models.market import Instrument
 from app.db.models.provider import DataProvider
 from app.providers.akshare_bars import DAILY_TARGETS, AdjustmentCode, target_for
 from app.repositories.instruments import InstrumentRepository
@@ -60,6 +59,7 @@ from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
 from app.repositories.universe import UniverseRepository
 from app.services.data_sync import bars_window
 from app.services.pdf_upload import default_parser_version, parse_document_identity
+from app.services.runtime_settings import effective_settings
 from app.services.sync_queue import dedupe_key_for
 from app.utils.time import utc_now
 
@@ -261,6 +261,20 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="Tiingo 限额：每轮限量、轮流刷新；无 key 标 unavailable",
             )
         )
+    if settings.scheduler_enable_china_macro:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_china_macro",
+                task_name="sync_china_macro",
+                trigger=CronTrigger(
+                    hour=settings.scheduler_china_macro_hour,
+                    minute=settings.scheduler_china_macro_minute,
+                    timezone=zone,
+                ),
+                builder=build_china_macro_tasks,
+                failure_policy="六个序列分源抓取；部分失败仍写入成功的，整体按重试策略重来",
+            )
+        )
     if settings.scheduler_enable_universe:
         triggers.append(
             TriggerRegistration(
@@ -366,9 +380,11 @@ def enqueue_tasks(
 
     from app.db.session import create_db_engine
 
-    settings = get_settings()
-    engine = create_db_engine(settings.database_url)
+    base = get_settings()
+    engine = create_db_engine(base.database_url)
     try:
+        # 每次触发都重新读库：界面里刚填的密钥下一次定时就生效。
+        settings = effective_settings(engine, base, use_cache=False)
         return enqueue_built(engine, settings, builder, task_name)
     finally:
         engine.dispose()
@@ -612,33 +628,60 @@ def build_universe_tasks(engine: Engine, settings: Settings, now: datetime) -> l
     ]
 
 
+def build_china_macro_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """中国宏观六序列：一次登记，由执行器分源抓取；按天幂等。"""
+
+    day = now.date().isoformat()
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="china_macro",
+        name="中国宏观（东方财富 / 商务部公开接口）",
+        enabled=True,
+        config_public={"transport": "public_web", "credential": "not_required"},
+    )
+    return [
+        ScheduledTask(
+            task_name="sync_china_macro",
+            job_type="china_macro",
+            dedupe_key=f"china_macro:{day}",
+            scope={"display_symbol": "china-macro", "observation_end": day},
+            provider_id=provider_id,
+            failure_policy="分源抓取，部分失败保留已写入的数据",
+            max_attempts=3,
+        )
+    ]
+
+
 def build_financial_metrics_tasks(
     engine: Engine, settings: Settings, now: datetime
 ) -> list[ScheduledTask]:
-    """新财报入库后计算指标；缺数据的指标留空并标 unavailable，只部分生成。"""
+    """被关注的美股 + A 股逐家生成财务体检快照；没有真实披露的公司，任务直接写 0 行，不造数。"""
 
-    period = _latest_quarter(now.date())
-    provider_id = _provider_id(engine, code="sec", name="SEC EDGAR")
-    tasks: list[ScheduledTask] = []
-    for _cik, symbol in _us_companies(engine):
-        scope: dict[str, object] = {
-            "display_symbol": symbol,
-            "period": period,
-            "metric_version": METRIC_VERSION,
-        }
-        tasks.append(
-            ScheduledTask(
-                task_name="compute_financial_metrics",
-                job_type="financial_metrics",
-                # 幂等标识：instrument + period + metric_version
-                dedupe_key=f"metrics:{symbol}:{period}:{METRIC_VERSION}",
-                scope=scope,
-                provider_id=provider_id,
-                failure_policy="缺数据仅部分生成，缺失项标 unavailable",
-                max_attempts=1,
-            )
+    day = now.date().isoformat()
+    universe = UniverseRepository(engine)
+    targets = [("US", company) for company in universe.tracked_us()]
+    targets += [("CN", company) for company in universe.tracked_cn_stocks()]
+    provider_id = _derived_provider_id(engine)
+    return [
+        ScheduledTask(
+            task_name="compute_financial_metrics",
+            job_type="financial_metrics",
+            # 幂等标识：instrument + 日期 + metric_version（同一天重复触发只会复用活跃任务）
+            dedupe_key=f"metrics:{company.display_symbol}:{day}:{METRIC_VERSION}",
+            scope={
+                "instrument_id": str(company.instrument_id),
+                "display_symbol": company.display_symbol,
+                "market": market,
+                "as_of": day,
+                "metric_version": METRIC_VERSION,
+            },
+            provider_id=provider_id,
+            failure_policy="缺数据降级不生成，缺失项标 unavailable",
+            max_attempts=1,
         )
-    return tasks
+        for market, company in targets
+    ]
 
 
 def build_macro_regime_tasks(
@@ -654,7 +697,7 @@ def build_macro_regime_tasks(
             # 幂等标识：as_of + model_version
             dedupe_key=f"macro_regime:{as_of}:{MACRO_REGIME_MODEL_VERSION}",
             scope={"as_of": as_of, "model_version": MACRO_REGIME_MODEL_VERSION},
-            provider_id=_provider_id(engine, code="fred", name="FRED"),
+            provider_id=_derived_provider_id(engine),
             failure_policy="按 as_of 生成新报告，不覆盖旧报告",
             max_attempts=1,
         )
@@ -662,21 +705,14 @@ def build_macro_regime_tasks(
 
 
 def build_hotspot_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """P2 热点事件：只在来源合法且开关打开时登记；无权限源直接禁用。"""
+    """热点事件：只登记已授权的来源（目前是巨潮 / SEC 官方披露）；来源为空就如实标不可用。"""
 
-    if not settings.enable_news:
-        return [
-            ScheduledTask(
-                task_name="refresh_hotspot_events",
-                job_type="hotspot_events",
-                dedupe_key="hotspot:disabled",
-                scope={},
-                provider_id=_provider_id(engine, code="hotspot", name="热点来源"),
-                failure_policy="无权限源禁用",
-                unavailable_reason="ENABLE_NEWS=false，没有已授权的热点来源",
-            )
-        ]
-    day = now.date().isoformat()
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="hotspot",
+        name="热点来源（官方披露）",
+        enabled=True,
+        config_public={"sources": "cninfo, sec", "credential": "none"},
+    )
     source = settings.scheduler_hotspot_source.strip()
     if not source:
         return [
@@ -685,11 +721,12 @@ def build_hotspot_tasks(engine: Engine, settings: Settings, now: datetime) -> li
                 job_type="hotspot_events",
                 dedupe_key="hotspot:no_source",
                 scope={},
-                provider_id=_provider_id(engine, code="hotspot", name="热点来源"),
-                failure_policy="无权限源禁用",
-                unavailable_reason="未配置授权来源，热点任务禁用",
+                provider_id=provider_id,
+                failure_policy="无授权来源直接禁用，不造数据",
+                unavailable_reason="未配置授权来源，热点没有数据",
             )
         ]
+    day = now.date().isoformat()
     return [
         ScheduledTask(
             task_name="refresh_hotspot_events",
@@ -697,9 +734,9 @@ def build_hotspot_tasks(engine: Engine, settings: Settings, now: datetime) -> li
             # 幂等标识：date + source
             dedupe_key=f"hotspot:{source}:{day}",
             scope={"source": source, "observed_on": day},
-            provider_id=_provider_id(engine, code="hotspot", name="热点来源"),
-            failure_policy="无权限源禁用",
-            max_attempts=1,
+            provider_id=provider_id,
+            failure_policy="来源失败保留已入库的披露，失败项写入任务信息",
+            max_attempts=2,
         )
     ]
 
@@ -781,6 +818,17 @@ def _as_text_scope(scope: dict[str, object]) -> dict[str, str]:
     return {key: value if isinstance(value, str) else str(value) for key, value in scope.items()}
 
 
+def _derived_provider_id(engine: Engine) -> UUID:
+    """本地派生计算（指标快照、宏观状态）没有外部数据源，登记为一个固定的本地来源。"""
+
+    return SyncJobRepository(engine).ensure_provider(
+        code="derived_local",
+        name="本地派生计算",
+        enabled=True,
+        config_public={"transport": "local", "credential": "not_required"},
+    )
+
+
 def _provider_id(engine: Engine, *, code: str, name: str) -> UUID:
     """取数据源主键；缺失时登记一条停用记录并告警，不伪造健康状态。"""
 
@@ -798,18 +846,6 @@ def _provider_id(engine: Engine, *, code: str, name: str) -> UUID:
 def _session(engine: Engine) -> Iterator[Session]:
     with Session(engine) as session:
         yield session
-
-
-def _us_companies(engine: Engine) -> list[tuple[str, str]]:
-    """按公司登记 SEC 任务；只取有 CIK 的美股公司。"""
-
-    with _session(engine) as session:
-        rows = session.execute(
-            select(Instrument.cik, Instrument.display_symbol)
-            .where(Instrument.market == "US", Instrument.cik.is_not(None))
-            .order_by(Instrument.display_symbol)
-        ).all()
-    return [(str(row[0]), str(row[1])) for row in rows]
 
 
 def _sec_key(provider_id: UUID, cik: str, day: str) -> str:

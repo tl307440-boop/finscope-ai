@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     jwt_secret: str = PLACEHOLDER_JWT_SECRET
     access_token_minutes: int = 15
     refresh_token_days: int = 7
+    # 开放注册：关掉后只有管理员预先创建的账号能登录。界面里的开关（库里的值）优先于这里。
+    allow_registration: bool = True
+    # 界面填写的密钥在库里用它加密；留空时用 JWT_SECRET 派生。
+    settings_encryption_key: str = ""
+    # 首个管理员：库里还没有任何管理员时，api 启动会按这三项创建一次（已有管理员则忽略）。
+    admin_username: str = ""
+    admin_email: str = ""
+    admin_password: str = ""
     fred_api_key: str = ""
     # Tiingo 官方免费档（个人研究）：每小时 50 次、每天 1000 次、每月 500 个标的。
     # 留空 = 美股日线不可用。
@@ -73,7 +81,7 @@ class Settings(BaseSettings):
     scheduler_hotspot_hour: int = 23
     scheduler_hotspot_minute: int = 30
     # 已授权的热点来源代码；为空时 refresh_hotspot_events 直接禁用，不猜来源。
-    scheduler_hotspot_source: str = ""
+    scheduler_hotspot_source: str = "disclosures"
     # 错过触发时刻后的宽限秒数；超过就跳过本轮，避免堆积。
     scheduler_misfire_grace_seconds: int = 300
     # a-stock：收盘后延迟执行的分钟数与交易日判定用的交易所日历代码。
@@ -93,6 +101,10 @@ class Settings(BaseSettings):
     scheduler_enable_universe: bool = True
     scheduler_universe_hour: int = 6
     scheduler_universe_minute: int = 0
+    # 中国宏观六序列：东方财富 / 商务部公开接口，每天抓一次（重复抓取由去重键保证幂等）。
+    scheduler_enable_china_macro: bool = True
+    scheduler_china_macro_hour: int = 1
+    scheduler_china_macro_minute: int = 20
     # 美股收盘（美东 16:00）折合北京时间约凌晨 4~5 点，所以 6:30 之后取日线，周二到周六触发。
     scheduler_us_bars_hour: int = 6
     scheduler_us_bars_minute: int = 30
@@ -102,14 +114,16 @@ class Settings(BaseSettings):
     scheduler_us_bars_max_symbols: int = 30
     # 同一公司同一数据集失败后，按需抓取至少隔这么多分钟才允许再试，防止被反复点击打爆上游。
     ondemand_retry_cooldown_minutes: int = 15
-    scheduler_enable_financial_metrics: bool = False
-    scheduler_enable_macro_regime: bool = False
-    scheduler_enable_hotspot_events: bool = False
+    scheduler_enable_financial_metrics: bool = True
+    scheduler_enable_macro_regime: bool = True
+    scheduler_enable_hotspot_events: bool = True
     # parse_document：上传后立即入队是主路径，这里只登记「兜底扫描」的兜底 job。
     scheduler_enable_parse_document: bool = True
     scheduler_parse_sweep_seconds: int = 300
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
+    # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。
+    register_max_per_hour: int = 5
 
     @field_validator("frontend_origin")
     @classmethod

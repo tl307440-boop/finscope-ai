@@ -11,7 +11,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
+from app.services.runtime_settings import effective_settings
 from app.trading_agents.analysts import (
     fundamental_analyst,
     macro_news_analyst,
@@ -89,9 +90,15 @@ def register_finscope_vendor() -> None:
     _REGISTERED = True
 
 
-def finscope_config(use_llm: bool = False) -> dict[str, object]:
+def _settings_for(engine: Engine | None) -> Settings:
+    """有数据库连接时读界面里填的有效配置，否则只看环境变量。"""
+
+    return effective_settings(engine) if engine is not None else get_settings()
+
+
+def finscope_config(use_llm: bool = False, settings: Settings | None = None) -> dict[str, object]:
     config = dict(DEFAULT_CONFIG)
-    settings = get_settings()
+    settings = settings or get_settings()
     if use_llm:
         config["llm_provider"] = "openai_compatible"
         config["backend_url"] = settings.llm_api_base_url or None
@@ -124,7 +131,8 @@ def run_upstream(
     max_debate_rounds: int = 1,
     engine: Engine | None = None,
 ) -> SimulationResult:
-    use_llm = bool(get_settings().llm_api_key and get_settings().llm_model)
+    settings = _settings_for(engine)
+    use_llm = bool(settings.llm_api_key and settings.llm_model)
     state, rating = propagate(symbol, trade_date, max_debate_rounds, engine=engine, use_llm=use_llm)
     traces = _reports(state)
     debate = state.get("investment_debate_state")
@@ -175,7 +183,7 @@ def run_upstream(
             if use_llm
             else "TradingAgents 原版图（离线 Mock，仅测试用）",
             "llm": use_llm,
-            "model": get_settings().llm_model if use_llm else "mock",
+            "model": settings.llm_model if use_llm else "mock",
             "upstream_commit": PINNED_UPSTREAM,
             "max_debate_rounds": max_debate_rounds,
             "orders": False,
@@ -209,15 +217,16 @@ def propagate(
     import tradingagents.graph.trading_graph as graph_module
 
     original = graph_module.create_tier_client
+    settings = _settings_for(engine)
     if use_llm:
-        key = get_settings().llm_api_key
+        key = settings.llm_api_key
         graph_module.create_tier_client = lambda config, tier, **extra: original(
             config, tier, api_key=key, **extra
         )
     else:
         graph_module.create_tier_client = lambda config, tier, **extra: _MockClient()
     _block_social_feeds()
-    config = finscope_config(use_llm)
+    config = finscope_config(use_llm, settings)
     config["max_debate_rounds"] = max_debate_rounds
     with _RUN_LOCK, _bound(engine, trade_date):
         try:

@@ -28,6 +28,7 @@ import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
+import RegimeHistoryPanel from "../components/ui/RegimeHistoryPanel.vue"
 
 type Phase = "loading" | "ready" | "error"
 type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
@@ -487,6 +488,8 @@ onMounted(() => {
               </ul>
             </PanelCard>
           </div>
+
+          <RegimeHistoryPanel />
 
           <SourceFooter
             :as-of="latestPublished || assessment.pitDate || '—'"

@@ -8,7 +8,7 @@ import StatCard from "../components/ui/StatCard.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
 import { ApiError, authorizedFetch, readJson } from "../api/client"
-import { logout, restoreSession, useSessionStore } from "../stores/auth"
+import { changePassword, logout, passwordHint, restoreSession, useSessionStore } from "../stores/auth"
 
 const session = useSessionStore()
 
@@ -106,10 +106,35 @@ const roleCaption = computed<string>(() =>
 
 const themeText = computed<string>(() => (profile.value?.theme === "light" ? "浅色" : "深色"))
 
-const passwordNote = computed<string>(() =>
-  isAdmin.value ? "暂不支持在线修改，如需重置请联系系统部署人员。" : "暂不支持在线修改，如需重置请联系管理员。",
-)
+const pwCurrent = ref("")
+const pwNew = ref("")
+const pwConfirm = ref("")
+const pwBusy = ref(false)
+const pwNote = ref<{ ok: boolean; text: string } | null>(null)
 
+async function submitPassword(): Promise<void> {
+  pwNote.value = null
+  const problem =
+    pwCurrent.value.length === 0
+      ? "请输入当前密码"
+      : passwordHint(pwNew.value) ?? (pwNew.value === pwConfirm.value ? null : "两次输入的新密码不一致")
+  if (problem) {
+    pwNote.value = { ok: false, text: problem }
+    return
+  }
+  pwBusy.value = true
+  try {
+    await changePassword(pwCurrent.value, pwNew.value)
+    pwCurrent.value = ""
+    pwNew.value = ""
+    pwConfirm.value = ""
+    pwNote.value = { ok: true, text: "密码已修改，其它设备上的登录已失效" }
+  } catch (caught) {
+    pwNote.value = { ok: false, text: caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试" }
+  } finally {
+    pwBusy.value = false
+  }
+}
 function mapped(table: Record<string, string>, value: string | undefined): string {
   if (!value) {
     return "未设置"
@@ -221,13 +246,24 @@ function asString(value: unknown): string | null {
             <dl class="kv">
               <dt>登录方式</dt>
               <dd>账号密码登录，登录状态过期后会自动续期一次</dd>
-              <dt>修改密码</dt>
-              <dd>{{ passwordNote }}</dd>
               <dt>退出登录</dt>
               <dd>点右上角「退出登录」会同时清除本机与服务器上的登录状态</dd>
             </dl>
           </PanelCard>
         </div>
+
+        <PanelCard title="修改密码" info="修改后，其它设备上的登录会立刻失效；本机保持登录">
+          <template #icon><el-icon><Lock /></el-icon></template>
+          <form class="pw-form" @submit.prevent="submitPassword">
+            <el-input v-model="pwCurrent" type="password" show-password autocomplete="current-password" placeholder="当前密码" aria-label="当前密码" />
+            <el-input v-model="pwNew" type="password" show-password autocomplete="new-password" placeholder="新密码（至少 8 位，含字母和数字）" aria-label="新密码" />
+            <el-input v-model="pwConfirm" type="password" show-password autocomplete="new-password" placeholder="再输入一次新密码" aria-label="确认新密码" />
+            <div class="pw-actions">
+              <el-button type="primary" native-type="submit" :loading="pwBusy">修改密码</el-button>
+              <span v-if="pwNote" class="pw-note" :class="pwNote.ok ? 'ok' : 'bad'" role="status">{{ pwNote.text }}</span>
+            </div>
+          </form>
+        </PanelCard>
       </template>
     </div>
   </main>
@@ -261,6 +297,30 @@ function asString(value: unknown): string | null {
   margin: 0;
   color: var(--text);
   line-height: 1.6;
+}
+
+.pw-form {
+  display: grid;
+  gap: 10px;
+  max-width: 420px;
+}
+
+.pw-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pw-note {
+  font-size: 13px;
+}
+
+.pw-note.ok {
+  color: var(--ok);
+}
+
+.pw-note.bad {
+  color: var(--danger);
 }
 
 .below-pill {

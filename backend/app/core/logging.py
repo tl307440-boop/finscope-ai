@@ -52,6 +52,9 @@ def configure_logging(level: str) -> None:
     root.addHandler(handler)
     root.setLevel(level.upper())
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    # httpx 默认在 INFO 级别打完整请求地址，Tiingo / FRED 的密钥在查询串里，不让它进日志。
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logger = logging.getLogger(name)
         logger.handlers.clear()

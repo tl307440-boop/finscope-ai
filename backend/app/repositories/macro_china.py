@@ -16,6 +16,16 @@ CHINA_MACRO_PROVIDER_ID = uuid.uuid5(
     uuid.NAMESPACE_URL, "https://finscope.local/providers/china_macro"
 )
 CHINA_MACRO_PROVIDER_CODE = "china_macro"
+_PROVIDER_NAME = "中国宏观（东方财富 / 商务部公开接口，另支持管理员导入 CSV）"
+_PROVIDER_CONFIG: dict[str, object] = {
+    "transport": "public_web",
+    "credential": "not_required",
+    "upstreams": [
+        "https://datacenter-web.eastmoney.com",
+        "https://data.mofcom.gov.cn",
+    ],
+    "note": "只调用对方公开的数据接口，限速、重试、超时；也可由管理员导入官方 CSV 补充",
+}
 
 
 @dataclass(frozen=True)
@@ -181,17 +191,17 @@ def _provider(session: Session) -> DataProvider:
         select(DataProvider).where(DataProvider.code == CHINA_MACRO_PROVIDER_CODE)
     ).one_or_none()
     if found is not None:
+        # 老库里这一行是「仅手工 CSV」；现在有自动抓取，登记信息跟着更新。
+        found.name = _PROVIDER_NAME
+        found.enabled = True
+        found.config_public = _PROVIDER_CONFIG
         return found
     provider = DataProvider(
         id=CHINA_MACRO_PROVIDER_ID,
         code=CHINA_MACRO_PROVIDER_CODE,
-        name="中国宏观正式来源 CSV",
-        enabled=False,
-        config_public={
-            "transport": "manual_csv",
-            "credential": "not_required",
-            "note": "只接受官方来源导出的 CSV，不抓取页面",
-        },
+        name=_PROVIDER_NAME,
+        enabled=True,
+        config_public=_PROVIDER_CONFIG,
     )
     session.add(provider)
     session.flush()
@@ -226,6 +236,7 @@ def _upsert_series(session: Session, *, provider_id: uuid.UUID, spec: CsvSeriesS
                 base_unit=spec.base_unit,
                 seasonal_adjustment=spec.seasonal_adjustment,
                 transform_rule="level",
+                # 保持 False：enabled 是「列入美国宏观目录」的开关，中国序列走独立的页面和接口。
                 enabled=False,
                 metadata_json=metadata,
             )
@@ -254,7 +265,8 @@ def _metadata(spec: CsvSeriesSpec) -> dict[str, object]:
         "time_precision": "date",
         "source_agency": spec.source_agency,
         "source_url": "",
-        "note": "数值只能由正式来源 CSV 导入，未导入时保持不可用",
+        "note": "数值由后台任务从公开接口自动抓取，或由管理员导入官方 CSV；"
+        "公布日为保守上界（见使用说明），未同步时保持不可用",
     }
 
 

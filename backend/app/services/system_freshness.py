@@ -24,6 +24,10 @@ _JOBS: tuple[tuple[str, str, freshness.Threshold], ...] = (
     ("tiingo_daily", "美股日线同步", freshness.BARS),
     ("sec_filings", "美股财报同步（SEC）", freshness.FINANCIALS),
     ("cn_statements", "A 股财报同步（东方财富）", freshness.FINANCIALS),
+    ("china_macro", "中国宏观六序列同步（东方财富 / 商务部）", freshness.FINANCIALS),
+    ("financial_metrics", "财务体检快照（本地计算）", freshness.FINANCIALS),
+    ("macro_regime", "宏观状态判断快照（本地计算）", freshness.FINANCIALS),
+    ("hotspot_events", "热点披露刷新（巨潮 / SEC）", freshness.FINANCIALS),
     ("us_universe", "美股证券清单（SEC）", freshness.UNIVERSE),
     ("cn_universe", "A 股证券清单（巨潮）", freshness.UNIVERSE),
 )
@@ -94,7 +98,7 @@ def _macro(engine: Engine, now: datetime) -> list[FreshnessItem]:
         state: ItemState = freshness.day_state(
             latest, now.date(), freshness.macro_threshold(frequency)
         )
-        detail = f"{frequency}序列" if latest else "尚无观测值（该序列目前没有接入数据源）"
+        detail = f"{frequency}序列" if latest else "尚无观测值（还没有同步到数据）"
         items.append(
             FreshnessItem(
                 group="macro",
