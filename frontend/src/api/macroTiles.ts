@@ -103,7 +103,7 @@ function isPreviousPeriod(previous: string, current: string, frequency: string):
   if (frequency === "Weekly") {
     return Math.round((Date.parse(current) - Date.parse(previous)) / 86_400_000) === 7
   }
-  return true
+  return frequency === "Daily"
 }
 
 /** 相邻月份之差；中间断档的月份不出值。 */

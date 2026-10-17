@@ -206,6 +206,22 @@ describe("指标带口径", () => {
     expect(tile.direction).toBe("none")
   })
 
+  it("目录里没有该序列时频率未知，不显示较上期", () => {
+    const tile = buildTile(
+      spec("unrate"),
+      {
+        UNRATE: [
+          { date: "2026-08-01", value: 4.2 },
+          { date: "2026-09-01", value: 4.3 },
+        ],
+      },
+      [],
+    )
+    expect(tile.value).toBe("4.30")
+    expect(tile.deltaText).toBe("—")
+    expect(tile.direction).toBe("none")
+  })
+
   it("同比因上年缺月丢点后，最新一期的上一期不相邻则不显示较上期", () => {
     const tile = buildTile(
       spec("cpi"),
