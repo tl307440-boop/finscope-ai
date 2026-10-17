@@ -40,6 +40,7 @@ import DeltaValue from "../components/ui/DeltaValue.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
+import SeriesPicker from "../components/ui/SeriesPicker.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 
@@ -265,6 +266,8 @@ function palette() {
     violet: cssColor("--violet", "#a78bfa"),
     orange: cssColor("--orange", "#fb923c"),
     warn: cssColor("--warn", "#fbbf24"),
+    ok: cssColor("--ok", "#34d399"),
+    pink: "#f472b6",
     text: cssColor("--text", "#e6edf8"),
     muted: cssColor("--muted", "#94a4be"),
     line: cssColor("--line", "rgba(96,140,220,0.16)"),
@@ -276,118 +279,174 @@ function percentTip(value: unknown): string {
   return typeof value === "number" ? `${value.toFixed(2)}%` : "—"
 }
 
-/** 通胀走势：CPI 与核心 PCE 的同比（%），和 2% 目标同一口径。 */
-const inflationOption = computed<EChartsCoreOption | null>(() => {
-  const cpi = (yoyByCode.value["CPIAUCSL"] ?? []).slice(-60)
-  const pce = (yoyByCode.value["PCEPILFE"] ?? []).slice(-60)
-  if (cpi.length < 2 && pce.length < 2) {
-    return null
+/**
+ * 走势图可聚合的指标（与指标带一一对应，共 8 个）。
+ *  - percent：百分比口径（CPI / 核心 PCE 为同比），共用左轴；
+ *  - amount：GDP，单位换算成万亿美元，单独走右轴，避免把百分比压成一条直线；
+ *  - step：联邦基金利率、GDP 是「公布后一直有效」的阶梯，其余按观测点连线。
+ * 不同频率（日 / 月 / 季）都放在时间轴上，各画各的观测点，不插值、不补点。
+ */
+type PlotKind = "percent" | "amount"
+type PlotTone = "accent" | "orange" | "violet" | "warn" | "ok" | "cyan" | "pink" | "muted"
+
+interface PlotSpec {
+  code: (typeof TILE_CODES)[number]
+  label: string
+  tone: PlotTone
+  kind: PlotKind
+  step: boolean
+}
+
+const PLOT_SPECS: readonly PlotSpec[] = [
+  { code: "GDP", label: "美国 GDP（右轴）", tone: "muted", kind: "amount", step: true },
+  { code: "CPIAUCSL", label: "CPI 同比", tone: "accent", kind: "percent", step: false },
+  { code: "PCEPILFE", label: "核心 PCE 同比", tone: "orange", kind: "percent", step: false },
+  { code: "UNRATE", label: "失业率", tone: "violet", kind: "percent", step: false },
+  { code: "FEDFUNDS", label: "联邦基金利率", tone: "warn", kind: "percent", step: true },
+  { code: "DGS10", label: "10 年期美债", tone: "ok", kind: "percent", step: false },
+  { code: "T10Y2Y", label: "10Y−2Y 利差", tone: "pink", kind: "percent", step: false },
+  { code: "DGS2", label: "2 年期美债", tone: "cyan", kind: "percent", step: false },
+]
+
+const YEAR_OPTIONS = [1, 2, 3, 5] as const
+
+interface TrendState {
+  codes: string[]
+  years: number
+}
+
+/** 两张图的默认组合保持原样；之后可在图例里自由增减任意指标。 */
+const inflationTrend = ref<TrendState>({ codes: ["CPIAUCSL", "PCEPILFE"], years: 5 })
+const ratesTrend = ref<TrendState>({ codes: ["FEDFUNDS", "DGS10", "DGS2"], years: 2 })
+
+function plotRows(spec: PlotSpec): Observation[] {
+  if (YOY_CODES.has(spec.code)) {
+    return yoyByCode.value[spec.code] ?? []
+  }
+  const rows = rowsOf(spec.code)
+  // GDP 观测值单位是十亿美元，换成万亿美元（与指标带的「万亿美元」一致）。
+  return spec.kind === "amount" ? rows.map((row) => ({ date: row.date, value: row.value / 1000 })) : rows
+}
+
+function toneColor(tone: PlotTone, colors: ReturnType<typeof palette>): string {
+  const map: Record<PlotTone, string> = {
+    accent: colors.accent,
+    orange: colors.orange,
+    violet: colors.violet,
+    warn: colors.warn,
+    ok: colors.ok,
+    cyan: colors.cyan,
+    pink: colors.pink,
+    muted: colors.muted,
+  }
+  return map[tone]
+}
+
+const pickerOptions = computed(() => {
+  const colors = palette()
+  return PLOT_SPECS.map((spec) => {
+    const item = catalogItem(spec.code)
+    return {
+      code: spec.code,
+      label: spec.label,
+      color: toneColor(spec.tone, colors),
+      disabled: plotRows(spec).length < 2,
+      hint: item
+        ? `${item.nameEn || item.name} · ${frequencyLabel(item.frequency)}${spec.kind === "amount" ? " · 单位 万亿美元" : ""}`
+        : spec.label,
+    }
+  })
+})
+
+function amountTip(value: unknown): string {
+  return typeof value === "number" ? `${value.toFixed(2)} 万亿美元` : "—"
+}
+
+function shiftYears(date: string, years: number): string {
+  return `${Number(date.slice(0, 4)) - years}${date.slice(4)}`
+}
+
+interface TrendPlot {
+  option: EChartsCoreOption | null
+  latest: string[]
+}
+
+/** 把选中的任意多个指标聚合进同一张图。 */
+function buildTrend(state: TrendState): TrendPlot {
+  const picked = PLOT_SPECS.filter((spec) => state.codes.includes(spec.code))
+    .map((spec) => ({ spec, rows: plotRows(spec) }))
+    .filter((entry) => entry.rows.length > 1)
+  if (!picked.length) {
+    return { option: null, latest: [] }
   }
   const colors = palette()
-  const dates = [...new Set([...cpi, ...pce].map((row) => row.date))].sort()
-  const lookup = (rows: Observation[]) => {
-    const map = new Map(rows.map((row) => [row.date, row.value]))
-    return dates.map((date) => map.get(date) ?? null)
+  const newest = picked.reduce((high, entry) => {
+    const last = entry.rows[entry.rows.length - 1]!.date
+    return last > high ? last : high
+  }, "")
+  const cutoff = shiftYears(newest, state.years)
+  const windowed = picked.map((entry) => ({ ...entry, rows: entry.rows.filter((row) => row.date >= cutoff) }))
+
+  const axisKinds: PlotKind[] = []
+  for (const kind of ["percent", "amount"] as const) {
+    if (windowed.some((entry) => entry.spec.kind === kind)) {
+      axisKinds.push(kind)
+    }
   }
-  return {
-    grid: { left: 8, right: 44, top: 34, bottom: 4, containLabel: true },
-    legend: { top: 0, right: 0, data: ["CPI 同比", "核心 PCE 同比"] },
-    tooltip: { trigger: "axis", valueFormatter: percentTip },
-    xAxis: {
-      type: "category",
-      data: dates.map((date) => date.slice(0, 7)),
-      boundaryGap: false,
-      axisLabel: { hideOverlap: true },
-    },
-    yAxis: {
+  const targetOwner = windowed.find((entry) => YOY_CODES.has(entry.spec.code))?.spec.code
+
+  const option: EChartsCoreOption = {
+    grid: { left: 8, right: 12, top: 12, bottom: 4, containLabel: true },
+    tooltip: { trigger: "axis" },
+    xAxis: { type: "time", axisLabel: { hideOverlap: true } },
+    yAxis: axisKinds.map((kind, index) => ({
       type: "value",
       scale: true,
-      axisLabel: { formatter: "{value}%" },
-    },
-    series: [
-      {
-        name: "CPI 同比",
-        type: "line",
-        smooth: true,
-        connectNulls: true,
-        data: lookup(cpi),
-        lineStyle: { color: colors.accent, width: 2 },
-        itemStyle: { color: colors.accent },
-        areaStyle: { color: colors.accent, opacity: 0.08 },
-        markLine: {
-          silent: true,
-          symbol: "none",
-          lineStyle: { color: colors.muted, type: "dashed" },
-          label: { color: colors.muted, fontSize: 11, formatter: "目标 2%", position: "end" },
-          data: [{ yAxis: 2 }],
-        },
-      },
-      {
-        name: "核心 PCE 同比",
-        type: "line",
-        smooth: true,
-        connectNulls: true,
-        data: lookup(pce),
-        lineStyle: { color: colors.orange, width: 2 },
-        itemStyle: { color: colors.orange },
-      },
-    ],
-  }
-})
-
-const inflationLatest = computed<string>(() => {
-  const parts: string[] = []
-  const cpi = yoyByCode.value["CPIAUCSL"] ?? []
-  const pce = yoyByCode.value["PCEPILFE"] ?? []
-  const lastCpi = cpi[cpi.length - 1]
-  const lastPce = pce[pce.length - 1]
-  if (lastCpi) {
-    parts.push(`CPI ${lastCpi.date.slice(0, 7)} ${lastCpi.value.toFixed(2)}%`)
-  }
-  if (lastPce) {
-    parts.push(`核心 PCE ${lastPce.date.slice(0, 7)} ${lastPce.value.toFixed(2)}%`)
-  }
-  return parts.join(" · ")
-})
-
-/** 利率：联邦基金利率（月度阶梯）与 2Y / 10Y 美债收益率（日度），用时间轴对齐不同频率。 */
-const ratesOption = computed<EChartsCoreOption | null>(() => {
-  const dgs2 = rowsOf("DGS2")
-  const dgs10 = rowsOf("DGS10")
-  const daily = [...dgs2, ...dgs10]
-  const start = daily.length ? daily.reduce((low, row) => (row.date < low ? row.date : low), daily[0]!.date) : ""
-  const fed = rowsOf("FEDFUNDS").filter((row) => !start || row.date >= start.slice(0, 7))
-  const lines = [
-    { name: "联邦基金利率", rows: start ? fed : fed.slice(-48), step: true },
-    { name: "10 年期美债", rows: dgs10, step: false },
-    { name: "2 年期美债", rows: dgs2, step: false },
-  ].filter((line) => line.rows.length > 1)
-  if (!lines.length) {
-    return null
-  }
-  const colors = palette()
-  const tones: Record<string, string> = {
-    联邦基金利率: colors.warn,
-    "10 年期美债": colors.accent,
-    "2 年期美债": colors.cyan,
-  }
-  return {
-    grid: { left: 8, right: 12, top: 34, bottom: 4, containLabel: true },
-    legend: { top: 0, right: 0, data: lines.map((line) => line.name) },
-    tooltip: { trigger: "axis", valueFormatter: percentTip },
-    xAxis: { type: "time", axisLabel: { hideOverlap: true } },
-    yAxis: { type: "value", scale: true, axisLabel: { formatter: "{value}%" } },
-    series: lines.map((line) => ({
-      name: line.name,
-      type: "line",
-      step: line.step ? "end" : undefined,
-      showSymbol: false,
-      data: line.rows.map((row) => [row.date, row.value]),
-      lineStyle: { color: tones[line.name], width: line.step ? 2 : 1.6 },
-      itemStyle: { color: tones[line.name] },
+      position: index === 0 ? "left" : "right",
+      axisLabel: { formatter: kind === "percent" ? "{value}%" : "{value}万亿" },
+      splitLine: { show: index === 0 },
     })),
+    series: windowed.map(({ spec, rows }) => {
+      const color = toneColor(spec.tone, colors)
+      return {
+        name: spec.label,
+        type: "line",
+        yAxisIndex: axisKinds.indexOf(spec.kind),
+        step: spec.step ? "end" : undefined,
+        showSymbol: false,
+        connectNulls: true,
+        data: rows.map((row) => [row.date, row.value]),
+        tooltip: { valueFormatter: spec.kind === "amount" ? amountTip : percentTip },
+        lineStyle: { color, width: spec.step ? 2 : 1.7 },
+        itemStyle: { color },
+        markLine:
+          spec.code === targetOwner
+            ? {
+                silent: true,
+                symbol: "none",
+                lineStyle: { color: colors.muted, type: "dashed" },
+                label: { color: colors.muted, fontSize: 11, formatter: "通胀目标 2%", position: "insideEndTop" },
+                data: [{ yAxis: 2 }],
+              }
+            : undefined,
+      }
+    }),
   }
-})
+
+  const latest = windowed.flatMap(({ spec, rows }) => {
+    const last = rows[rows.length - 1]
+    if (!last) {
+      return []
+    }
+    const text = spec.kind === "amount" ? amountTip(last.value) : percentTip(last.value)
+    const shown = catalogItem(spec.code)?.frequency === "Daily" ? last.date : last.date.slice(0, 7)
+    return [`${spec.label.replace("（右轴）", "")} ${shown} ${text}`]
+  })
+  return { option, latest }
+}
+
+const inflationPlot = computed<TrendPlot>(() => buildTrend(inflationTrend.value))
+const ratesPlot = computed<TrendPlot>(() => buildTrend(ratesTrend.value))
 
 const spreadNote = computed<string>(() => {
   const rows = rowsOf("T10Y2Y")
@@ -713,9 +772,9 @@ function parseScore(value: unknown): DimensionScore | null {
   }
 }
 
-/** limit 保留最近 N 条：日频取约两年交易日，月/季频取 10 年，足够算同比和画走势。 */
+/** limit 保留最近 N 条：日频取约四年交易日（接口上限 1000），月/季频取 10 年，足够算同比和画 1–5 年走势。 */
 function limitFor(code: string): number {
-  return catalogItem(code)?.frequency === "Daily" ? 520 : 120
+  return catalogItem(code)?.frequency === "Daily" ? 1000 : 120
 }
 
 async function loadObservations(): Promise<void> {
@@ -924,19 +983,46 @@ onMounted(() => {
           </PanelCard>
 
           <div class="stack">
-            <PanelCard title="通胀走势" info="CPI 与核心 PCE 的同比（%）；同比 = 当月指数 ÷ 12 个月前同月指数 − 1">
+            <PanelCard
+              title="通胀走势"
+              info="默认 CPI 与核心 PCE 的同比（%）；点上方色块可加入或移除任意指标（不限数量）。同比 = 当月指数 ÷ 12 个月前同月指数 − 1；GDP 走右轴（万亿美元）"
+            >
               <template #icon><span class="panel-icon">▲</span></template>
-              <template #actions>
-                <span v-if="inflationLatest" class="muted small">{{ inflationLatest }}</span>
-              </template>
-              <VChart v-if="inflationOption" class="chart chart-half" :option="inflationOption" autoresize />
-              <StateBlock v-else state="empty" message="不足 13 个月的物价数据，暂无法计算同比" />
+              <SeriesPicker
+                v-model="inflationTrend.codes"
+                v-model:years="inflationTrend.years"
+                :options="pickerOptions"
+                :year-options="YEAR_OPTIONS"
+              />
+              <VChart v-if="inflationPlot.option" class="chart chart-half" :option="inflationPlot.option" autoresize />
+              <StateBlock
+                v-else
+                state="empty"
+                :message="
+                  inflationTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'
+                "
+              />
+              <p v-if="inflationPlot.latest.length" class="chart-note latest">{{ inflationPlot.latest.join(" · ") }}</p>
             </PanelCard>
 
-            <PanelCard title="联邦基金利率与美债收益率" info="联邦基金有效利率（月度）与 2 年、10 年期美债收益率（日度）">
+            <PanelCard
+              title="联邦基金利率与美债收益率"
+              info="默认联邦基金有效利率（月度）与 2 年、10 年期美债收益率（日度）；点上方色块可加入或移除任意指标（不限数量），不同频率按时间轴对齐、不插值"
+            >
               <template #icon><span class="panel-icon">▤</span></template>
-              <VChart v-if="ratesOption" class="chart chart-half" :option="ratesOption" autoresize />
-              <StateBlock v-else state="empty" message="利率数据不足两期，暂不画走势" />
+              <SeriesPicker
+                v-model="ratesTrend.codes"
+                v-model:years="ratesTrend.years"
+                :options="pickerOptions"
+                :year-options="YEAR_OPTIONS"
+              />
+              <VChart v-if="ratesPlot.option" class="chart chart-half" :option="ratesPlot.option" autoresize />
+              <StateBlock
+                v-else
+                state="empty"
+                :message="ratesTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
+              />
+              <p v-if="ratesPlot.latest.length" class="chart-note latest">{{ ratesPlot.latest.join(" · ") }}</p>
               <p v-if="spreadNote" class="chart-note">{{ spreadNote }}</p>
             </PanelCard>
           </div>
