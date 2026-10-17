@@ -141,6 +141,8 @@ watch(
 <style scoped>
 .ticker {
   position: relative;
+  /* 作为 grid 子项时默认 min-width:auto 会被内容撑开，导致整页变宽、轨道不滚动 */
+  min-width: 0;
 }
 
 .track {
