@@ -56,6 +56,9 @@ describe("宏观序列展示", () => {
     expect(regimeText("insufficient_data")).toBe("数据不足，暂不判断")
     expect(frequencyLabel("Monthly")).toBe("月度")
     expect(unitLabel("Index 1982-1984=100")).toBe("指数（1982-1984=100）")
+    expect(unitLabel("Billions of Chained 2017 Dollars")).toBe("十亿美元（2017 年不变价）")
+    expect(unitLabel("Dollars per Hour")).toBe("美元/小时")
+    expect(unitLabel("Number")).toBe("人")
   })
 
   it("没有观测值时不编造数字", () => {
