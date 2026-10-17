@@ -8,8 +8,12 @@ vi.mock("../../src/charts", () => ({
 }))
 
 import MacroView from "../../src/views/MacroView.vue"
+import { tileCodes } from "../../src/api/macroTiles"
+
+const ISM_SOURCE_KEYS: Record<string, string> = { ISM_SVC: "EMG00002790", ISM_MFG: "EMG00002791" }
 
 function catalogEntry(code: string, frequency: string, unit = "Percent") {
+  const ism = code in ISM_SOURCE_KEYS
   return {
     series_code: code,
     name_cn: code,
@@ -18,10 +22,25 @@ function catalogEntry(code: string, frequency: string, unit = "Percent") {
     frequency,
     base_unit: unit,
     seasonal_adjustment: "SA",
-    provider: code.startsWith("ISM_") ? "eastmoney" : "fred",
-    source_key: code.startsWith("ISM_") ? "EMG00000001" : code,
+    provider: ism ? "eastmoney" : "fred",
+    source_key: ism ? ISM_SOURCE_KEYS[code] : code,
   }
 }
+
+/** 走势图用到的序列（与 MacroView 的 PLOT_SPECS 一致）。 */
+const PLOT_CODES = [
+  "CPIAUCSL",
+  "PCEPILFE",
+  "UNRATE",
+  "CES0500000003",
+  "GDPC1",
+  "PCEC96",
+  "DFEDTARU",
+  "DGS5",
+  "DGS10",
+  "DGS20",
+  "T10Y2Y",
+]
 
 const CATALOG = [
   catalogEntry("CPIAUCSL", "Monthly", "Index"),
@@ -118,6 +137,41 @@ describe("美国经济页", () => {
     expect(unrate?.textContent).toContain("4.30")
     expect(unrate?.textContent).toContain("+0.10 pct")
     expect(unrate?.textContent).toContain("2026-09")
+  })
+
+  it("目录齐全时一次请求指标带 ∪ 走势图的全部序列，且不超过批量上限 20", async () => {
+    const expected = [...new Set([...tileCodes(), ...PLOT_CODES])].sort()
+    // GDP / FEDFUNDS / DGS2 仍在目录里，但不属于指标带与走势图，不应请求
+    const catalog = [...expected, "GDP", "FEDFUNDS", "DGS2"].map((code) => catalogEntry(code, "Monthly"))
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("/api/v1/macro/series")) {
+        return Promise.resolve(
+          jsonResponse({ data: { provider_code: "fred", availability: "configured", notice: "", series: catalog } }),
+        )
+      }
+      if (url.includes("/api/v1/macro/observations")) {
+        return Promise.resolve(jsonResponse({ data: { pit_date: "2026-10-17", items: [] } }))
+      }
+      return Promise.resolve(jsonResponse(assessmentBody))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    renderPage()
+
+    await waitFor(() => expect(document.querySelectorAll(".ticker-tile")).toHaveLength(15))
+    const batch = fetchMock.mock.calls.map(([input]) => String(input)).filter((url) => url.includes("/macro/observations"))
+    expect(batch).toHaveLength(1)
+    const codes = new URL(batch[0] ?? "", "http://localhost").searchParams.get("codes")?.split(",") ?? []
+    expect(codes).toHaveLength(new Set(codes).size)
+    expect([...codes].sort()).toEqual(expected)
+    expect(codes.length).toBeLessThanOrEqual(20)
+    expect(codes).toContain("DFEDTARL")
+
+    const ism = [...document.querySelectorAll(".ticker-tile")].find((node) =>
+      node.textContent?.includes("ISM 服务业 PMI"),
+    )
+    expect(ism?.textContent).toContain("东方财富指标 EMG00002790")
   })
 
   it("批量接口出错时整页如实显示错误，不显示指标", async () => {
