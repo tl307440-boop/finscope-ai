@@ -149,6 +149,26 @@ class MacroRepository:
                     points.append(point)
             return points
 
+    def list_vintages_many(self, series_codes: Sequence[str]) -> dict[str, list[VintagePoint]]:
+        """批量读取：只同步一次目录、只查一次库。"""
+
+        self.ensure_catalog()
+        found: dict[str, list[VintagePoint]] = {code: [] for code in series_codes}
+        if not found:
+            return found
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(MacroSeries.series_code, MacroObservation)
+                .join(MacroSeries, MacroObservation.series_id == MacroSeries.id)
+                .where(MacroSeries.series_code.in_(list(found)))
+                .order_by(MacroObservation.observation_date)
+            ).all()
+            for series_code, row in rows:
+                point = _point(row)
+                if point is not None:
+                    found[series_code].append(point)
+        return found
+
 
 def _point(row: MacroObservation) -> VintagePoint | None:
     if row.realtime_start is None or row.realtime_end is None:

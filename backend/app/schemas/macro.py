@@ -21,6 +21,8 @@ class MacroSeriesItem(BaseModel):
     frequency: str
     base_unit: str
     seasonal_adjustment: str
+    provider: str
+    source_key: str
 
 
 class MacroCatalog(BaseModel):
@@ -47,6 +49,11 @@ class ObservationPage(BaseModel):
     observations: list[ObservationItem]
     empty_message: str | None = None
     truncated: bool
+
+
+class ObservationBatch(BaseModel):
+    pit_date: date
+    items: list[ObservationPage]
 
 
 class FredSyncResult(BaseModel):
@@ -76,6 +83,8 @@ def build_catalog(seeds: list[MacroSeriesSeed], *, availability: Availability) -
                 frequency=item.frequency,
                 base_unit=item.base_unit,
                 seasonal_adjustment=item.seasonal_adjustment,
+                provider=item.provider,
+                source_key=item.source_key,
             )
             for item in ordered
         ],

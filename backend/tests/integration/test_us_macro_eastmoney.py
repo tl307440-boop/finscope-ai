@@ -6,10 +6,12 @@ from decimal import Decimal
 import pytest
 from app.core.config import get_settings
 from app.db.session import create_db_engine
+from app.main import create_app
 from app.providers.eastmoney_us_macro import LatestValue
 from app.providers.fred import FredVintage
 from app.repositories.macro import MacroRepository
 from app.services.fred_sync import sync_fred_series
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -79,3 +81,27 @@ def test_ism_revision_is_recorded_from_first_sync(engine: Engine) -> None:
     seeds = {seed.series_code: seed for seed in repository.list_series()}
     assert seeds["ISM_MFG"].provider == "eastmoney"
     assert seeds["ISM_MFG"].source_key == "EMG00002790"
+
+
+@pytest.mark.integration
+def test_batch_endpoint_hides_ism_until_the_day_after_release(engine: Engine) -> None:
+    MacroRepository(engine).upsert_latest_values(
+        "ISM_MFG",
+        [LatestValue(OBSERVED, date(1899, 2, 1), Decimal("50.3"))],
+        fetched_at=datetime(2026, 10, 1, 15, tzinfo=UTC),
+    )
+    with TestClient(create_app()) as client:
+        release = client.get(
+            "/api/v1/macro/observations", params={"codes": "ISM_MFG,UNRATE", "as_of": "1899-02-01"}
+        )
+        after = client.get(
+            "/api/v1/macro/observations", params={"codes": "ISM_MFG", "as_of": "1899-02-02"}
+        )
+        unknown = client.get("/api/v1/macro/observations", params={"codes": "ISM_MFG,NOPE"})
+    assert release.status_code == 200
+    items = release.json()["data"]["items"]
+    assert [item["series_code"] for item in items] == ["ISM_MFG", "UNRATE"]
+    assert items[0]["observations"] == []
+    assert [row["value"] for row in after.json()["data"]["items"][0]["observations"]] == ["50.3"]
+    assert unknown.status_code == 422
+    assert unknown.json()["error"]["details"]["unknown_codes"] == ["NOPE"]

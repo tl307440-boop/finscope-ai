@@ -17,6 +17,7 @@ from app.schemas.auth import fred_availability
 from app.schemas.macro import build_assessment, build_catalog, build_observations
 from app.services.auth_types import UserRecord
 from app.services.china_macro import CHINA_SERIES, parse_macro_csv, public_status
+from app.services.macro_batch import build_observation_batch, parse_codes
 from app.services.macro_regime import assess_as_of
 from app.services.macro_rules import RULE_NOTICE
 from app.services.runtime_settings import effective_settings
@@ -77,6 +78,17 @@ def read_macro_observations(
         raise AppError(code="NOT_FOUND", message="暂无该宏观序列", status_code=404)
     visible = select_visible(rows, pit)
     payload = build_observations(series_code=series_code, pit=pit, rows=visible, limit=limit)
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.get("/observations", summary="一次取回多条宏观序列在某时点可见的观测")
+def read_macro_observation_batch(
+    request: Request,
+    codes: Annotated[str, Query(min_length=1, max_length=400)],
+    as_of: Annotated[str | None, Query()] = None,
+) -> JSONResponse:
+    pit = _parse_as_of(as_of)
+    payload = build_observation_batch(_repository(request), parse_codes(codes), pit)
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 
