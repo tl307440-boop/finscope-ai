@@ -397,7 +397,93 @@ def test_sync_request_accepts_underscored_codes() -> None:
     assert body.series_code == "ISM_MFG"
 
 
-def test_scheduler_syncs_every_catalog_series_by_default() -> None:
+def test_scheduler_syncs_every_catalog_series_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.core.config import Settings
 
-    assert set(Settings().scheduler_series_codes()) == set(catalog_codes())
+    monkeypatch.delenv("SCHEDULER_FRED_SERIES", raising=False)
+    settings = Settings(_env_file=None)
+    assert set(settings.scheduler_series_codes()) == set(catalog_codes())
+
+
+class StoredVintagesRepository(MacroRepository):
+    def __init__(self, stored: list[VintagePoint]) -> None:
+        self.stored = stored
+        self.loads: list[tuple[str, date | None, date | None]] = []
+        self.writes: list[tuple[str, list[FredVintage], datetime]] = []
+
+    def list_vintages(
+        self,
+        series_code: str,
+        *,
+        start: date | None,
+        end: date | None,
+    ) -> list[VintagePoint] | None:
+        self.loads.append((series_code, start, end))
+        return self.stored
+
+    def upsert_vintages(
+        self,
+        series_code: str,
+        vintages: tuple[FredVintage, ...] | list[FredVintage],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        self.writes.append((series_code, list(vintages), fetched_at))
+        return len(vintages)
+
+
+def _stored_ism(value: str) -> VintagePoint:
+    return VintagePoint(
+        observation_date=date(2026, 9, 1),
+        value=Decimal(value),
+        unit="Index",
+        realtime_start=date(2026, 10, 5),
+        realtime_end=date(9999, 12, 31),
+        revision_no=1,
+    )
+
+
+def test_latest_values_skip_unchanged_value_and_load_full_history() -> None:
+    repository = StoredVintagesRepository([_stored_ism("54.900000")])
+    written = repository.upsert_latest_values(
+        "ISM_SVC",
+        [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9"))],
+        fetched_at=datetime(2026, 10, 18, 2, tzinfo=UTC),
+    )
+    assert written == 0
+    assert repository.writes == []
+    assert repository.loads == [("ISM_SVC", None, None)]
+
+
+def test_latest_values_revision_uses_the_new_york_fetch_day() -> None:
+    repository = StoredVintagesRepository([_stored_ism("54.900000")])
+    fetched_at = datetime(2026, 10, 18, 2, tzinfo=UTC)
+    written = repository.upsert_latest_values(
+        "ISM_SVC",
+        [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("55.2"))],
+        fetched_at=fetched_at,
+    )
+    assert written == 2
+    assert repository.loads == [("ISM_SVC", None, None)]
+    assert repository.writes == [
+        (
+            "ISM_SVC",
+            [
+                FredVintage(
+                    observation_date=date(2026, 9, 1),
+                    value=Decimal("54.900000"),
+                    realtime_start=date(2026, 10, 5),
+                    realtime_end=date(2026, 10, 17),
+                ),
+                FredVintage(
+                    observation_date=date(2026, 9, 1),
+                    value=Decimal("55.2"),
+                    realtime_start=date(2026, 10, 17),
+                    realtime_end=date(9999, 12, 31),
+                ),
+            ],
+            fetched_at,
+        )
+    ]
