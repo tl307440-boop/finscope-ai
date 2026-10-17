@@ -1,17 +1,37 @@
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
-from app.catalog.macro_series import MacroSeriesSeed, fred_series_catalog
+from app.catalog.macro_series import MacroProvider, MacroSeriesSeed, fred_series_catalog
 from app.db.models.macro import MacroObservation, MacroSeries
 from app.db.models.provider import DataProvider
+from app.providers.eastmoney_us_macro import LatestValue, indicator_url
 from app.providers.fred import FredVintage
-from app.providers.vintage import VintagePoint, published_at_from_vintage
+from app.providers.latest_revisions import plan_latest_revisions
+from app.providers.vintage import VintagePoint, pit_date, published_at_from_vintage
 
 FRED_PROVIDER_ID = uuid.uuid5(uuid.NAMESPACE_URL, "https://finscope.local/providers/fred")
+EASTMONEY_US_PROVIDER_ID = uuid.uuid5(
+    uuid.NAMESPACE_URL, "https://finscope.local/providers/eastmoney-us-macro"
+)
+_PROVIDERS: dict[MacroProvider, tuple[uuid.UUID, str, str, dict[str, object]]] = {
+    "fred": (
+        FRED_PROVIDER_ID,
+        "fred",
+        "FRED",
+        {"transport": "https://api.stlouisfed.org", "credential": "environment"},
+    ),
+    "eastmoney": (
+        EASTMONEY_US_PROVIDER_ID,
+        "eastmoney_us_macro",
+        "东方财富数据中心（美国经济数据）",
+        {"transport": "https://datacenter-web.eastmoney.com", "credential": "none"},
+    ),
+}
 
 
 class MacroRepository:
@@ -21,9 +41,11 @@ class MacroRepository:
     def ensure_catalog(self) -> int:
         seeds = fred_series_catalog()
         with Session(self.engine) as session:
-            provider = _provider(session)
+            providers = {
+                code: _provider(session, code) for code in {seed.provider for seed in seeds}
+            }
             for seed in seeds:
-                _upsert_series(session, provider_id=provider.id, seed=seed)
+                _upsert_series(session, provider_id=providers[seed.provider].id, seed=seed)
             session.commit()
         return len(seeds)
 
@@ -75,6 +97,21 @@ class MacroRepository:
             session.commit()
         return written
 
+    def upsert_latest_values(
+        self,
+        series_code: str,
+        points: Sequence[LatestValue],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        """只有最新值的来源：与已入库版本比对后，只写新增或变化的版本。"""
+
+        existing = self.list_vintages(series_code, start=None, end=None) or []
+        planned = plan_latest_revisions(existing, points, fetched_on=pit_date(fetched_at))
+        if not planned:
+            return 0
+        return self.upsert_vintages(series_code, planned, fetched_at=fetched_at)
+
     def list_series(self) -> list[MacroSeriesSeed]:
         self.ensure_catalog()
         with Session(self.engine) as session:
@@ -107,34 +144,38 @@ class MacroRepository:
             rows = session.scalars(statement.order_by(MacroObservation.observation_date)).all()
             points: list[VintagePoint] = []
             for row in rows:
-                if row.realtime_start is None or row.realtime_end is None:
-                    continue
-                points.append(
-                    VintagePoint(
-                        observation_date=row.observation_date,
-                        value=row.value,
-                        unit=row.unit,
-                        realtime_start=row.realtime_start,
-                        realtime_end=row.realtime_end,
-                        revision_no=row.revision_no,
-                    )
-                )
+                point = _point(row)
+                if point is not None:
+                    points.append(point)
             return points
 
 
-def _provider(session: Session) -> DataProvider:
-    found = session.scalars(select(DataProvider).where(DataProvider.code == "fred")).one_or_none()
+def _point(row: MacroObservation) -> VintagePoint | None:
+    if row.realtime_start is None or row.realtime_end is None:
+        return None
+    return VintagePoint(
+        observation_date=row.observation_date,
+        value=row.value,
+        unit=row.unit,
+        realtime_start=row.realtime_start,
+        realtime_end=row.realtime_end,
+        revision_no=row.revision_no,
+    )
+
+
+def _provider(session: Session, code: MacroProvider) -> DataProvider:
+    provider_id, provider_code, name, config = _PROVIDERS[code]
+    found = session.scalars(
+        select(DataProvider).where(DataProvider.code == provider_code)
+    ).one_or_none()
     if found is not None:
         return found
     provider = DataProvider(
-        id=FRED_PROVIDER_ID,
-        code="fred",
-        name="FRED",
+        id=provider_id,
+        code=provider_code,
+        name=name,
         enabled=True,
-        config_public={
-            "transport": "https://api.stlouisfed.org",
-            "credential": "environment",
-        },
+        config_public=config,
     )
     session.add(provider)
     session.flush()
@@ -167,6 +208,7 @@ def _upsert_series(session: Session, *, provider_id: uuid.UUID, seed: MacroSerie
             )
         )
         return
+    existing.provider_id = provider_id
     existing.name_cn = seed.name_cn
     existing.name_en = seed.name_en
     existing.category = seed.category
@@ -179,13 +221,20 @@ def _upsert_series(session: Session, *, provider_id: uuid.UUID, seed: MacroSerie
 
 
 def _metadata(seed: MacroSeriesSeed) -> dict[str, object]:
+    source_url = (
+        indicator_url(seed.source_key)
+        if seed.provider == "eastmoney"
+        else f"https://fred.stlouisfed.org/series/{seed.series_code}"
+    )
     return {
         "official_title": seed.name_en,
         "unit_label": seed.base_unit,
         "seasonal_label": seed.seasonal_adjustment,
         "time_precision": "date",
-        "source_url": f"https://fred.stlouisfed.org/series/{seed.series_code}",
+        "source_url": source_url,
         "source_agency": seed.source_agency,
+        "provider": seed.provider,
+        "source_key": seed.source_key,
         "vintage_calendar": "America/New_York",
         "note": "频率和单位不同的序列不能直接相加",
     }
@@ -245,6 +294,10 @@ def _start_or_min(row: MacroObservation) -> date:
 
 def _seed_from_row(row: MacroSeries) -> MacroSeriesSeed:
     agency = row.metadata_json.get("source_agency")
+    source_key = row.metadata_json.get("source_key")
+    provider: MacroProvider = (
+        "eastmoney" if row.metadata_json.get("provider") == "eastmoney" else "fred"
+    )
     return MacroSeriesSeed(
         series_code=row.series_code,
         name_cn=row.name_cn,
@@ -254,6 +307,8 @@ def _seed_from_row(row: MacroSeries) -> MacroSeriesSeed:
         base_unit=row.base_unit,
         seasonal_adjustment=row.seasonal_adjustment,
         source_agency=agency if isinstance(agency, str) else "",
+        provider=provider,
+        source_key=source_key if isinstance(source_key, str) else "",
     )
 
 

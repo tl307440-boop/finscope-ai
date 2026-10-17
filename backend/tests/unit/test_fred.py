@@ -1,17 +1,19 @@
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
 from app.catalog.macro_series import catalog_codes, fred_codes, fred_series_catalog, seed_for
+from app.providers.eastmoney_us_macro import LatestValue
 from app.providers.errors import ProviderError
 from app.providers.fred import FredAdapter, FredVintage, parse_observations
 from app.providers.fred_public import fetch_public_csv, parse_graph_csv, public_realtime_start
 from app.providers.http_client import OutboundRequest, RawResponse, ResilientHttpClient, Transport
 from app.providers.vintage import VintagePoint, pit_date, select_visible, vintage_visible
 from app.repositories.macro import MacroRepository
-from app.schemas.macro import build_observations
+from app.schemas.macro import FredSyncRequest, build_observations
 from app.services.fred_sync import sync_fred_series
 
 
@@ -339,3 +341,63 @@ def test_observations_url_keeps_vintage_dates_under_fred_limit() -> None:
     assert "realtime_start=2020-10-17" in url
     assert "realtime_end=9999-12-31" in url
     assert "1776-07-04" not in url
+
+
+class LatestRepository(MacroRepository):
+    def __init__(self) -> None:
+        self.latest: list[tuple[str, list[LatestValue]]] = []
+
+    def upsert_latest_values(
+        self,
+        series_code: str,
+        points: Sequence[LatestValue],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        self.latest.append((series_code, list(points)))
+        return len(points)
+
+
+def test_ism_sync_goes_to_eastmoney_and_keeps_only_the_window() -> None:
+    repository = LatestRepository()
+
+    async def no_fred(series_code: str, start: date, end: date) -> tuple[FredVintage, ...]:
+        raise AssertionError("ISM 不应请求 FRED")
+
+    async def latest(indicator_id: str) -> tuple[LatestValue, ...]:
+        assert indicator_id == "EMG00002791"
+        return (
+            LatestValue(date(2026, 7, 1), date(2026, 8, 5), Decimal("54.1")),
+            LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9")),
+        )
+
+    written = asyncio.run(
+        sync_fred_series(
+            repository,
+            series_code="ISM_SVC",
+            observation_start=date(2026, 8, 1),
+            observation_end=date(2026, 10, 17),
+            fetch=no_fred,
+            fetched_at=datetime(2026, 10, 17, 15, tzinfo=UTC),
+            fetch_latest=latest,
+        )
+    )
+    assert written == 1
+    assert repository.latest == [
+        ("ISM_SVC", [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9"))])
+    ]
+
+
+def test_sync_request_accepts_underscored_codes() -> None:
+    body = FredSyncRequest(
+        series_code="ISM_MFG",
+        observation_start=date(2026, 1, 1),
+        observation_end=date(2026, 2, 1),
+    )
+    assert body.series_code == "ISM_MFG"
+
+
+def test_scheduler_syncs_every_catalog_series_by_default() -> None:
+    from app.core.config import Settings
+
+    assert set(Settings().scheduler_series_codes()) == set(catalog_codes())

@@ -56,7 +56,7 @@ class FredSyncResult(BaseModel):
 
 
 class FredSyncRequest(BaseModel):
-    series_code: str = Field(pattern=r"^[A-Z0-9]+$", min_length=1, max_length=32)
+    series_code: str = Field(pattern=r"^[A-Z0-9_]+$", min_length=1, max_length=32)
     observation_start: date
     observation_end: date
 

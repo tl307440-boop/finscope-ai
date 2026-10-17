@@ -4,7 +4,7 @@
 
 - A 股日线：东方财富 → 腾讯行情（akshare_sync 的两条源），24 个标的。
 - 交易日历：从上证指数实际有成交的日子推出开市日（只写开市，不推断休市）。
-- 美国宏观：FRED（有密钥走 observations，否则走公开 CSV）。
+- 美国宏观：FRED（有密钥走 observations，否则走公开 CSV）+ 东方财富 ISM PMI。
 - 美股财报：SEC EDGAR companyfacts，只保留核心科目与 10-K/10-Q。
 - 公告：巨潮资讯（A 股）与 SEC submissions（美股），只存标题、时间和官方链接。
 
@@ -126,7 +126,10 @@ async def _sync_fred(engine: Engine, today: date) -> None:
     repository = MacroRepository(engine)
     start = today - timedelta(days=365 * 6)
     mode = "observations 接口" if settings.fred_api_key.strip() else "公开 CSV"
-    print(f"\n[FRED] {len(catalog_codes())} 条序列，{start} ~ {today}，{mode}")
+    print(
+        f"\n[美国宏观] {len(catalog_codes())} 条序列（FRED + 东方财富 ISM），"
+        f"{start} ~ {today}，{mode}"
+    )
 
     async def fetch(code: str, first: date, last: date) -> tuple[FredVintage, ...]:
         return await fetch_from_fred(settings.fred_api_key, code, first, last)
