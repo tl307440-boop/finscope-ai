@@ -7,6 +7,7 @@ from app.api.v1.auth import me_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.companies import router as company_router
 from app.api.v1.company_data import router as company_data_router
+from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.documents import router as document_router
 from app.api.v1.filings import router as filing_router
 from app.api.v1.health import router as health_router
@@ -24,6 +25,7 @@ from app.api.v1.watchlists import router as watchlist_router
 
 router = APIRouter()
 router.include_router(health_router)
+router.include_router(dashboard_router)
 router.include_router(instrument_router)
 router.include_router(industry_router)
 router.include_router(industry_market_router)

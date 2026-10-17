@@ -7,6 +7,9 @@
 - 股池价格字段 p 为「元 × 1000」的整数；zdp 为涨跌幅（%）；fbt / lbt 为首次 / 最后封板时间 HHMMSS；
   fund 为封板资金（元）；lbc 为连板数；zbc 为炸板次数；hybk 为所属行业。
 - 非交易日查询返回 data = null。
+- 涨跌分布 `getTopicZDFenBu`：fenbu 为 `[{"档位": 家数}, ...]`；档位 11 / -11 为涨停 / 跌停
+  （与股池家数一致），0 为平盘，其余为 1 个百分点宽的涨跌幅档（1 = (0%, 1%]，-1 = [-1%, 0%)）。
+  覆盖沪深京全部 A 股，qdate 为交易日（YYYYMMDD）。
 - 机构调研每条是一次接待活动（NUMBERNEW=1 只取首条），SUM 为参与机构数，NOTICE_DATE 为公告日。
 """
 
@@ -59,6 +62,12 @@ class PoolPage:
 
 
 @dataclass(frozen=True)
+class Distribution:
+    trade_date: date | None
+    buckets: dict[int, int]
+
+
+@dataclass(frozen=True)
 class OrgSurvey:
     code: str
     name: str
@@ -88,6 +97,29 @@ def pool_url(kind: PoolKind, day: date) -> str:
         }
     )
     return f"{_POOL_BASE}{path}?{query}"
+
+
+def fenbu_url() -> str:
+    return f"{_POOL_BASE}getTopicZDFenBu?{urlencode({'ut': em.EASTMONEY_UT, 'dpt': 'wz.ztzt'})}"
+
+
+def parse_fenbu(payload: bytes) -> Distribution:
+    document = em._object(em._decode(payload, "涨跌分布"), "涨跌分布")
+    data = document.get("data")
+    if data is None:
+        return Distribution(trade_date=None, buckets={})
+    body = em._object(data, "涨跌分布")
+    buckets: dict[int, int] = {}
+    for raw in em._list(body.get("fenbu") or [], "涨跌分布"):
+        for key, value in em._object(raw, "涨跌分布").items():
+            count = em._int(value)
+            try:
+                bucket = int(key)
+            except ValueError:
+                continue
+            if count is not None and count >= 0 and -11 <= bucket <= 11:
+                buckets[bucket] = buckets.get(bucket, 0) + count
+    return Distribution(trade_date=_compact_day(body.get("qdate")), buckets=buckets)
 
 
 def survey_url(since: date, page: int, page_size: int = 500) -> str:
