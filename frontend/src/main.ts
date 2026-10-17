@@ -7,12 +7,12 @@ import "element-plus/theme-chalk/dark/css-vars.css"
 import App from "./App.vue"
 import { installCharts } from "./charts"
 import { router } from "./router"
-import { applyTheme, readTheme } from "./shell/theme"
+import { applyTheme, readTheme, THEME_STORAGE_KEY } from "./shell/theme"
 import "./styles/tokens.css"
 import "./styles/global.css"
 
 // 先落主题，避免 Element Plus 首屏闪一下亮色。
-applyTheme(readTheme(window.localStorage.getItem("finscope-theme")))
+applyTheme(readTheme(window.localStorage.getItem(THEME_STORAGE_KEY)))
 
 const app = createApp(App)
 app.use(createPinia())
