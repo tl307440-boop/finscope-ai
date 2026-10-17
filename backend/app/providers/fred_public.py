@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
 
-from app.catalog.macro_series import catalog_codes
+from app.catalog.macro_series import fred_codes
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.providers.http_client import ResilientHttpClient
@@ -88,7 +88,7 @@ async def fetch_public_csv(
     *,
     fetched_at: datetime,
 ) -> tuple[FredVintage, ...]:
-    if series_id not in catalog_codes():
+    if series_id not in fred_codes():
         raise ProviderError(
             code="VALIDATION_ERROR",
             message="不在已核对的宏观序列里",

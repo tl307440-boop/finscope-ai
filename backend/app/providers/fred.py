@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import cast
 from urllib.parse import urlencode
 
-from app.catalog.macro_series import catalog_codes
+from app.catalog.macro_series import fred_codes
 from app.providers.errors import ProviderError
 from app.providers.http_client import ResilientHttpClient
 
@@ -94,7 +94,7 @@ class FredAdapter:
                 message="未配置 FRED 密钥，数据源不可用",
                 status_code=503,
             )
-        if series_id not in catalog_codes():
+        if series_id not in fred_codes():
             raise ProviderError(
                 code="VALIDATION_ERROR",
                 message="不在已核对的宏观序列里",

@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
-from app.catalog.macro_series import fred_series_catalog
+from app.catalog.macro_series import catalog_codes, fred_codes, fred_series_catalog, seed_for
 from app.providers.errors import ProviderError
 from app.providers.fred import FredAdapter, FredVintage, parse_observations
 from app.providers.fred_public import fetch_public_csv, parse_graph_csv, public_realtime_start
@@ -60,6 +60,16 @@ def test_catalog_keeps_verified_units_and_no_observations() -> None:
         "DGS2",
         "DGS10",
         "T10Y2Y",
+        "CES0500000003",
+        "GDPC1",
+        "PCEC96",
+        "DGS5",
+        "DGS20",
+        "DFEDTARL",
+        "DFEDTARU",
+        "ICSA",
+        "ISM_MFG",
+        "ISM_SVC",
     }
     assert seeds["GDP"].frequency == "Quarterly"
     assert seeds["GDP"].base_unit == "Billions of Dollars"
@@ -73,12 +83,57 @@ def test_catalog_keeps_verified_units_and_no_observations() -> None:
     assert seeds["FEDFUNDS"].seasonal_adjustment == "Not Seasonally Adjusted"
     assert seeds["DGS10"].frequency == "Daily"
     assert seeds["T10Y2Y"].frequency == "Daily"
+    assert seeds["CES0500000003"].base_unit == "Dollars per Hour"
+    assert seeds["GDPC1"].base_unit == "Billions of Chained 2017 Dollars"
+    assert seeds["GDPC1"].frequency == "Quarterly"
+    assert seeds["PCEC96"].frequency == "Monthly"
+    assert seeds["ICSA"].frequency == "Weekly"
+    assert seeds["ICSA"].base_unit == "Number"
+    assert seeds["DFEDTARL"].frequency == "Daily"
+    assert seeds["ISM_MFG"].provider == "eastmoney"
+    assert seeds["ISM_MFG"].source_key == "EMG00002790"
+    assert seeds["ISM_SVC"].source_key == "EMG00002791"
     for seed in seeds.values():
         assert len(seed.name_en) <= 128
         assert len(seed.name_cn) <= 128
         assert len(seed.base_unit) <= 32
         assert len(seed.seasonal_adjustment) <= 32
         assert len(seed.frequency) <= 16
+        assert len(seed.series_code) <= 32
+        assert (seed.provider == "eastmoney") == bool(seed.source_key)
+
+
+def test_fred_codes_exclude_eastmoney_series() -> None:
+    assert "ISM_MFG" not in fred_codes()
+    assert "ISM_SVC" not in fred_codes()
+    assert "GDPC1" in fred_codes()
+    assert {"ISM_MFG", "ISM_SVC"} <= catalog_codes()
+    found = seed_for("ISM_SVC")
+    assert found is not None and found.provider == "eastmoney"
+    assert seed_for("NOT_A_SERIES") is None
+
+
+def test_fred_adapters_refuse_eastmoney_series_before_any_request() -> None:
+    transport = ScriptTransport(b"{}")
+    client = ResilientHttpClient(transport, sleeper=_sleep, max_attempts=1)
+
+    async def keyed() -> None:
+        await FredAdapter(client, "k").fetch_vintages("ISM_MFG", date(2026, 1, 1), date(2026, 2, 1))
+
+    async def public() -> None:
+        await fetch_public_csv(
+            client,
+            "ISM_MFG",
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+            fetched_at=datetime(2026, 10, 16, 6, 0, tzinfo=UTC),
+        )
+
+    for action in (keyed, public):
+        with pytest.raises(ProviderError) as caught:
+            asyncio.run(action())
+        assert caught.value.code == "VALIDATION_ERROR"
+    assert transport.calls == 0
 
 
 def test_parser_skips_missing_marker_and_keeps_decimal() -> None:

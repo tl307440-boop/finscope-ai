@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from typing import Literal
+
+MacroProvider = Literal["fred", "eastmoney"]
 
 
 @dataclass(frozen=True)
@@ -11,10 +14,17 @@ class MacroSeriesSeed:
     base_unit: str
     seasonal_adjustment: str
     source_agency: str
+    provider: MacroProvider = "fred"
+    # 东方财富指标 ID；FRED 序列留空（序列代码即 FRED ID）。
+    source_key: str = ""
+
+
+_FED_BOARD = "Board of Governors of the Federal Reserve System (US)"
+_ISM_VIA_EASTMONEY = "Institute for Supply Management (via Eastmoney)"
 
 
 def fred_series_catalog() -> tuple[MacroSeriesSeed, ...]:
-    """序列定义来自 FRED 系列页。这里没有观测值。"""
+    """序列定义来自 FRED 系列页与东方财富数据中心报表。这里没有观测值。"""
 
     return (
         MacroSeriesSeed(
@@ -80,7 +90,7 @@ def fred_series_catalog() -> tuple[MacroSeriesSeed, ...]:
             frequency="Monthly",
             base_unit="Percent",
             seasonal_adjustment="Not Seasonally Adjusted",
-            source_agency="Board of Governors of the Federal Reserve System (US)",
+            source_agency=_FED_BOARD,
         ),
         MacroSeriesSeed(
             series_code="DGS2",
@@ -93,7 +103,7 @@ def fred_series_catalog() -> tuple[MacroSeriesSeed, ...]:
             frequency="Daily",
             base_unit="Percent",
             seasonal_adjustment="Not Seasonally Adjusted",
-            source_agency="Board of Governors of the Federal Reserve System (US)",
+            source_agency=_FED_BOARD,
         ),
         MacroSeriesSeed(
             series_code="DGS10",
@@ -106,7 +116,7 @@ def fred_series_catalog() -> tuple[MacroSeriesSeed, ...]:
             frequency="Daily",
             base_unit="Percent",
             seasonal_adjustment="Not Seasonally Adjusted",
-            source_agency="Board of Governors of the Federal Reserve System (US)",
+            source_agency=_FED_BOARD,
         ),
         MacroSeriesSeed(
             series_code="T10Y2Y",
@@ -118,8 +128,131 @@ def fred_series_catalog() -> tuple[MacroSeriesSeed, ...]:
             seasonal_adjustment="Not Seasonally Adjusted",
             source_agency="Federal Reserve Bank of St. Louis",
         ),
+        MacroSeriesSeed(
+            series_code="CES0500000003",
+            name_cn="平均时薪（私营非农）",
+            name_en="Average Hourly Earnings of All Employees, Total Private",
+            category="labor",
+            frequency="Monthly",
+            base_unit="Dollars per Hour",
+            seasonal_adjustment="Seasonally Adjusted",
+            source_agency="U.S. Bureau of Labor Statistics",
+        ),
+        MacroSeriesSeed(
+            series_code="GDPC1",
+            name_cn="实际国内生产总值",
+            name_en="Real Gross Domestic Product",
+            category="output",
+            frequency="Quarterly",
+            base_unit="Billions of Chained 2017 Dollars",
+            seasonal_adjustment="Seasonally Adjusted Annual Rate",
+            source_agency="U.S. Bureau of Economic Analysis",
+        ),
+        MacroSeriesSeed(
+            series_code="PCEC96",
+            name_cn="实际个人消费支出",
+            name_en="Real Personal Consumption Expenditures",
+            category="consumption",
+            frequency="Monthly",
+            base_unit="Billions of Chained 2017 Dollars",
+            seasonal_adjustment="Seasonally Adjusted Annual Rate",
+            source_agency="U.S. Bureau of Economic Analysis",
+        ),
+        MacroSeriesSeed(
+            series_code="DGS5",
+            name_cn="美国5年期国债收益率",
+            name_en=(
+                "Market Yield on U.S. Treasury Securities at 5-Year Constant Maturity, "
+                "Quoted on an Investment Basis"
+            ),
+            category="rates",
+            frequency="Daily",
+            base_unit="Percent",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            source_agency=_FED_BOARD,
+        ),
+        MacroSeriesSeed(
+            series_code="DGS20",
+            name_cn="美国20年期国债收益率",
+            name_en=(
+                "Market Yield on U.S. Treasury Securities at 20-Year Constant Maturity, "
+                "Quoted on an Investment Basis"
+            ),
+            category="rates",
+            frequency="Daily",
+            base_unit="Percent",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            source_agency=_FED_BOARD,
+        ),
+        MacroSeriesSeed(
+            series_code="DFEDTARL",
+            name_cn="联邦基金目标利率下限",
+            name_en="Federal Funds Target Range - Lower Limit",
+            category="rates",
+            frequency="Daily",
+            base_unit="Percent",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            source_agency=_FED_BOARD,
+        ),
+        MacroSeriesSeed(
+            series_code="DFEDTARU",
+            name_cn="联邦基金目标利率上限",
+            name_en="Federal Funds Target Range - Upper Limit",
+            category="rates",
+            frequency="Daily",
+            base_unit="Percent",
+            seasonal_adjustment="Not Seasonally Adjusted",
+            source_agency=_FED_BOARD,
+        ),
+        MacroSeriesSeed(
+            series_code="ICSA",
+            name_cn="初请失业金人数",
+            name_en="Initial Claims",
+            category="labor",
+            frequency="Weekly",
+            base_unit="Number",
+            seasonal_adjustment="Seasonally Adjusted",
+            source_agency="U.S. Employment and Training Administration",
+        ),
+        MacroSeriesSeed(
+            series_code="ISM_MFG",
+            name_cn="ISM 制造业 PMI",
+            name_en="ISM Manufacturing PMI",
+            category="sentiment",
+            frequency="Monthly",
+            base_unit="Index",
+            seasonal_adjustment="Seasonally Adjusted",
+            source_agency=_ISM_VIA_EASTMONEY,
+            provider="eastmoney",
+            source_key="EMG00002790",
+        ),
+        MacroSeriesSeed(
+            series_code="ISM_SVC",
+            name_cn="ISM 服务业 PMI",
+            name_en="ISM Services PMI",
+            category="sentiment",
+            frequency="Monthly",
+            base_unit="Index",
+            seasonal_adjustment="Seasonally Adjusted",
+            source_agency=_ISM_VIA_EASTMONEY,
+            provider="eastmoney",
+            source_key="EMG00002791",
+        ),
     )
 
 
 def catalog_codes() -> frozenset[str]:
     return frozenset(seed.series_code for seed in fred_series_catalog())
+
+
+def fred_codes() -> frozenset[str]:
+    """只发往 FRED 的序列；东方财富序列走自己的 provider。"""
+
+    return frozenset(seed.series_code for seed in fred_series_catalog() if seed.provider == "fred")
+
+
+def seed_for(series_code: str) -> MacroSeriesSeed | None:
+    for seed in fred_series_catalog():
+        if seed.series_code == series_code:
+            return seed
+    return None
