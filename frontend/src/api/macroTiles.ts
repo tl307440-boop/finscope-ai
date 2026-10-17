@@ -92,6 +92,20 @@ function monthIndex(date: string): number {
   return Number(date.slice(0, 4)) * 12 + Number(date.slice(5, 7)) - 1
 }
 
+/** 「较上期」只认紧邻上一期；日度遇周末、节假日是常态，不做要求。 */
+function isPreviousPeriod(previous: string, current: string, frequency: string): boolean {
+  if (frequency === "Monthly") {
+    return monthIndex(current) - monthIndex(previous) === 1
+  }
+  if (frequency === "Quarterly") {
+    return monthIndex(current) - monthIndex(previous) === 3
+  }
+  if (frequency === "Weekly") {
+    return Math.round((Date.parse(current) - Date.parse(previous)) / 86_400_000) === 7
+  }
+  return true
+}
+
 /** 相邻月份之差；中间断档的月份不出值。 */
 export function diffSeries(rows: readonly Observation[]): Observation[] {
   const result: Observation[] = []
@@ -199,6 +213,9 @@ function tileInfo(spec: TileSpec, items: readonly (TileCatalogItem | null)[]): s
   if (formula) {
     parts.push(formula)
   }
+  if (spec.scale !== undefined) {
+    parts.push(`展示值 = 原值 × ${spec.scale}（${spec.unit}）`)
+  }
   if (items.some((item) => item?.provider === "eastmoney")) {
     parts.push(REVISION_NOTE)
   }
@@ -213,6 +230,7 @@ export function buildTile(
   const items = spec.codes.map((code) => catalog.find((entry) => entry.code === code) ?? null)
   const frequency = items[0]?.frequency ?? ""
   const digits = spec.digits ?? 2
+  const sparkPoints = SPARK_POINTS[frequency] ?? 36
   const base = { key: spec.key, label: spec.label, caption: spec.caption, unit: spec.unit, info: tileInfo(spec, items) }
   const empty: TileView = { ...base, value: "—", date: "暂无数据", delta: null, deltaText: "—", direction: "none", spark: [] }
 
@@ -231,7 +249,7 @@ export function buildTile(
       delta,
       deltaText: deltaText(delta, digits, spec.deltaSuffix),
       direction: directionOf(delta),
-      spark: points.map((point) => point.high),
+      spark: points.slice(-sparkPoints).map((point) => point.high),
     }
   }
 
@@ -245,7 +263,10 @@ export function buildTile(
     return empty
   }
   const previous = series[series.length - 2]
-  const delta = previous ? roundedDelta(latest.value, previous.value, digits) : null
+  const delta =
+    previous && isPreviousPeriod(previous.date, latest.date, frequency)
+      ? roundedDelta(latest.value, previous.value, digits)
+      : null
   return {
     ...base,
     value: formatNumber(latest.value, digits),
@@ -253,6 +274,6 @@ export function buildTile(
     delta,
     deltaText: deltaText(delta, digits, spec.deltaSuffix),
     direction: directionOf(delta),
-    spark: series.slice(-(SPARK_POINTS[frequency] ?? 36)).map((row) => row.value),
+    spark: series.slice(-sparkPoints).map((row) => row.value),
   }
 }
