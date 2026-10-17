@@ -61,7 +61,7 @@
 - `provider: Literal["fred", "eastmoney"] = "fred"`
 - `source_key: str = ""`：东方财富指标 ID；FRED 序列留空（序列代码即 FRED ID）。
 
-新增函数 `fred_codes()`（仅 `provider == "fred"`）与 `eastmoney_seeds()`。`catalog_codes()` 保持返回全部代码，供接口校验。
+新增函数 `fred_codes()`（仅 `provider == "fred"`）与 `seed_for(series_code) -> MacroSeriesSeed | None`。`catalog_codes()` 保持返回全部代码，供接口校验。
 
 新增 seed：
 
@@ -93,20 +93,28 @@
   - `observation_date` = `REPORT_DATE` 的日期（所属月首日）。
   - `VALUE` 为 null 的行是财经日历预排（`PUBLISH_DATE` 在未来），跳过。
   - 缺 `REPORT_DATE` / `PUBLISH_DATE` 或数值不可解析的行跳过；报文结构异常抛结构化 provider 错误。
-- `published_at` = `PUBLISH_DATE` 当天美东 10:00（ISM 官方发布时刻）换算 UTC。
+- 可见性与 FRED 完全一致：`realtime_start = PUBLISH_DATE`，发布日当天不可见、纽约次日零点起可见（`vintage_visible` / `published_at_from_vintage`），不另立时刻规则。
 
 ### 3.4 入库与修订 `repositories/macro.py`
 
 - `ensure_catalog` 按 seed 的 `provider` 关联 `data_providers`：东方财富用 `uuid5(NAMESPACE_URL, "https://finscope.local/providers/eastmoney-us-macro")` 固定 ID。
-- 新方法 `upsert_latest_values(series_code, points, fetched_at)`：
-  - 某观测日无记录 → 插入，`realtime_start = published_on`，`source_record_key = eastmoney:{indicator_id}:{YYYY-MM}`。
-  - 已有当前有效记录且值相同 → 不动（幂等）。
-  - 值不同（ISM 每年 1 月重估季节因子会改写历史）→ 旧记录补 `realtime_end = fetched_at 当日前一天`，新增一行 `realtime_start = fetched_at 当日`、`revision_no` 递增。
+- 纯函数 `plan_latest_revisions(existing, fresh, fetched_on)`（`providers/latest_revisions.py`）把「只有最新值」的来源换成版本行（`FredVintage`），再交给现有 `upsert_vintages` 入库，复用其去重键与修订编号：
+  - 某观测月无记录 → 一行 `realtime_start = published_on`、`realtime_end = 9999-12-31`。
+  - 当前有效版本（`realtime_end = 9999-12-31`）值相同 → 不写（幂等）。
+  - 值不同（ISM 每年 1 月重估季节因子会改写历史）→ 旧版本 `realtime_end = fetched_on − 1 天`，新增 `realtime_start = fetched_on` 的开放版本；若 `fetched_on <= 旧版本起点` 则直接改写旧版本的值。
+- 新方法 `upsert_latest_values(series_code, points, fetched_at)`：读已有版本 → 调用上面的纯函数 → `upsert_vintages`。
+- `source_record_key` 沿用现有格式 `{series_code}|{观测日}|{realtime_start}`；东方财富指标 ID 记在序列 `metadata_json.source_key` 与 `source_url`。
 - 东方财富只提供最新修订值、无历史快照：首次同步之前的历史只能是最新修订值，从首次同步起由本系统自行积累版本。
 
 ### 3.5 同步分派
 
-新增 `services/eastmoney_macro_sync.py`：遍历 `eastmoney_seeds()` 拉取并调用 `upsert_latest_values`。`jobs.py` 与 `bootstrap_data.py` 按 seed 的 `provider` 分派到 FRED 同步或东方财富同步。东方财富不可用时任务返回结构化错误，已入库数据不变。
+沿用现有任务类型 `fred_series`（含义扩为「美国宏观序列同步」），不新增任务类型：`services/fred_sync.py::sync_fred_series` 按 seed 的 `provider` 分派——FRED 走原 `fetch`，东方财富走新参数 `fetch_latest`（默认真实请求，测试可注入），只保留观测窗内的点，再 `upsert_latest_values`。worker、管理接口、定时任务、`bootstrap_data` 因此无需改调用方式。配套：
+
+- `schemas/macro.py::FredSyncRequest.series_code` 正则放宽为 `^[A-Z0-9_]+$`（`ISM_MFG` 含下划线）。
+- `core/config.py::scheduler_fred_series` 默认值追加 10 个新代码，定时任务每天一并同步。
+- 东方财富不可用时任务返回结构化错误，已入库数据不变。
+
+序列目录接口 `GET /macro/series` 每项追加 `provider`、`source_key`，前端据此写来源说明。
 
 ### 3.6 批量观测接口
 
@@ -115,7 +123,7 @@
 - `codes`：逗号分隔，1–20 个，去重；任一不在 `catalog_codes()` → 422 `VALIDATION_ERROR`，`details` 列出未知代码。
 - 每条序列 limit 按频率：Daily 1000、Weekly 260、Monthly / Quarterly 120。
 - 响应 `data = { pit_date, items: [{ series_code, time_precision, observations, empty_message, truncated }] }`，`items` 顺序与请求一致；单条结构与现有单序列接口相同，复用 `build_observations` 与同一套可见性过滤（`published_at <= as_of`）。
-- 路由只做参数解析，组装逻辑放 service。单序列接口保留。
+- 路由只做参数解析，组装逻辑放 `services/macro_batch.py`。仓库新增 `list_vintages_many(codes)`：只做一次 `ensure_catalog` 和一次联表查询（单序列 `list_vintages` 每次都会同步目录，循环调用 20 次代价过高）。单序列接口保留。
 
 ## 4. 前端设计
 
@@ -139,8 +147,9 @@ interface TileView {
   key: string; label: string; caption: string
   value: string          // 已格式化；无数据为 "—"
   date: string           // 最新观测日（日度/周度 YYYY-MM-DD，月度 YYYY-MM，季度 YYYY Qn）；无数据为 "暂无数据"
-  delta: number | null
-  deltaSuffix: string
+  unit: string           // 数值后的单位小字
+  delta: number | null   // 已按展示位数取整；-0 归一为 0
+  deltaText: string      // 「+0.10 pct」「-6 千人」；无数据为「—」
   direction: "up" | "down" | "flat" | "none"
   spark: number[]        // 主数值口径的最近 N 期（日度 120、周度 52、月度 36、季度 20）
   info: string           // 代码 / 来源 / 单位 / 季调 / 公式；ISM 追加「历史值为最新修订值」
@@ -162,7 +171,7 @@ export function buildTile(spec: TileSpec, rowsByCode: Record<string, Observation
 
 - `frontend/src/views/parts/macro/MacroTickerTile.vue`：单格。第一行：名称（加粗）+ 口径小字，右上迷你图（复用 `MiniSpark`）；中间大号数值；底部左 ▲/▼ + 较上期，右侧日期。`direction` 决定数值 / 三角 / 迷你图颜色：up 用 `--rise` 红、down 用 `--fall` 绿（沿用现有涨跌令牌，浅色主题自动适配）、flat / none 用 `--muted`。`?` 悬停显示 `info`。
 - `frontend/src/views/parts/macro/MacroTicker.vue`：滑动容器。
-  - 卡片固定宽 172px，`overflow-x: auto`，`scroll-snap-type: x mandatory`，隐藏原生滚动条。
+  - 卡片固定宽 172px，`overflow-x: auto`，`scroll-snap-type: x proximity`（mandatory 会把滚轮横移强行吸回，手感发顿），隐藏原生滚动条。
   - 滚轮：悬停时把纵向 `deltaY` 转为横向滚动并 `preventDefault`；已到对应端点时不拦截，让页面正常滚动。
   - 左右箭头按钮悬浮两侧，按滚动位置显隐，点击滚动一屏（`clientWidth − 一格宽`），`aria-label`「向左 / 向右滚动指标」。
   - 容器 `tabindex="0"`，左右方向键滚动一格；列表 `role="list"`、卡片 `role="listitem"`。
@@ -175,6 +184,7 @@ export function buildTile(spec: TileSpec, rowsByCode: Record<string, Observation
 - `PLOT_SPECS` 改为只含百分比口径指标：CPI 同比、核心 PCE 同比、失业率、平均时薪同比、实际 GDP 折年率、实际 PCE 同比、政策利率上限、5Y、10Y、20Y、10Y−2Y。PMI / 初请 / 非农留给子项目 3 的指数化对比。`plotRows` 的同比、折年率换算改用 `macroTiles.ts` 的同名函数，保证与指标带同口径。删掉仅为 GDP 右轴服务的 amount 分支。
 - 默认组合：通胀图「CPI 同比 + 核心 PCE 同比」；利率图「政策利率上限 + 5Y + 10Y + 20Y」。
 - 象限、规则解读、数据说明逻辑不改；数据说明补充新口径（非农当月新增、实际 GDP 折年率、ISM 来源与修订说明）。
+- `frontend/e2e/core.spec.ts` 用例 04 等待的请求改为 `/api/v1/macro/observations`（原先等单序列接口）。
 
 ### 4.4 状态
 
