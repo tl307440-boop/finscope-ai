@@ -38,6 +38,12 @@ import { formatShanghai } from "../api/health"
 import { describeJobScope, enqueueMessage, providerAccess, type ProviderAccess } from "../api/jobs"
 import { asNumber, asRecord, asString, listOf } from "../api/json"
 import { describeProbeFailure } from "../api/providerProbe"
+import {
+  BAR_RANGE_PRESETS,
+  FRED_RANGE_PRESETS,
+  presetRange,
+  type SyncRangePreset,
+} from "../api/syncRange"
 import { restoreSession, useSessionStore } from "../stores/auth"
 
 const session = useSessionStore()
@@ -153,6 +159,28 @@ const JOB_STATUS_TONE: Record<string, Tone> = {
   queued: "warn",
   cancelled: "muted",
 }
+
+const FRED_SERIES = [
+  { code: "GDP", name: "美国国内生产总值" },
+  { code: "UNRATE", name: "美国失业率" },
+  { code: "PAYEMS", name: "非农就业人数" },
+  { code: "CPIAUCSL", name: "美国消费者物价指数" },
+  { code: "PCEPILFE", name: "核心个人消费支出价格指数" },
+  { code: "FEDFUNDS", name: "联邦基金有效利率" },
+  { code: "DGS2", name: "美国2年期国债收益率" },
+  { code: "DGS10", name: "美国10年期国债收益率" },
+  { code: "T10Y2Y", name: "10年与2年期国债利差" },
+  { code: "CES0500000003", name: "平均时薪（私营非农）" },
+  { code: "GDPC1", name: "实际国内生产总值" },
+  { code: "PCEC96", name: "实际个人消费支出" },
+  { code: "DGS5", name: "美国5年期国债收益率" },
+  { code: "DGS20", name: "美国20年期国债收益率" },
+  { code: "DFEDTARL", name: "联邦基金目标利率下限" },
+  { code: "DFEDTARU", name: "联邦基金目标利率上限" },
+  { code: "ICSA", name: "初请失业金人数" },
+  { code: "ISM_MFG", name: "ISM 制造业 PMI" },
+  { code: "ISM_SVC", name: "ISM 服务业 PMI" },
+]
 
 const SYNC_OPTIONS = [
   { value: "600519.SH", label: "600519.SH 贵州茅台" },
@@ -598,6 +626,18 @@ async function runProbe(): Promise<void> {
   }
 }
 
+function fillFredRange(preset: SyncRangePreset): void {
+  const range = presetRange(preset, new Date())
+  syncStart.value = range.start
+  syncEnd.value = range.end
+}
+
+function fillBarRange(preset: SyncRangePreset): void {
+  const range = presetRange(preset, new Date())
+  barStart.value = range.start
+  barEnd.value = range.end
+}
+
 async function syncFred(): Promise<void> {
   syncPhase.value = "loading"
   syncText.value = ""
@@ -983,11 +1023,36 @@ onMounted(() => {
       <div class="grid-3">
         <PanelCard
           title="同步 FRED 序列"
-          info="按观察区间拉取美国宏观序列；未配置 FRED_API_KEY 时只能取到最新修订值"
+          info="按观察区间拉取美国宏观序列。5–50 年与「全部」填入截至今天的区间；全部为 100 年，再长会被接口拒绝。未配置 FRED_API_KEY 时只能取到最新修订值"
         >
           <template #icon><el-icon><DataLine /></el-icon></template>
           <form class="form-stack" @submit.prevent="syncFred">
-            <el-input v-model="syncCode" size="small" placeholder="序列代码，例如 UNRATE" aria-label="序列代码" />
+            <el-select
+              v-model="syncCode"
+              filterable
+              size="small"
+              style="width: 100%"
+              aria-label="序列代码"
+              placeholder="选择序列"
+            >
+              <el-option
+                v-for="item in FRED_SERIES"
+                :key="item.code"
+                :label="`${item.code} ${item.name}`"
+                :value="item.code"
+              />
+            </el-select>
+            <div class="range-picks" role="group" aria-label="观察区间">
+              <el-button
+                v-for="preset in FRED_RANGE_PRESETS"
+                :key="preset.label"
+                size="small"
+                native-type="button"
+                @click="fillFredRange(preset)"
+              >
+                {{ preset.label }}
+              </el-button>
+            </div>
             <el-date-picker
               v-model="syncStart"
               size="small"
@@ -1013,12 +1078,26 @@ onMounted(() => {
           </p>
         </PanelCard>
 
-        <PanelCard title="同步 A 股日线" info="把所选标的与日期区间加入同步队列，由后台任务依次执行">
+        <PanelCard
+          title="同步 A 股日线"
+          info="把所选标的与日期区间加入同步队列，由后台任务依次执行。日线最长约 10 年，只提供 5 年和 10 年"
+        >
           <template #icon><el-icon><DataLine /></el-icon></template>
           <form class="form-stack" @submit.prevent="syncBars">
             <el-select v-model="barSymbol" size="small" style="width: 100%" aria-label="同步标的">
               <el-option v-for="item in SYNC_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
             </el-select>
+            <div class="range-picks" role="group" aria-label="日线区间">
+              <el-button
+                v-for="preset in BAR_RANGE_PRESETS"
+                :key="preset.label"
+                size="small"
+                native-type="button"
+                @click="fillBarRange(preset)"
+              >
+                {{ preset.label }}
+              </el-button>
+            </div>
             <el-date-picker
               v-model="barStart"
               size="small"
@@ -1398,6 +1477,12 @@ onMounted(() => {
 .form-stack {
   display: grid;
   gap: 10px;
+}
+
+.range-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .inline-note {
