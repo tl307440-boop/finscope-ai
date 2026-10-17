@@ -4,6 +4,7 @@ from app.db.models.app_setting import AppSetting
 from app.db.models.board_market import BoardDailyBar, BoardDailySnapshot
 from app.db.models.chat import ChatMessage, ChatSession
 from app.db.models.dashboard_metric import DashboardDailyMetric
+from app.db.models.dashboard_snapshot import DashboardSeriesSnapshot
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
 from app.db.models.financial import FinancialMetric
@@ -46,6 +47,7 @@ __all__ = [
     "ChatMessage",
     "ChatSession",
     "DashboardDailyMetric",
+    "DashboardSeriesSnapshot",
     "DataProvider",
     "Document",
     "DocumentChunk",

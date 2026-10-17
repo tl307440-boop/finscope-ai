@@ -18,10 +18,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import partial
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 from urllib.parse import urlencode
 from uuid import UUID
 
+from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.providers import eastmoney_boards as em
@@ -38,6 +39,7 @@ from app.providers.disclosures import (
 from app.providers.errors import ProviderError
 from app.providers.fred_public import graph_csv_url, parse_graph_csv, public_realtime_start
 from app.repositories.dashboard_metrics import DashboardMetricRepository, StoredMetric
+from app.repositories.dashboard_snapshots import DashboardSnapshotRepository
 from app.repositories.watchlists import RecentClose, WatchGroup
 from app.schemas.cockpit import (
     AmountPoint,
@@ -94,7 +96,8 @@ _TTL_SPARK = 1800
 _KLINE_BARS = 260
 _PERIOD_BARS = {"day": 260, "week": 160, "month": 120}
 _FRED_LOOKBACK_DAYS = 900
-_FRED_BUDGET_SECONDS = 60.0
+_FRED_BUDGET_SECONDS = 8.0  # 单次请求最多等这么久；网关 60s 会 504，所以必须远小于它
+_FRED_STALE_BUDGET_SECONDS = 1.5  # 已有旧值时只等这么久，等不到就先展示旧值
 _SPARK_LIMIT = 12
 _TOP = 10
 _GAINER_MIN_AMOUNT = Decimal("3e8")
@@ -261,6 +264,9 @@ class DashboardService:
     cache: TtlCache = field(default_factory=TtlCache)
     now: Callable[[], datetime] = field(default=utc_now)
     metrics: DashboardMetricRepository | None = None
+    snapshots: DashboardSnapshotRepository | None = None
+    _restored: bool = field(default=False, init=False, repr=False)
+    _inflight: dict[str, asyncio.Task[Any]] = field(default_factory=dict, init=False, repr=False)
 
     # ------------------------------------------------------------ 市场：温度 + 指数 + 两市全景
 
@@ -446,10 +452,16 @@ class DashboardService:
 
     # ------------------------------------------------------------ 全球宏观
 
+    async def warm_macro(self) -> None:
+        """只预热宏观上游缓存（不写指标表），让用户打开页面时直接命中缓存。"""
+
+        await asyncio.gather(self._fred(), self._china_rates(), self._guard(self._assets()))
+
     async def macro(self) -> MacroOverview:
-        fred, us_section = await self._fred()
-        china, china_section = await self._china_rates()
-        assets, assets_section = await self._guard(self._assets())
+        # 三组上游互不依赖，并发拉取；总耗时取最慢的一组而不是三组相加。
+        (fred, us_section), (china, china_section), (assets, assets_section) = await asyncio.gather(
+            self._fred(), self._china_rates(), self._guard(self._assets())
+        )
         shibor = china.get("shibor", [])
         pmi = china.get("pmi", [])
         yields = [
@@ -839,19 +851,34 @@ class DashboardService:
         failed: list[str] = []
         stale = False
         fetched: datetime | None = None
-        deadline = asyncio.get_running_loop().time() + _FRED_BUDGET_SECONDS
-        for series_id in FRED_SERIES:
-            if asyncio.get_running_loop().time() > deadline:
-                failed.append(f"{series_id}（本次超时，稍后刷新）")
-                continue
+
+        await self._restore_snapshots()
+
+        async def one(series_id: str) -> Cached[tuple[rules.Observation, ...]] | str:
+            key = f"fred:{series_id}"
+            task = self._inflight_task(
+                key,
+                lambda: self.cache.get(key, _TTL_FRED, partial(self._load_fred, series_id)),
+            )
+            # 手里已有旧值（内存或库里的快照）就只多等一小会儿，等不到先用旧值。
+            budget = _FRED_STALE_BUDGET_SECONDS if self.cache.peek(key) else _FRED_BUDGET_SECONDS
             try:
-                cached = await self.cache.get(
-                    f"fred:{series_id}",
-                    _TTL_FRED,
-                    partial(self._load_fred, series_id),
-                )
+                # shield：本次请求等不及时放弃等待，但回源继续在后台跑完并写入缓存，
+                # 用户刷新或后台预热就能命中，而不是每次都从头再等一遍。
+                return await asyncio.wait_for(asyncio.shield(task), timeout=budget)
             except ProviderError as error:
-                failed.append(f"{series_id}（{error.message}）")
+                return f"{series_id}（{error.message}）"
+            except TimeoutError:
+                old = self.cache.peek(key)
+                if old is not None:
+                    return old
+                return f"{series_id}（正在后台加载，稍后刷新）"
+
+        # 序列互相独立：并发回源（出口限速仍然生效），冷启动不再是 9 次串行往返。
+        results = await asyncio.gather(*(one(series_id) for series_id in FRED_SERIES))
+        for series_id, cached in zip(FRED_SERIES, results, strict=True):
+            if isinstance(cached, str):
+                failed.append(cached)
                 continue
             found[series_id] = cached.value
             stale = stale or cached.stale
@@ -864,6 +891,24 @@ class DashboardService:
         return found, Section(
             status="stale" if failed or stale else "ok", reason=reason, fetched_at=fetched
         )
+
+    def _inflight_task(self, key: str, factory: Callable[[], Awaitable[T]]) -> asyncio.Task[T]:
+        """同一 key 的回源只起一个后台任务；调用方放弃等待也不会取消它。"""
+
+        existing = self._inflight.get(key)
+        if existing is not None and not existing.done():
+            return existing
+        task: asyncio.Task[T] = asyncio.ensure_future(factory())
+        self._inflight[key] = task
+
+        def finished(done: asyncio.Task[T]) -> None:
+            if self._inflight.get(key) is done:
+                del self._inflight[key]
+            if not done.cancelled():
+                done.exception()  # 取走异常，避免 “Task exception was never retrieved”
+
+        task.add_done_callback(finished)
+        return task
 
     async def _load_fred(self, series_id: str) -> tuple[rules.Observation, ...]:
         today = self.now().astimezone(SHANGHAI).date()
@@ -878,7 +923,40 @@ class DashboardService:
         )
         if not rows:
             raise ProviderError(code="NO_ROWS", message="FRED 没有返回观测", status_code=502)
-        return tuple(rules.Observation(row.observation_date, row.value) for row in rows)
+        observations = tuple(rules.Observation(row.observation_date, row.value) for row in rows)
+        await self._save_snapshot(f"fred:{series_id}", observations)
+        return observations
+
+    async def _save_snapshot(self, key: str, observations: Sequence[rules.Observation]) -> None:
+        if self.snapshots is None:
+            return
+        payload = [[point.day.isoformat(), str(point.value)] for point in observations]
+        try:
+            await asyncio.to_thread(self.snapshots.save, key, payload, self.now())
+        except SQLAlchemyError:
+            logger.warning("dashboard snapshot save failed: %s", key, exc_info=True)
+
+    async def _restore_snapshots(self) -> None:
+        """进程首次读取前，把库里上次成功抓取的 FRED 序列放进缓存（视为已过期）。"""
+
+        if self._restored or self.snapshots is None:
+            return
+        self._restored = True
+        try:
+            rows = await asyncio.to_thread(self.snapshots.load, "fred:")
+        except SQLAlchemyError:
+            logger.warning("dashboard snapshot restore failed", exc_info=True)
+            return
+        for key, (payload, fetched_at) in rows.items():
+            try:
+                observations = tuple(
+                    rules.Observation(date.fromisoformat(day), Decimal(value))
+                    for day, value in payload
+                )
+            except (ValueError, TypeError, ArithmeticError):
+                continue
+            if observations:
+                self.cache.seed(key, observations, fetched_at)
 
     async def _china_rates(self) -> tuple[dict[str, list[object]], Section]:
         loaders: dict[str, tuple[str, Callable[[bytes], Sequence[object]]]] = {
@@ -1353,12 +1431,33 @@ def _r_opt(value: Decimal | None, places: int = 2) -> Decimal | None:
 _service: DashboardService | None = None
 
 
+def attach_repositories(service: DashboardService, engine: Engine) -> None:
+    if service.metrics is None:
+        service.metrics = DashboardMetricRepository(engine)
+    if service.snapshots is None:
+        service.snapshots = DashboardSnapshotRepository(engine)
+
+
+async def keep_macro_warm(engine: Engine, interval_seconds: float = 300.0) -> None:
+    """启动后立即预热一次，之后定期续命缓存；任何异常只记日志，不影响接口。"""
+
+    attach_repositories(get_dashboard_service(), engine)
+    while True:
+        try:
+            await get_dashboard_service().warm_macro()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("macro warm-up failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)
+
+
 def get_dashboard_service() -> DashboardService:
     global _service
     if _service is None:
         _service = DashboardService(
             gateway=shared_gateway(),
-            overseas=PacedGateway(min_interval=0.2, timeout=20.0),
+            overseas=PacedGateway(min_interval=0.2, timeout=20.0, concurrency=5),
             industry=get_service(),
             sentiment=get_sentiment_service(),
             insights=get_insights_service(),

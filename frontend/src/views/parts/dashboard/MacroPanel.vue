@@ -43,7 +43,7 @@ function factorLines(macro: MacroOverview, which: "growth" | "liquidity"): strin
       <button type="button" class="link" @click="emit('basis')">计算依据 ›</button>
     </template>
 
-    <StateBlock v-if="loading && !macro" state="loading" :rows="6" message="正在拉取 FRED 与利率数据，首次约需 15 秒" />
+    <StateBlock v-if="loading && !macro" state="loading" :rows="6" message="正在拉取 FRED 与利率数据，服务刚启动时首次约需几秒" />
     <StateBlock v-else-if="error && !macro" state="error" :message="error" @retry="emit('retry')" />
     <template v-else-if="macro">
       <p v-for="item in sections" :key="item.name" class="notice">
