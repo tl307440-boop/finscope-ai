@@ -11,10 +11,14 @@ from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.providers.errors import ProviderError
-from app.repositories.dashboard_metrics import DashboardMetricRepository
 from app.repositories.watchlists import WatchlistRepository
 from app.services.auth_types import UserRecord
-from app.services.cockpit import INDEX_NAMES, DashboardService, get_dashboard_service
+from app.services.cockpit import (
+    INDEX_NAMES,
+    DashboardService,
+    attach_repositories,
+    get_dashboard_service,
+)
 
 router = APIRouter(prefix="/dashboard", tags=["总览驾驶舱"])
 
@@ -22,8 +26,8 @@ router = APIRouter(prefix="/dashboard", tags=["总览驾驶舱"])
 def _service(request: Request) -> DashboardService:
     service = get_dashboard_service()
     engine = getattr(request.app.state, "engine", None)
-    if service.metrics is None and engine is not None:
-        service.metrics = DashboardMetricRepository(engine)
+    if engine is not None:
+        attach_repositories(service, engine)
     return service
 
 
