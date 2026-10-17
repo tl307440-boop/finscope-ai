@@ -25,6 +25,7 @@ from uuid import UUID
 from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.exceptions import AppError
 from app.providers import eastmoney_boards as em
 from app.providers import eastmoney_rates as rates
 from app.providers import eastmoney_sentiment as es
@@ -88,6 +89,7 @@ _TTL_KLINE = 300
 _TTL_MINUTE = 30
 _TTL_FENBU = 60
 _TTL_FRED = 6 * 3600
+_TTL_FRED_PUSHED = 36 * 3600  # 外部推送的数据：每天推一次，留足余量
 _TTL_CHINA = 3600
 _TTL_ASSETS = 60
 _TTL_SINA = 120
@@ -930,11 +932,40 @@ class DashboardService:
     async def _save_snapshot(self, key: str, observations: Sequence[rules.Observation]) -> None:
         if self.snapshots is None:
             return
-        payload = [[point.day.isoformat(), str(point.value)] for point in observations]
         try:
-            await asyncio.to_thread(self.snapshots.save, key, payload, self.now())
+            await asyncio.to_thread(
+                self.snapshots.save, key, _snapshot_payload(observations), self.now()
+            )
         except SQLAlchemyError:
             logger.warning("dashboard snapshot save failed: %s", key, exc_info=True)
+
+    async def ingest_fred(self, series: Mapping[str, Sequence[tuple[date, Decimal]]]) -> int:
+        """接收外部推送的 FRED 序列：先落库（失败直接报错），再放进缓存。
+
+        服务器直连 FRED 不通时用它补数据；缓存有效期更长，避免每次请求都再去碰不通的上游。
+        """
+
+        unknown = sorted(set(series) - set(FRED_SERIES))
+        if unknown:
+            raise AppError(
+                code="VALIDATION_ERROR",
+                message="不是总览使用的 FRED 序列：" + "、".join(unknown),
+                status_code=422,
+            )
+        if self.snapshots is None:
+            raise AppError(code="SERVICE_UNAVAILABLE", message="数据库未就绪", status_code=503)
+        fetched_at = self.now()
+        total = 0
+        for code, points in series.items():
+            ordered = sorted(points, key=lambda point: point[0])
+            observations = tuple(rules.Observation(day, value) for day, value in ordered)
+            key = f"fred:{code}"
+            await asyncio.to_thread(
+                self.snapshots.save, key, _snapshot_payload(observations), fetched_at
+            )
+            self.cache.put(key, observations, fetched_at, _TTL_FRED_PUSHED)
+            total += len(observations)
+        return total
 
     async def _restore_snapshots(self) -> None:
         """进程首次读取前，把库里上次成功抓取的 FRED 序列放进缓存（视为已过期）。"""
@@ -1429,6 +1460,10 @@ def _r_opt(value: Decimal | None, places: int = 2) -> Decimal | None:
 
 
 _service: DashboardService | None = None
+
+
+def _snapshot_payload(observations: Sequence[rules.Observation]) -> list[list[str]]:
+    return [[point.day.isoformat(), str(point.value)] for point in observations]
 
 
 def attach_repositories(service: DashboardService, engine: Engine) -> None:

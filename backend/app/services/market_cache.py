@@ -87,6 +87,13 @@ class TtlCache:
             stale_reason="正在后台刷新" if expired else None,
         )
 
+    def put(self, key: str, value: Any, fetched_at: datetime, ttl_seconds: float) -> None:
+        """直接写入一个有效期内的值（例如管理员从外部推送的数据）。"""
+
+        self._entries[key] = _Entry(
+            value=value, fetched_at=fetched_at, expires_at=self._clock() + ttl_seconds
+        )
+
     def seed(self, key: str, value: Any, fetched_at: datetime) -> None:
         """用持久化的旧值填充还没有的 key；立即视为过期，下一次读取仍会尝试回源。"""
 

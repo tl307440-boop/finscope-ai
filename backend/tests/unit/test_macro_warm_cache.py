@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
+from app.core.exceptions import AppError
 from app.providers.errors import ProviderError
 from app.services import cockpit
 from app.services.cockpit import DashboardService
@@ -89,6 +90,32 @@ def test_save_snapshot_round_trips_through_restore() -> None:
 
     entry = fresh.cache.peek("fred:UNRATE")
     assert entry is not None and tuple(entry.value) == observations
+
+
+def test_ingest_fred_saves_and_serves_fresh_value_without_upstream() -> None:
+    snapshots = FakeSnapshots()
+    service = _service(snapshots)
+    series = {"UNRATE": [(date(2026, 9, 1), Decimal("4.4")), (date(2026, 8, 1), Decimal("4.3"))]}
+
+    total = asyncio.run(service.ingest_fred(series))
+
+    assert total == 2
+    entry = service.cache.peek("fred:UNRATE")
+    assert entry is not None and not entry.stale
+    assert [point.day for point in entry.value] == [date(2026, 8, 1), date(2026, 9, 1)]
+    assert snapshots.rows["fred:UNRATE"][0] == [["2026-08-01", "4.3"], ["2026-09-01", "4.4"]]
+
+
+def test_ingest_fred_rejects_unknown_series_and_missing_database() -> None:
+    with pytest.raises(AppError) as unknown:
+        asyncio.run(
+            _service(FakeSnapshots()).ingest_fred({"GDP": [(date(2026, 1, 1), Decimal(1))]})
+        )
+    assert unknown.value.status_code == 422
+
+    with pytest.raises(AppError) as missing:
+        asyncio.run(_service(None).ingest_fred({"UNRATE": [(date(2026, 1, 1), Decimal(1))]}))
+    assert missing.value.status_code == 503
 
 
 def test_paced_gateway_allows_configured_concurrency(monkeypatch: pytest.MonkeyPatch) -> None:
