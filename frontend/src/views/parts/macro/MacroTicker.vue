@@ -1,10 +1,12 @@
 <script setup lang="ts">
 /**
  * 指标带滑动容器：放不下时横向滚动。
- * 滚轮：悬停时纵向滚轮转成横向；已到对应端点就不拦截，让页面照常上下滚动。
+ * 滚轮：悬停时纵向滚轮转成横向；已到对应端点就不拦截，让页面照常上下滚动（判定见 tickerWheel）。
+ * 箭头与方向键的平滑滚动由 CSS scroll-behavior 负责，减少动态效果时自动关闭。
  */
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import MacroTickerTile from "./MacroTickerTile.vue"
+import { atLeftEdge, atRightEdge, wheelScrollPx } from "./tickerWheel"
 import type { TileView } from "../../../api/macroTiles"
 
 const props = withDefaults(defineProps<{ tiles: readonly TileView[]; loading?: boolean }>(), { loading: false })
@@ -13,6 +15,8 @@ const props = withDefaults(defineProps<{ tiles: readonly TileView[]; loading?: b
 const STEP = 182
 
 const track = ref<HTMLElement | null>(null)
+const leftButton = ref<HTMLButtonElement | null>(null)
+const rightButton = ref<HTMLButtonElement | null>(null)
 const canLeft = ref(false)
 const canRight = ref(false)
 
@@ -21,8 +25,14 @@ function refresh(): void {
   if (!element) {
     return
   }
-  canLeft.value = element.scrollLeft > 1
-  canRight.value = element.scrollLeft + element.clientWidth < element.scrollWidth - 1
+  const nextLeft = !atLeftEdge(element)
+  const nextRight = !atRightEdge(element)
+  const focused = document.activeElement
+  if ((!nextLeft && focused === leftButton.value) || (!nextRight && focused === rightButton.value)) {
+    element.focus()
+  }
+  canLeft.value = nextLeft
+  canRight.value = nextRight
 }
 
 function page(direction: 1 | -1): void {
@@ -30,7 +40,7 @@ function page(direction: 1 | -1): void {
   if (!element) {
     return
   }
-  element.scrollBy({ left: direction * Math.max(STEP, element.clientWidth - STEP), behavior: "smooth" })
+  element.scrollBy({ left: direction * Math.max(STEP, element.clientWidth - STEP) })
 }
 
 function onWheel(event: WheelEvent): void {
@@ -38,17 +48,21 @@ function onWheel(event: WheelEvent): void {
   if (!element) {
     return
   }
-  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
-  if (delta === 0) {
-    return
-  }
-  const atStart = element.scrollLeft <= 0
-  const atEnd = element.scrollLeft + element.clientWidth >= element.scrollWidth - 1
-  if ((delta < 0 && atStart) || (delta > 0 && atEnd)) {
+  const px = wheelScrollPx({
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
+    deltaMode: event.deltaMode,
+    ctrlKey: event.ctrlKey,
+    scrollLeft: element.scrollLeft,
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  })
+  if (px === null) {
     return
   }
   event.preventDefault()
-  element.scrollLeft += delta
+  // 滚轮要跟手：显式 instant，绕过容器上的 CSS 平滑滚动
+  element.scrollBy({ left: px, behavior: "instant" })
 }
 
 function onKey(event: KeyboardEvent): void {
@@ -56,7 +70,7 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   event.preventDefault()
-  track.value?.scrollBy({ left: event.key === "ArrowRight" ? STEP : -STEP, behavior: "smooth" })
+  track.value?.scrollBy({ left: event.key === "ArrowRight" ? STEP : -STEP })
 }
 
 let observer: ResizeObserver | null = null
@@ -82,9 +96,28 @@ watch(
 </script>
 
 <template>
-  <section class="ticker" aria-label="美国宏观指标">
-    <button v-show="canLeft" type="button" class="arrow left" aria-label="向左滚动指标" @click="page(-1)">‹</button>
-    <div ref="track" class="track" role="list" tabindex="0" @wheel="onWheel" @scroll.passive="refresh" @keydown="onKey">
+  <section class="ticker">
+    <button
+      v-show="canLeft"
+      ref="leftButton"
+      type="button"
+      class="arrow left"
+      aria-label="向左滚动指标"
+      @click="page(-1)"
+    >
+      ‹
+    </button>
+    <div
+      ref="track"
+      class="track"
+      role="list"
+      tabindex="0"
+      aria-label="美国宏观指标"
+      :aria-busy="loading"
+      @wheel="onWheel"
+      @scroll.passive="refresh"
+      @keydown="onKey"
+    >
       <template v-if="loading">
         <div v-for="index in 8" :key="index" class="skeleton" aria-hidden="true" />
       </template>
@@ -92,7 +125,16 @@ watch(
         <MacroTickerTile v-for="tile in tiles" :key="tile.key" :tile="tile" />
       </template>
     </div>
-    <button v-show="canRight" type="button" class="arrow right" aria-label="向右滚动指标" @click="page(1)">›</button>
+    <button
+      v-show="canRight"
+      ref="rightButton"
+      type="button"
+      class="arrow right"
+      aria-label="向右滚动指标"
+      @click="page(1)"
+    >
+      ›
+    </button>
   </section>
 </template>
 
@@ -105,18 +147,22 @@ watch(
   display: flex;
   gap: 10px;
   overflow-x: auto;
-  scroll-snap-type: x proximity;
+  scroll-behavior: smooth;
   scrollbar-width: none;
-  outline: none;
+  border-radius: var(--radius-sm);
 }
 
 .track::-webkit-scrollbar {
   display: none;
 }
 
+.track:focus {
+  outline: none;
+}
+
 .track:focus-visible {
-  box-shadow: 0 0 0 2px var(--accent);
-  border-radius: var(--radius-sm);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .skeleton {
@@ -172,6 +218,10 @@ watch(
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .track {
+    scroll-behavior: auto;
+  }
+
   .skeleton {
     animation: none;
   }

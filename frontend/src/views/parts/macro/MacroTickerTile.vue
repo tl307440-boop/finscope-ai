@@ -26,6 +26,7 @@ const ARROW: Record<TileDirection, string> = { up: "▲", down: "▼", flat: "",
           <span v-if="tile.info" class="info" :title="tile.info" aria-hidden="true">?</span>
         </span>
         <span class="caption">{{ tile.caption }}</span>
+        <span v-if="tile.info" class="sr-only">{{ tile.info }}</span>
       </div>
       <MiniSpark
         v-if="tile.spark.length > 1"
@@ -53,8 +54,8 @@ const ARROW: Record<TileDirection, string> = { up: "▲", down: "▼", flat: "",
 <style scoped>
 .ticker-tile {
   --tone: var(--muted);
+  position: relative;
   flex: 0 0 172px;
-  scroll-snap-align: start;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -118,6 +119,17 @@ header {
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .spark {
