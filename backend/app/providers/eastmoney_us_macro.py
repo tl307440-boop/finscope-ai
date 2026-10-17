@@ -55,10 +55,14 @@ def parse_indicator(payload: bytes, indicator_id: str) -> tuple[LatestValue, ...
     if not isinstance(body, dict) or body.get("success") is not True:
         raise _bad(indicator_id, "没有给出数据")
     result = body.get("result")
-    rows = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        raise _bad(indicator_id, "缺少数据列表")
+    rows = result.get("data")
+    if rows is None:
+        raise _bad(indicator_id, "没有可用的公布值")
     if not isinstance(rows, list):
         raise _bad(indicator_id, "缺少数据列表")
-    points: list[LatestValue] = []
+    points: dict[date, LatestValue] = {}
     for row in rows:
         if not isinstance(row, dict) or row.get("INDICATOR_ID") != indicator_id:
             continue
@@ -67,8 +71,13 @@ def parse_indicator(payload: bytes, indicator_id: str) -> tuple[LatestValue, ...
         value = _decimal(row.get("VALUE"))
         if observed is None or published is None or value is None:
             continue
-        points.append(LatestValue(observed.replace(day=1), published, value))
-    return tuple(sorted(points, key=lambda item: item.observation_date))
+        month = observed.replace(day=1)
+        kept = points.get(month)
+        if kept is None or published > kept.published_on:
+            points[month] = LatestValue(month, published, value)
+    if not points:
+        raise _bad(indicator_id, "没有可用的公布值")
+    return tuple(points[month] for month in sorted(points))
 
 
 async def fetch_indicator(

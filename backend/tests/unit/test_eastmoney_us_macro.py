@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -7,7 +7,7 @@ from app.providers.eastmoney_us_macro import LatestValue, indicator_url, parse_i
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.providers.latest_revisions import OPEN_ENDED, plan_latest_revisions
-from app.providers.vintage import VintagePoint
+from app.providers.vintage import VintagePoint, select_visible
 
 MFG = "EMG00002790"
 
@@ -65,12 +65,30 @@ def test_parse_skips_calendar_placeholders_and_other_indicators() -> None:
     assert [row.value for row in rows] == [Decimal("54.5")]
 
 
+def test_parse_keeps_the_latest_published_row_of_a_month() -> None:
+    rows = parse_indicator(
+        _payload(
+            [
+                _row("2026-09-01", "2026-10-01", 54.5),
+                _row("2026-09-15", "2026-10-08", 54.2),
+                _row("2026-09-01", "2026-09-30", 53.9),
+            ]
+        ),
+        MFG,
+    )
+    assert rows == (LatestValue(date(2026, 9, 1), date(2026, 10, 8), Decimal("54.2")),)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         b"<html>blocked</html>",
         json.dumps({"success": False, "message": "返回数据为空", "result": None}).encode(),
         json.dumps({"success": True, "result": {"data": "oops"}}).encode(),
+        json.dumps({"success": True, "result": {"data": None}}).encode(),
+        _payload([]),
+        _payload([_row("2026-10-01", "2026-11-02", None), _row("2026-11-01", "2026-12-01", None)]),
+        _payload([{"INDICATOR": MFG, "REPORT": "2026-09-01", "PUBLISH": "2026-10-01", "V": 1}]),
     ],
 )
 def test_parse_rejects_bad_payloads_without_echoing_them(payload: bytes) -> None:
@@ -118,7 +136,7 @@ def test_changed_value_closes_old_version_and_opens_new_one() -> None:
             observation_date=date(2026, 9, 1),
             value=Decimal("54.5"),
             realtime_start=date(2026, 10, 1),
-            realtime_end=date(2027, 1, 9),
+            realtime_end=date(2027, 1, 10),
         ),
         FredVintage(
             observation_date=date(2026, 9, 1),
@@ -127,6 +145,27 @@ def test_changed_value_closes_old_version_and_opens_new_one() -> None:
             realtime_end=OPEN_ENDED,
         ),
     )
+
+
+def test_revision_stays_visible_every_day_around_the_fetch() -> None:
+    held = _held("54.5", date(2026, 10, 1))
+    revised = LatestValue(date(2026, 9, 1), date(2026, 10, 1), Decimal("54.2"))
+    fetched_on = date(2027, 1, 10)
+    stored = {(held.observation_date, held.realtime_start): held}
+    for row in plan_latest_revisions([held], [revised], fetched_on=fetched_on):
+        stored[(row.observation_date, row.realtime_start)] = VintagePoint(
+            observation_date=row.observation_date,
+            value=row.value,
+            unit="Index",
+            realtime_start=row.realtime_start,
+            realtime_end=row.realtime_end,
+            revision_no=1,
+        )
+    seen = [
+        [point.value for point in select_visible(list(stored.values()), fetched_on + shift)]
+        for shift in (timedelta(days=-1), timedelta(0), timedelta(days=1))
+    ]
+    assert seen == [[Decimal("54.5")], [Decimal("54.5")], [Decimal("54.2")]]
 
 
 def test_change_on_or_before_the_open_day_overwrites_in_place() -> None:

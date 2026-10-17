@@ -3,13 +3,13 @@
 来源本身没有修订历史，所以：
 - 第一次见到某观测期：从发布日开始的开放版本；
 - 之后同值：不写；
-- 值变了：旧版本在抓取日前一天截止，新版本从抓取日开始；
+- 值变了：旧版本在抓取日当天截止；新版本从抓取日开始，按可见性规则次日可见；
   抓取日不晚于旧版本起点时直接改写旧版本。
 首次同步之前的历史只能是来源的最新修订值。
 """
 
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app.providers.eastmoney_us_macro import LatestValue
@@ -48,7 +48,7 @@ def plan_latest_revisions(
                 observation_date=held.observation_date,
                 value=held.value,
                 realtime_start=held.realtime_start,
-                realtime_end=fetched_on - timedelta(days=1),
+                realtime_end=fetched_on,
             )
         )
         planned.append(_open(point.observation_date, point.value, fetched_on))
