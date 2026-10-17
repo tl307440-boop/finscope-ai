@@ -1286,7 +1286,7 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - 前端：`npm run typecheck`（vue-tsc --noEmit）无错误；`npm run test` 35 个文件 / 174 个用例通过；`npm run build` 成功（只有既有的单 chunk 超过 500 kB 提示）。
 - 真实库验证（本机 Docker `pgvector/pgvector:pg16` 测试库 `finscope-testdb`，端口 55432，只对该测试库操作）：
   - 本轮新增的 `tests/integration/test_us_macro_eastmoney.py` 2 个用例在真实 PostgreSQL 上通过（修订行写入与批量接口 SQL）。完整 `pytest` 429 个用例中其余 72 个集成用例未连库，仍为跳过。
-  - `bootstrap_data --only fred`：19 条序列中 17 条写入成功（ISM_MFG 70 条、ISM_SVC 71 条；FRED 各序列 23–2191 条），`FEDFUNDS`、`GDP` 因「上游连接中断」失败（临时网络问题，未重试，二者不在指标带上，只供规则引擎使用，所以规则解读里「增长」暂显示数据不足）。
+  - `bootstrap_data --only fred`：19 条序列首轮写入 17 条（ISM_MFG 70 条、ISM_SVC 71 条；FRED 各序列 23–2191 条），`FEDFUNDS`、`GDP` 因「上游连接中断」失败（临时网络问题）；随后单独补同步成功（GDP 23 条、FEDFUNDS 72 条），19 条全部入库。补同步的这两条 `realtime_start` 是当天，未做手工回拨，按规则次日才可见，所以当天页面规则解读里「增长」仍显示数据不足。
   - 启动后端（8010）与前端（5180）打开 `/macro/us`：15 格顺序与口径正确，失业率 4.20%、政策利率区间 3.75–4.00%、ISM 制造业 54.5 / 服务业 54.9，涨红跌绿；ISM 两格 `?` 提示含 `EMG00002790` / `EMG00002791` 与「最新修订」；滚轮横移、Ctrl 缩放与横向滑动放行、到端点放行、两侧箭头显隐均在真实浏览器里验证。
   - 真实浏览器发现并修复一个单测测不到的布局问题：`section.ticker` 作为 grid 子项 `min-width: auto` 被内容撑到 2908px，整页变宽、轨道不滚动，已加 `min-width: 0`（提交 7c87b4a）。
   - 没有 FRED API key，走公开 CSV 通道，其 `realtime_start` 取同步当天，按「发布日当天不可见」的规则，当天同步的 FRED 数据次日才可见（既有保守设计）。为了做页面截图核对，把测试库里当天同步的 12636 行 FRED 行 `realtime_start` 手工改到前一天（只改可见性元数据，不动数值，仅限该测试库）。ISM 用东方财富给的真实发布日，不受影响。
@@ -1300,5 +1300,5 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 ### 下一步
 
-- 补同步 `GDP`、`FEDFUNDS`；跑 e2e 用例 04。
+- 跑 e2e 用例 04（需本分支后端）。
 - 子项目 3（通胀走势图 + 多指标对比分析，2020-01=100 指数化、双轴、导出）。
