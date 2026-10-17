@@ -1,0 +1,45 @@
+name: push-fred
+
+# 服务器（阿里云）直连 FRED 很慢或不通；GitHub 的运行机在海外，能直连 FRED。
+# 定时抓取总览用的 FRED 序列，经管理员接口推送到服务器（落库并写入缓存，缓存 36 小时）。
+# 需要在仓库 Settings → Secrets and variables → Actions 里配置：
+#   FINSCOPE_URL             例如 http://121.199.8.235
+#   FINSCOPE_ADMIN_USER      管理员用户名
+#   FINSCOPE_ADMIN_PASSWORD  管理员密码
+# 失败时这个工作流会变红，GitHub 会给仓库管理员发邮件。
+
+on:
+  schedule:
+    # UTC 01:30 / 13:30，即北京时间 09:30 / 21:30。
+    - cron: "30 1,13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: push-fred
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # 导入应用模块需要的占位配置；脚本本身只做 HTTP 抓取与推送。
+      APP_ENV: test
+      JWT_SECRET: placeholder-not-used-by-this-job-32chars
+      DATA_MODE: live
+      DATABASE_URL: postgresql+psycopg://placeholder:placeholder@localhost:5432/placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: 安装后端依赖
+        working-directory: backend
+        run: uv sync --frozen
+      - name: 抓取 FRED 并推送到服务器
+        working-directory: backend
+        env:
+          FINSCOPE_URL: ${{ secrets.FINSCOPE_URL }}
+          FINSCOPE_ADMIN_USER: ${{ secrets.FINSCOPE_ADMIN_USER }}
+          FINSCOPE_ADMIN_PASSWORD: ${{ secrets.FINSCOPE_ADMIN_PASSWORD }}
+        run: uv run python -m app.scripts.push_fred_snapshots
