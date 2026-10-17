@@ -50,7 +50,7 @@
 
 从指标带撤下：名义 GDP（`GDP`）、2 年期美债（`DGS2`）、联邦基金有效利率（`FEDFUNDS`）。三者仍留在目录与数据库里，宏观规则（`macro_rules.py` 依赖 GDP / CPI / FEDFUNDS）不受影响。
 
-「较上期」统一取主数值口径下相邻两期之差：同比类为同比的 pct 差，非农为当月新增之差，折年率为折年率之差，PMI 为点差。
+「较上期」统一取主数值口径下相邻两期之差：同比类为同比的 pct 差，非农为当月新增之差，折年率为折年率之差，PMI 为点差。只和紧邻上一期比：月度差 1 个月、季度差 3 个月、周度差 7 天，日度取前一个观测点；中间缺期显示「—」，频率未知不计算。政策利率取最近一次调整的变化，取回窗口内没有调整时显示「—」。
 
 ## 3. 后端设计
 
@@ -93,6 +93,8 @@
   - `observation_date` = `REPORT_DATE` 的日期（所属月首日）。
   - `VALUE` 为 null 的行是财经日历预排（`PUBLISH_DATE` 在未来），跳过。
   - 缺 `REPORT_DATE` / `PUBLISH_DATE` 或数值不可解析的行跳过；报文结构异常抛结构化 provider 错误。
+  - 没有一行能解析（含 `data: null`、空列表）时抛 `UPSTREAM_PAYLOAD`，不当作「无数据」静默写 0 行。
+  - 同一观测月多行时只留 `PUBLISH_DATE` 最晚的一行。
 - 可见性与 FRED 完全一致：`realtime_start = PUBLISH_DATE`，发布日当天不可见、纽约次日零点起可见（`vintage_visible` / `published_at_from_vintage`），不另立时刻规则。
 
 ### 3.4 入库与修订 `repositories/macro.py`
@@ -101,7 +103,8 @@
 - 纯函数 `plan_latest_revisions(existing, fresh, fetched_on)`（`providers/latest_revisions.py`）把「只有最新值」的来源换成版本行（`FredVintage`），再交给现有 `upsert_vintages` 入库，复用其去重键与修订编号：
   - 某观测月无记录 → 一行 `realtime_start = published_on`、`realtime_end = 9999-12-31`。
   - 当前有效版本（`realtime_end = 9999-12-31`）值相同 → 不写（幂等）。
-  - 值不同（ISM 每年 1 月重估季节因子会改写历史）→ 旧版本 `realtime_end = fetched_on − 1 天`，新增 `realtime_start = fetched_on` 的开放版本；若 `fetched_on <= 旧版本起点` 则直接改写旧版本的值。
+  - 值不同（ISM 每年 1 月重估季节因子会改写历史）→ 旧版本 `realtime_end = fetched_on`（纽约日历日），新增 `realtime_start = fetched_on` 的开放版本；若 `fetched_on <= 旧版本起点` 则直接改写旧版本的值。可见性为 `realtime_start < pit <= realtime_end`，所以旧值看到抓取日当天，新值从次日起可见，中间不留空档（`fetched_on − 1 天` 会让抓取日当天两版都看不到）。
+  - FRED 原生版本仍沿用 FRED 自己的 `realtime_end = 下一版起点 − 1 天`，FRED 修订的观测在修订当天不可见；这是既有行为，不在本次范围。
 - 新方法 `upsert_latest_values(series_code, points, fetched_at)`：读已有版本 → 调用上面的纯函数 → `upsert_vintages`。
 - `source_record_key` 沿用现有格式 `{series_code}|{观测日}|{realtime_start}`；东方财富指标 ID 记在序列 `metadata_json.source_key` 与 `source_url`。
 - 东方财富只提供最新修订值、无历史快照：首次同步之前的历史只能是最新修订值，从首次同步起由本系统自行积累版本。
@@ -162,7 +165,7 @@ export function buildTile(spec: TileSpec, rowsByCode: Record<string, Observation
 - `yoy`：复用 `api/macro.ts` 的 `yearOverYear`（12 个月前同月，找不到则不出该期）。
 - `diff`：相邻两期差（非农当月新增）。
 - `saar`：相邻两季 `((x_t / x_{t-1})^4 − 1) × 100`，上季为 0 或缺失则不出该期。
-- `range`：下限、上限按日期对齐取最近一个两者都有的日期，显示「4.00–4.25」；`delta` 用上限变化；迷你图用上限。
+- `range`：下限、上限按日期对齐取最近一个两者都有的日期，显示「4.00–4.25」；`delta` 用最近一次调整时上限的变化，窗口内没有调整为 `null`；迷你图用上限。
 - `direction`：`delta > 0` up、`< 0` down、`=== 0` flat、`null` none。
 
 ### 4.2 组件
@@ -171,8 +174,9 @@ export function buildTile(spec: TileSpec, rowsByCode: Record<string, Observation
 
 - `frontend/src/views/parts/macro/MacroTickerTile.vue`：单格。第一行：名称（加粗）+ 口径小字，右上迷你图（复用 `MiniSpark`）；中间大号数值；底部左 ▲/▼ + 较上期，右侧日期。`direction` 决定数值 / 三角 / 迷你图颜色：up 用 `--rise` 红、down 用 `--fall` 绿（沿用现有涨跌令牌，浅色主题自动适配）、flat / none 用 `--muted`。`?` 悬停显示 `info`。
 - `frontend/src/views/parts/macro/MacroTicker.vue`：滑动容器。
-  - 卡片固定宽 172px，`overflow-x: auto`，`scroll-snap-type: x proximity`（mandatory 会把滚轮横移强行吸回，手感发顿），隐藏原生滚动条。
-  - 滚轮：悬停时把纵向 `deltaY` 转为横向滚动并 `preventDefault`；已到对应端点时不拦截，让页面正常滚动。
+  - 卡片固定宽 172px，`overflow-x: auto`，不做 scroll-snap（捕捉对齐会把滚轮横移吸回，手感发顿），隐藏原生滚动条。
+  - 滚轮：判定放在纯函数 `frontend/src/views/parts/macro/tickerWheel.ts`。悬停时把纵向 `deltaY` 按 `deltaMode` 换算成像素后横向滚动并 `preventDefault`；Ctrl / 捏合缩放、横向为主的滑动、已到对应端点、内容不超宽时都不拦截，交给浏览器。
+  - 箭头与方向键的平滑滚动用 CSS `scroll-behavior: smooth`，`prefers-reduced-motion: reduce` 时关闭。
   - 左右箭头按钮悬浮两侧，按滚动位置显隐，点击滚动一屏（`clientWidth − 一格宽`），`aria-label`「向左 / 向右滚动指标」。
   - 容器 `tabindex="0"`，左右方向键滚动一格；列表 `role="list"`、卡片 `role="listitem"`。
   - `loading` 时渲染 8 个骨架格。
@@ -221,4 +225,5 @@ export function buildTile(spec: TileSpec, rowsByCode: Record<string, Observation
 
 - 东方财富为页面匿名接口，可能改字段或限流：provider 解析失败时结构化报错、保留已入库数据，卡片显示最近一次入库值并在 `?` 中标明来源。
 - ISM 首次同步前的历史为最新修订值，回看过去观察日时 PMI 数值可能与当时公布值不同：在卡片 `info` 与数据说明中写明。
+- FRED 原生版本在修订当天不可见（沿用 FRED 的 `下一版起点 − 1 天`），既有行为，未改。
 - 页面观测数据量增加（约 17 条序列）：批量接口一次往返；日度序列 limit 1000 保持不变。

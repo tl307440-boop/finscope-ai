@@ -1261,3 +1261,38 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - push2 频控解除后让 `sync_board_market` 跑一次，补 RRG、板块总览 / 详情和自选实时行情的页面截图。
 - 东财行业与申万行业建立显式映射表（带版本与生效日期），替代名称匹配。
+
+## 2026-10-17 MACRO-US 美国宏观数据扩充与指标带滑动（feat/macro-us-ticker）
+
+设计：`docs/superpowers/specs/2026-10-17-macro-us-ticker-design.md`（子项目 1+2）。
+
+### 变更文件
+
+- 后端：`backend/app/catalog/macro_series.py`、`providers/eastmoney_us_macro.py`（新）、`providers/latest_revisions.py`（新）、`providers/fred.py`、`providers/fred_public.py`、`repositories/macro.py`、`services/fred_sync.py`、`services/macro_batch.py`（新）、`schemas/macro.py`、`api/v1/macro.py`、`core/config.py`、`scripts/bootstrap_data.py`。
+- 前端：`frontend/src/api/macroTiles.ts`（新）、`api/macro.ts`、`views/parts/macro/MacroTicker.vue`（新）、`views/parts/macro/MacroTickerTile.vue`（新）、`views/parts/macro/tickerWheel.ts`（新）、`views/MacroView.vue`、`e2e/core.spec.ts`。
+- 迁移：无（沿用 macro_series / macro_observations 现有字段）。
+- 新增用例：后端 `test_eastmoney_us_macro.py`、`test_macro_batch.py`、`test_fred.py` 追加、集成 `test_us_macro_eastmoney.py`；前端 `macroTiles.test.ts`、`macroTicker.test.ts`、`tickerWheel.test.ts`、`MacroView.test.ts`、`macro.test.ts` 追加。
+
+### 与计划不同的实现决定
+
+- 东方财富最新值发生修订：旧版本 `realtime_end = 抓取日`（纽约日历日），新版本 `realtime_start = 抓取日`。可见性是 `realtime_start < pit <= realtime_end`，旧值看到抓取日当天，新值次日起可见；计划里的「抓取日 − 1 天」会让抓取日当天两版都看不到。
+- `parse_indicator` 没有一行能解析时（含 `data: null`、空列表）报 `UPSTREAM_PAYLOAD`；同一月份多行只留发布日最晚的一行。
+- 「较上期」只和紧邻上一期比（月度差 1 个月、季度差 3 个月、周度差 7 天，日度取前一个点），否则显示「—」；频率未知不算。政策利率取最近一次调整的变化，取回窗口内没有调整时显示「—」。
+- 指标带不做 scroll-snap；滚轮判定是纯函数 `tickerWheel.ts`：Ctrl / 捏合缩放、横向为主的滑动、已到端点、内容不超宽都交给浏览器，按 `deltaMode` 换算像素。箭头与方向键的平滑滚动用 CSS，`prefers-reduced-motion` 时关闭。
+
+### 验证
+
+- 后端（`d:\finscrope\finscope-ai\backend\.venv` 解释器，在工作树 `backend` 下运行）：`ruff check .` 通过；`ruff format --check .` 305 个文件已格式化；`mypy app` 只剩 `app/trading_agents/upstream.py` 的 4 个既有错误（venv 缺 `langchain_core`，3 个 import-not-found + 1 个 subclass Any）；`pytest -q -rs` 共 429 个用例：355 passed、74 skipped、0 failed，74 个跳过全部是集成测试，原因「PostgreSQL 不可用」（本机没有可连的 PostgreSQL，含本轮新增的 `test_us_macro_eastmoney.py` 2 个用例）；`pytest tests/unit` 343 passed。
+- 前端：`npm run typecheck`（vue-tsc --noEmit）无错误；`npm run test` 35 个文件 / 174 个用例通过；`npm run build` 成功（只有既有的单 chunk 超过 500 kB 提示）。
+- 未做真实数据运行验证：没有执行 `bootstrap_data --only fred`，没有启动前后端，也没有 `/macro/us` 页面截图。
+
+### 已知局限
+
+- ISM 首次同步前的历史为东方财富最新修订值；东方财富为页面匿名接口，字段变化会以 UPSTREAM_PAYLOAD 失败并保留已入库数据。
+- FRED 原生版本仍沿用 FRED 的 `下一版起点 − 1 天`，FRED 修订的观测在修订当天不可见。这是既有行为，不在本次范围。
+- 集成测试和页面效果都还没在真实 PostgreSQL 与真实数据上跑过。
+
+### 下一步
+
+- 在有 PostgreSQL 的环境跑集成测试，执行 `bootstrap_data --only fred` 同步 19 条序列，打开 `/macro/us` 截图核对指标带与走势图。
+- 子项目 3（通胀走势图 + 多指标对比分析，2020-01=100 指数化、双轴、导出）。
