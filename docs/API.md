@@ -185,6 +185,20 @@
 - 中国宏观六序列（CPI、PPI、PMI、M2、工业增加值、社会融资规模）由 `china_macro` 任务从东方财富数据中心与商务部公开接口抓取。接口没有发布日期，`published_at` 取保守上界（CPI/PPI 次月 15 日、PMI 次月 1 日、M2/工业增加值/社融 次月 20 日）；`GET /api/v1/macro/china/...` 的时间旅行以该日期为准。
 - `GET /api/v1/macro/regime-history?limit=60`：定时任务保存的宏观状态判断快照（`as_of`、`regime_code`、增长/通胀/流动性得分、规则版本、计算时间），同一 `(as_of, model_version)` 重算只更新一行。
 
+## 总览驾驶舱
+
+每个接口各管一个模块，互不阻塞；模块内每个上游各带一个 `Section`（`status` ok / stale / unavailable、`reason`、`fetched_at`、`origin`），某个上游失败只让对应字段为空并写明原因。百分数单位 %，金额单位元（外盘为各自报价单位），利率变化单位 bp。规则分统一为 `ScoreBlock`：`method`、`score`（可用权重 < 50% 时为 null）、`label`、`coverage`、`factors[]`（`weight`、`score`、`raw` 原始数据、`formula` 换算、`contribution` 贡献）、`missing[]`，以及读自 `dashboard_daily_metrics` 的 `previous` / `previous_date` / `change`（无入库记录时为 null）。
+
+| 方法 | 地址 | 说明 |
+|---|---|---|
+| GET | `/api/v1/dashboard/market` | 公开。`temperature`（market-temperature-v2：趋势 30% 中证全指均线与 20 日涨跌、广度 35% 东财涨跌分布、活跃度 20% 两市成交额 / 前 20 日均额与封板率、波动 15% 20 日波动分位）；7 个主要指数快照；`breadth`（23 档涨跌分布）；`limits`（涨停 / 炸板 / 跌停、封板率、最高连板）；两市成交额近 60 日与 MA20。盘中量比按已交易分钟折算。 |
+| GET | `/api/v1/dashboard/index-bars?symbol=sh000001&period=min\|day\|week\|month` | 公开。腾讯分时（每分钟成交额）或原生日 / 周 / 月 K（含 MA5/10/20）；日 K 带 `amount_vs_5d_pct`。只接受主要指数与中证全指，其余 422。 |
+| GET | `/api/v1/dashboard/macro` | 公开。`liquidity`（global-liquidity-v1，越高越松：美联储净流动性、美元指数、10Y 实际利率、高收益债利差、NFCI、SHIBOR 隔夜、中美 10Y 利差）、`growth`（global-growth-v1：失业率变化、非农 3 月均值、中国 PMI）、`regime`（经济热度 × CPI 同比动能）、4 个指标卡、9 个外盘资产及弹窗用序列。FRED 公开 CSV 首次约 15 秒，之后走缓存。 |
+| GET | `/api/v1/dashboard/boards` | 公开。`boards`（board-heat-v1：0.4×同花顺热度分 + 0.3×涨幅分位 + 0.3×涨停家数分；热度 ≥ 60 且涨幅 ≥ 1% 计为热点）、`hot_count` / `hot_count_change`、`gainers`（新浪行业与概念板块涨幅榜，成分 ≥ 5）。 |
+| GET | `/api/v1/dashboard/stocks` | 公开。`hot`（同花顺 1 小时热榜前 10 + 腾讯行情）；`gainers`（新浪涨幅榜，剔除 N / C 新股与成交额 < 3 亿）。 |
+| GET | `/api/v1/dashboard/announcements` | 公开。巨潮资讯全市场检索（上一工作日至今，9 组分页 / 类别 / 关键词查询）；标题规则分 1–3 级，同股同类只留标题最短一条；`hot` 按热榜 / 涨跌停 / 涨幅榜给热度。部分查询失败时 `section` 为 stale。 |
+| GET | `/api/v1/dashboard/watch?group_id=` | 需登录。缺省取第一个有股票的自选分组；`strong` / `neutral` / `weak` / `unknown`（近 5 日 ≥ +3% / 其余 / ≤ −3% / 无数据），前 12 只带近 10 日收盘与涨停、炸板、跌停、热榜、±5% 异动信号。他人分组 404。 |
+
 ## 财务体检快照
 
 `GET /api/v1/companies/{instrument_id}/metrics?as_of=YYYY-MM-DD`

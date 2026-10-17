@@ -78,7 +78,7 @@ class TtlCache:
 
 
 class PacedGateway:
-    """串行、限速的 GET/POST 出口。境内行情源一律直连，不走系统代理。"""
+    """串行、限速的 GET/POST 出口。行情源一律直连，不走系统代理。"""
 
     def __init__(self, *, min_interval: float = 0.4, timeout: float = 12.0) -> None:
         self._min_interval = min_interval
@@ -89,8 +89,14 @@ class PacedGateway:
     async def get(self, url: str, headers: Mapping[str, str]) -> bytes:
         return await self._send(lambda http: http.get(url, headers))
 
-    async def post(self, url: str, body: bytes, headers: Mapping[str, str]) -> bytes:
-        merged = {**headers, "Content-Type": "application/json"}
+    async def post(
+        self,
+        url: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        content_type: str = "application/json",
+    ) -> bytes:
+        merged = {**headers, "Content-Type": content_type}
         return await self._send(lambda http: http.post(url, content=body, headers=merged))
 
     async def _send(self, call: Callable[[ResilientHttpClient], Awaitable[bytes]]) -> bytes:

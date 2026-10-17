@@ -82,6 +82,8 @@ const emit = defineEmits<{ retry: [] }>()
 .skeleton {
   display: block;
   height: 16px;
+  min-height: 0;
+  padding: 0;
   border-radius: 6px;
   background: linear-gradient(90deg, var(--panel-soft) 25%, var(--panel-raise) 37%, var(--panel-soft) 63%);
   background-size: 400% 100%;

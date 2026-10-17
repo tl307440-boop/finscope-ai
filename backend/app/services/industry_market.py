@@ -285,16 +285,8 @@ class IndustryMarketService:
         em_rows, em_section = await self._guard(
             self.cache.get("hot:em", _TTL_HOT, self._load_em_hot)
         )
-        ths_rows, ths_section = await self._guard(
-            self.cache.get(
-                "hot:ths",
-                _TTL_HOT,
-                lambda: self._fetch(em.THS_HOT_STOCK_URL, em.THS_HEADERS, em.parse_ths_hot_stocks),
-            )
-        )
-        plates, plates_section = await self._guard(
-            self.cache.get("hot:ths-plates", _TTL_HOT, self._load_ths_plates)
-        )
+        ths_rows, ths_section = await self._guard(self.ths_stocks())
+        plates, plates_section = await self._guard(self.ths_plates())
         industries, concepts = plates if plates is not None else ((), ())
         return HotList(
             eastmoney=list(em_rows or []),
@@ -756,6 +748,20 @@ class IndustryMarketService:
                 )
             )
         return tuple(items)
+
+    async def ths_plates(
+        self,
+    ) -> Cached[tuple[tuple[em.ThsHotPlate, ...], tuple[em.ThsHotPlate, ...]]]:
+        """同花顺热门板块原始行（行业, 概念），与 hot() 共用缓存。"""
+
+        return await self.cache.get("hot:ths-plates", _TTL_HOT, self._load_ths_plates)
+
+    async def ths_stocks(self) -> Cached[tuple[em.ThsHotStock, ...]]:
+        return await self.cache.get(
+            "hot:ths",
+            _TTL_HOT,
+            lambda: self._fetch(em.THS_HOT_STOCK_URL, em.THS_HEADERS, em.parse_ths_hot_stocks),
+        )
 
     async def _load_ths_plates(
         self,

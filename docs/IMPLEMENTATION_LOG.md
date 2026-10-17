@@ -1261,3 +1261,41 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - push2 频控解除后让 `sync_board_market` 跑一次，补 RRG、板块总览 / 详情和自选实时行情的页面截图。
 - 东财行业与申万行业建立显式映射表（带版本与生效日期），替代名称匹配。
+
+## 2026-10-17 DASHBOARD 总览驾驶舱（每日市场大况）
+
+- **目标**：`/dashboard` 按 `docs/prototypes/dashboard/reference.png` 布局重做，覆盖全球宏观（流动性松紧、宏观趋势）、A 股温度（带计算依据）、主要指数、热点 / 领涨板块、热股 / 涨幅股、我的自选、重要 / 热门公告。按用户要求去掉参考图的「关注状态」列与「加入自选」按钮；参考图上的文字与数字不照抄，全部由真实数据计算。
+- **口径**：所有分数都是纯函数规则（`app/services/dashboard_rules.py`），带版本号、权重、原始数据、换算公式与贡献；可用权重不足 50% 不出分。前端不计算任何财务数字，「较上一交易日」由后端读 `dashboard_daily_metrics` 算出。
+
+### 变更文件
+
+- 后端
+  - 规则 `dashboard_rules.py`：market-temperature-v2、global-liquidity-v1、global-growth-v1 + 经济热度 × 通胀动能象限、board-heat-v1、自选强弱、公告分级与热度、`contributions()`（得分 × 权重 / 可用权重）。
+  - 数据源：`providers/tencent_market.py`（指数 / 个股快照、日周月 K、分时）、`providers/sina_market.py`（板块与个股涨幅榜）、`providers/eastmoney_rates.py`（SHIBOR、中美国债收益率）、`eastmoney_sentiment.py` 新增全市场涨跌分布、`disclosures.py` 新增巨潮全市场检索；外盘与美国宏观复用 FRED 公开 CSV 与现有出口。`market_cache.py` 的 POST 支持表单类型；`industry_market.py` 拆出 `ths_stocks()` / `ths_plates()` 共用缓存；`watchlist_insights.py` 在东财行情失败时先改用腾讯快照，再退回库内日线。
+  - 迁移 `20261017_0024_dashboard_metrics.py` + `db/models/dashboard_metric.py` + `repositories/dashboard_metrics.py`：按（指标, 日期）幂等写入每日温度、流动性、增长分和热点板块数，`previous()` 取更早的最近一天。
+  - `services/cockpit.py`、`schemas/cockpit.py`、`api/v1/dashboard.py`：7 个接口见 `docs/API.md`「总览驾驶舱」；每个上游独立 `Section`，单源失败只让对应字段为空并说明原因；TTL 缓存 + 现有串行限速出口，无循环重试。
+  - 测试：`tests/unit/test_dashboard_rules.py`、`test_dashboard_providers.py`（解析器用 `tests/unit/fixtures/` 下 2026-10-16 真实响应截取片段，只供测试，不进运行时）、`test_cockpit_service.py`（含贡献之和 = 总分、较上一交易日、无历史、上游失败）；`tests/integration/test_dashboard_metrics.py`（upsert 与取前一日、无历史）。
+- 前端
+  - `src/api/dashboard.ts`：类型、解析与 7 个请求；链接只放行 http(s)。
+  - `src/views/DashboardView.vue` 重写：4 张指标卡（全球宏观、A 股温度、热点板块数、重点关注股票）+ 指数走势 / 板块 / 热股 / 宏观 / 自选 / 公告六个面板，各自加载、空、错误、过期状态；温度、宏观、板块热度三个「计算依据」弹窗。
+  - `src/views/parts/dashboard/`：`IndexPanel`（分时 / 日 / 周 / 月 K、均线、成交额、两市全景）、`BoardsPanel`、`StocksPanel`、`MacroPanel`、`ScoreGauge`、`WatchPanel`（读现有自选分组，「管理自选 ›」跳 `/watchlist`，最多显示 10 只）、`AnnouncementsPanel`、`FactorTable`、`charts.ts`、`panel.css`。
+  - `components/ui/StateBlock.vue`：骨架屏不再继承全局 `.skeleton` 的 180px 最小高度。
+  - `tests/unit/dashboard.test.ts`（14 个用例：解析正常 / 缺失、URL 安全、K 线窗口、无昨收的分时图等）。
+
+### 验证
+
+- 后端：`ruff check` / `ruff format --check` 通过；改动文件 `mypy` 无错误；`pytest tests/unit` 全部通过；`tests/integration/test_dashboard_metrics.py` 在本机测试库（Docker pgvector，端口 55432）通过，迁移 0024 upgrade 验证。
+- 前端：`vue-tsc --noEmit` 无错误；`vitest run` 32 个文件 / 148 个用例通过；`vite build` 成功。
+- 页面联调（2026-10-17 周六，最近交易日 2026-10-16，测试库 + 本机注册账号，1680 宽）：温度 38.9「中性偏弱」，流动性 42.2「中性偏紧」，增长 46.7「中性」、象限「通胀回升」，热点板块 5 个，公告扫描 179 条，自选 7 只（强 1 / 震荡 5 / 弱 1）；全部指数与周期 K 线正常。未登录时自选面板显示登录入口。
+
+### 已知局限
+
+- 宏观接口首次约 13 秒（FRED 公开 CSV 逐条取），之后走缓存；市场接口首次约 6 秒。
+- 东财个股行情对本机 IP 仍频控，自选改用腾讯快照，首次约 11 秒。
+- 「较上一交易日」要等 `dashboard_daily_metrics` 有前一天的记录；新库第一天显示「尚无入库记录，明天起可对比」。写入发生在接口被访问时，没有单独的定时任务。
+- 公告重要度只按标题关键词分级，不读正文。
+
+### 下一步
+
+- 给 `dashboard_daily_metrics` 加收盘后定时写入，不依赖有人打开页面。
+- 宏观 FRED 序列改为读已入库的宏观数据，缩短首次加载时间。
