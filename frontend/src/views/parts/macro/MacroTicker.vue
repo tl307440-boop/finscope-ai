@@ -29,7 +29,7 @@ function refresh(): void {
   const nextRight = !atRightEdge(element)
   const focused = document.activeElement
   if ((!nextLeft && focused === leftButton.value) || (!nextRight && focused === rightButton.value)) {
-    element.focus()
+    element.focus({ preventScroll: true })
   }
   canLeft.value = nextLeft
   canRight.value = nextRight
@@ -148,6 +148,7 @@ watch(
   gap: 10px;
   overflow-x: auto;
   scroll-behavior: smooth;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
   border-radius: var(--radius-sm);
 }
