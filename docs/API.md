@@ -76,7 +76,7 @@
 
 `GET /api/v1/macro/series/UNRATE/observations?as_of=2020-02-08` 只返回该纽约日历日已经可见的修订。`as_of` 可以是 `YYYY-MM-DD`，也可以是带时区的时间。发布日当天不可见。没有数据时 `empty_message` 为“该日期还看不到已公布的数值”。
 
-`GET /api/v1/macro/observations?codes=UNRATE,ISM_MFG&as_of=2026-10-17` 一次取回多条序列在该观察日可见的观测，`data = { pit_date, items[] }`，`items` 顺序与请求一致，每项结构同单序列接口。`codes` 1–20 个，不认识的代码返回 422 且 `error.details.unknown_codes` 列出；limit 由频率决定（日度 1000、周度 260、月 / 季度 120）。
+`GET /api/v1/macro/observations?codes=UNRATE,ISM_MFG&as_of=2026-10-17` 一次取回多条序列在该观察日可见的观测，`data = { pit_date, items[] }`，`items` 顺序与请求一致，每项结构同单序列接口。`codes` 1–20 个，不认识的代码返回 422 且 `error.details.unknown_codes` 列出；limit 由频率决定，默认日度 2500、周度 600、月 / 季度 240，可用 `MACRO_BATCH_LIMIT_DAILY` / `_WEEKLY` / `_OTHER` 调整（1–20000）；读库只取该条数所需的那一段观察日，库里历史存得再长也不拖慢页面。同步的观察区间上限由 `MACRO_SYNC_MAX_WINDOW_DAYS`（默认 36500 天）控制；FRED 一次最多 2000 个版本日，同步按版本日自动拆成多次请求，值相同、首尾相接的版本合回一行，真实修订保留。一次性回补用 `python -m app.scripts.bootstrap_data --only fred --fred-years N`（默认 10 年，受区间上限约束）。
 
 美国宏观目录共 19 条：FRED 17 条 + 东方财富数据中心 `RPT_ECONOMICVALUE_USA` 转载的 ISM 制造业（`ISM_MFG` / `EMG00002790`）与服务业（`ISM_SVC` / `EMG00002791`）PMI。目录项带 `provider`（`fred` / `eastmoney`）与 `source_key`（东方财富指标 ID）。ISM 以发布日为 `realtime_start`，与 FRED 同样次日可见；来源只给最新值，首次同步前的历史为最新修订值，之后每次同步发现变化即新增修订版本：旧值截止到抓取日（纽约日历日）当天，新值从抓取日次日起可见。东方财富返回空列表或没有一行可解析时同步报 `UPSTREAM_PAYLOAD`，已入库数据不变；同一月份多行只留发布日最晚的一行。同步仍用 `fred_series` 任务，按序列的数据源分派。
 

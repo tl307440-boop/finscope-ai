@@ -5,6 +5,7 @@ from datetime import date, datetime
 import httpx
 
 from app.catalog.macro_series import seed_for
+from app.core.config import get_settings
 from app.providers.eastmoney_us_macro import LatestValue, fetch_indicator
 from app.providers.errors import ProviderError
 from app.providers.fred import FredAdapter, FredVintage
@@ -16,7 +17,6 @@ from app.utils.time import utc_now
 
 VintageFetcher = Callable[[str, date, date], Awaitable[tuple[FredVintage, ...]]]
 LatestFetcher = Callable[[str], Awaitable[tuple[LatestValue, ...]]]
-_MAX_WINDOW_DAYS = 3660
 
 
 async def sync_fred_series(
@@ -42,12 +42,13 @@ async def sync_fred_series(
             message="不在已核对的宏观序列里",
             status_code=422,
         )
+    max_days = get_settings().macro_sync_max_window_days
     if observation_end < observation_start or _window_days(observation_start, observation_end) > (
-        _MAX_WINDOW_DAYS
+        max_days
     ):
         raise ProviderError(
             code="VALIDATION_ERROR",
-            message="观测区间无效或超过 10 年",
+            message=f"观测区间无效或超过 {max_days} 天（MACRO_SYNC_MAX_WINDOW_DAYS）",
             status_code=422,
         )
     if seed.provider == "eastmoney":

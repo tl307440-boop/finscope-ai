@@ -1,7 +1,7 @@
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import cast
 from urllib.parse import urlencode
@@ -9,13 +9,14 @@ from urllib.parse import urlencode
 from app.catalog.macro_series import fred_codes
 from app.providers.errors import ProviderError
 from app.providers.http_client import ResilientHttpClient
+from app.utils.time import utc_now
 
 FRED_OBSERVATIONS_URL = "https://api.stlouisfed.org/fred/series/observations"
-# 实时区间终点取 FRED 允许的最大值，保证拿到至今所有修订版本。
-# 起点不取 1776-07-04：FRED 对 JSON 限制区间内最多 2000 个版本日，日频序列（如 DGS10）
-# 从 1776 年算起有数千个版本日，会被 400 拒绝。一条观测不可能在其所属观察日之前发布，
-# 所以起点取 observation_start 不会漏掉任何版本。
-_ALL_VINTAGES_END = "9999-12-31"
+# FRED 的 JSON 接口拒绝「版本日超过 2000 个」的实时区间。版本日按自然日计，
+# 与观察日无关。终点用 9999-12-31 时，还没到来的日子没有版本，不计入这 2000。
+# 政策利率每个自然日都有版本，从观察日起点一直取到今天会超过上限，所以按版本日切段。
+_MAX_VINTAGE_DATES = 2000
+_ALL_VINTAGES_END = date(9999, 12, 31)
 
 
 @dataclass(frozen=True)
@@ -26,20 +27,69 @@ class FredVintage:
     realtime_end: date
 
 
+def vintage_windows(start: date, horizon: date) -> tuple[tuple[date, date], ...]:
+    """把版本日区间切成每段至多 2000 天。最后一段的终点保持 9999-12-31。"""
+    if horizon < start:
+        horizon = start
+    if (horizon - start).days + 1 <= _MAX_VINTAGE_DATES:
+        return ((start, _ALL_VINTAGES_END),)
+    windows: list[tuple[date, date]] = []
+    cursor = start
+    last_start = horizon - timedelta(days=_MAX_VINTAGE_DATES - 1)
+    while cursor < last_start:
+        chunk_end = cursor + timedelta(days=_MAX_VINTAGE_DATES - 1)
+        windows.append((cursor, chunk_end))
+        cursor = chunk_end + timedelta(days=1)
+    windows.append((cursor, _ALL_VINTAGES_END))
+    return tuple(windows)
+
+
+def merge_adjacent_vintages(vintages: Sequence[FredVintage]) -> tuple[FredVintage, ...]:
+    """合并按版本日切段后被截断的同一版本。
+
+    FRED 会把返回行的实时区间截到请求区间内，一个值若跨过切段边界就会变成首尾相接的两行。
+    同一观察日、值相同、前一行终点的次日恰好是后一行起点时，它们是同一版本，合成一行；
+    值不同的相邻行是真实修订，原样保留。
+    """
+
+    ordered = sorted(vintages, key=lambda item: (item.observation_date, item.realtime_start))
+    merged: list[FredVintage] = []
+    for item in ordered:
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and last.observation_date == item.observation_date
+            and last.value == item.value
+            and last.realtime_end < _ALL_VINTAGES_END
+            and last.realtime_end + timedelta(days=1) == item.realtime_start
+        ):
+            merged[-1] = FredVintage(
+                observation_date=last.observation_date,
+                value=last.value,
+                realtime_start=last.realtime_start,
+                realtime_end=item.realtime_end,
+            )
+            continue
+        merged.append(item)
+    return tuple(merged)
+
+
 def observations_url(
     *,
     series_id: str,
     api_key: str,
     observation_start: date,
     observation_end: date,
+    realtime_start: date,
+    realtime_end: date,
 ) -> str:
     query = urlencode(
         {
             "series_id": series_id,
             "api_key": api_key,
             "file_type": "json",
-            "realtime_start": observation_start.isoformat(),
-            "realtime_end": _ALL_VINTAGES_END,
+            "realtime_start": realtime_start.isoformat(),
+            "realtime_end": realtime_end.isoformat(),
             "observation_start": observation_start.isoformat(),
             "observation_end": observation_end.isoformat(),
         }
@@ -87,6 +137,8 @@ class FredAdapter:
         series_id: str,
         observation_start: date,
         observation_end: date,
+        *,
+        as_of: date | None = None,
     ) -> tuple[FredVintage, ...]:
         if not self.api_key.strip():
             raise ProviderError(
@@ -100,20 +152,26 @@ class FredAdapter:
                 message="不在已核对的宏观序列里",
                 status_code=422,
             )
-        url = observations_url(
-            series_id=series_id,
-            api_key=self.api_key,
-            observation_start=observation_start,
-            observation_end=observation_end,
-        )
-        try:
-            body = await self.client.get(url)
-        except ProviderError as error:
-            raise without_secret(error, self.api_key) from error
-        try:
-            return parse_observations(body)
-        except ProviderError as error:
-            raise without_secret(error, self.api_key) from error
+        horizon = max(observation_end, as_of or utc_now().date())
+        collected: list[FredVintage] = []
+        for realtime_start, realtime_end in vintage_windows(observation_start, horizon):
+            url = observations_url(
+                series_id=series_id,
+                api_key=self.api_key,
+                observation_start=observation_start,
+                observation_end=observation_end,
+                realtime_start=realtime_start,
+                realtime_end=realtime_end,
+            )
+            try:
+                body = await self.client.get(url)
+            except ProviderError as error:
+                raise without_secret(error, self.api_key) from error
+            try:
+                collected.extend(parse_observations(body))
+            except ProviderError as error:
+                raise without_secret(error, self.api_key) from error
+        return merge_adjacent_vintages(collected)
 
 
 def assign_revisions(vintages: Sequence[FredVintage]) -> list[tuple[FredVintage, int]]:

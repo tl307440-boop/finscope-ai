@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # parse_document：上传后立即入队是主路径，这里只登记「兜底扫描」的兜底 job。
     scheduler_enable_parse_document: bool = True
     scheduler_parse_sweep_seconds: int = 300
+    # 美国宏观：单次同步允许的观察区间（自然日）。FRED 的版本日上限由同步按段拆开处理，
+    # 这里只防止一次请求过大；默认 100 年，实际取多远由请求的起止日决定。
+    macro_sync_max_window_days: int = 36500
+    # 批量观测接口按频率返回的最近行数。日度默认约 10 年交易日，周度约 11 年，其余约 20 年。
+    # 调大会增加响应体积，页面一次要取十几条序列，按需要调。
+    macro_batch_limit_daily: int = 2500
+    macro_batch_limit_weekly: int = 600
+    macro_batch_limit_other: int = 240
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。
@@ -165,6 +173,15 @@ class Settings(BaseSettings):
             raise ValueError("SCHEDULER_A_STOCK_LAG_TRADING_DAYS 不能为负数")
         if self.scheduler_parse_sweep_seconds < 30:
             raise ValueError("SCHEDULER_PARSE_SWEEP_SECONDS 不能小于 30 秒")
+        if not 365 <= self.macro_sync_max_window_days <= 73000:
+            raise ValueError("MACRO_SYNC_MAX_WINDOW_DAYS 需要在 365–73000 之间")
+        for name, value in (
+            ("MACRO_BATCH_LIMIT_DAILY", self.macro_batch_limit_daily),
+            ("MACRO_BATCH_LIMIT_WEEKLY", self.macro_batch_limit_weekly),
+            ("MACRO_BATCH_LIMIT_OTHER", self.macro_batch_limit_other),
+        ):
+            if not 1 <= value <= 20000:
+                raise ValueError(f"{name} 需要在 1–20000 之间")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")

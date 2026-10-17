@@ -1,6 +1,7 @@
 """一次性灌入真实数据，供本地演示与答辩。所有数据都来自公开上游，不生成任何数字。
 
     python -m app.scripts.bootstrap_data [--since 2025-01-02] [--only bars,fred,sec,disclosures]
+                                         [--fred-years 10]
 
 - A 股日线：东方财富 → 腾讯行情（akshare_sync 的两条源），24 个标的。
 - 交易日历：从上证指数实际有成交的日子推出开市日（只写开市，不推断休市）。
@@ -61,6 +62,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="灌入真实演示数据")
     parser.add_argument("--since", type=date.fromisoformat, default=date(2025, 1, 2))
     parser.add_argument("--only", default=",".join(STEPS))
+    parser.add_argument(
+        "--fred-years",
+        type=int,
+        default=10,
+        help="美国宏观回补年数，上限受 MACRO_SYNC_MAX_WINDOW_DAYS 约束",
+    )
     args = parser.parse_args()
     steps = {item.strip() for item in str(args.only).split(",") if item.strip()}
     settings = get_settings()
@@ -72,7 +79,7 @@ def main() -> int:
         if "bars" in steps:
             _sync_bars(engine, args.since, today)
         if "fred" in steps:
-            asyncio.run(_sync_fred(engine, today))
+            asyncio.run(_sync_fred(engine, today, args.fred_years))
         if "sec" in steps:
             asyncio.run(_sync_sec(engine, settings.sec_user_agent))
         if "disclosures" in steps:
@@ -121,14 +128,15 @@ def _sync_bars(engine: Engine, since: date, today: date) -> None:
         print(f"  交易日历：按上证指数有成交的日子写入开市日 {written} 条")
 
 
-async def _sync_fred(engine: Engine, today: date) -> None:
+async def _sync_fred(engine: Engine, today: date, years: int) -> None:
     settings = get_settings()
     repository = MacroRepository(engine)
-    start = today - timedelta(days=365 * 6)
+    days = min(max(years, 1) * 366, settings.macro_sync_max_window_days)
+    start = today - timedelta(days=days)
     mode = "observations 接口" if settings.fred_api_key.strip() else "公开 CSV"
     print(
         f"\n[美国宏观] {len(catalog_codes())} 条序列（FRED + 东方财富 ISM），"
-        f"{start} ~ {today}，{mode}"
+        f"{start} ~ {today}（{days} 天），{mode}"
     )
 
     async def fetch(code: str, first: date, last: date) -> tuple[FredVintage, ...]:
