@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   BAR_RANGE_PRESETS,
   FRED_RANGE_PRESETS,
+  MAX_BAR_WINDOW_DAYS,
   MAX_SYNC_WINDOW_DAYS,
   presetRange,
   rangeEnding,
@@ -34,15 +35,17 @@ describe("同步区间快捷按钮", () => {
     })
   })
 
-  it("全部取接口默认上限，50 年仍短于这个上限", () => {
-    const all = presetRange({ label: "全部", days: MAX_SYNC_WINDOW_DAYS }, today)
-    expect(spanDays(all.start, all.end)).toBe(MAX_SYNC_WINDOW_DAYS)
+  it("全部取各自接口刚好接受的最长天数", () => {
+    const fredAll = presetRange(FRED_RANGE_PRESETS[4], today)
+    const barAll = presetRange(BAR_RANGE_PRESETS[2], today)
+    expect(spanDays(fredAll.start, fredAll.end)).toBe(MAX_SYNC_WINDOW_DAYS)
+    expect(spanDays(barAll.start, barAll.end)).toBe(MAX_BAR_WINDOW_DAYS)
     const fifty = presetRange({ label: "50年", years: 50 }, today)
     expect(spanDays(fifty.start, fifty.end)).toBeLessThan(MAX_SYNC_WINDOW_DAYS)
   })
 
-  it("宏观给到全部，日线只给不超过 10 年的预设", () => {
+  it("宏观给到 100 年，日线全部停在 3660 天", () => {
     expect(FRED_RANGE_PRESETS.map((item) => item.label)).toEqual(["5年", "10年", "20年", "50年", "全部"])
-    expect(BAR_RANGE_PRESETS.map((item) => item.label)).toEqual(["5年", "10年"])
+    expect(BAR_RANGE_PRESETS.map((item) => item.label)).toEqual(["5年", "10年", "全部"])
   })
 })

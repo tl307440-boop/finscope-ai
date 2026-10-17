@@ -8,8 +8,11 @@ export interface SyncRangePreset {
   days?: number
 }
 
-/** 与 MACRO_SYNC_MAX_WINDOW_DAYS 的默认值一致：再长会被接口拒绝。 */
+/** 与 MACRO_SYNC_MAX_WINDOW_DAYS 的默认值一致。比较用的是「大于」，正好等于上限可以通过。 */
 export const MAX_SYNC_WINDOW_DAYS = 36500
+
+/** 与 A 股日线 valid_window 的 3660 天一致。比较用的是「不超过」，正好等于上限可以通过。 */
+export const MAX_BAR_WINDOW_DAYS = 3660
 
 export const FRED_RANGE_PRESETS: readonly SyncRangePreset[] = [
   { label: "5年", years: 5 },
@@ -19,10 +22,11 @@ export const FRED_RANGE_PRESETS: readonly SyncRangePreset[] = [
   { label: "全部", days: MAX_SYNC_WINDOW_DAYS },
 ]
 
-/** A 股日线接口最长约 10 年，更长的预设点了也会被拒绝。 */
+/** A 股日线超过 3660 天会被拒绝，全部取这个上限。 */
 export const BAR_RANGE_PRESETS: readonly SyncRangePreset[] = [
   { label: "5年", years: 5 },
   { label: "10年", years: 10 },
+  { label: "全部", days: MAX_BAR_WINDOW_DAYS },
 ]
 
 export function isoDate(value: Date): string {
