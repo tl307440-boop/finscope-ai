@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     scheduler_enable_china_macro: bool = True
     scheduler_china_macro_hour: int = 1
     scheduler_china_macro_minute: int = 20
+    # 东财板块收盘快照 + 一/二级行业日线：交易日收盘后抓一次，供历史回看、轮动图与限流时兜底。
+    scheduler_enable_board_market: bool = True
+    scheduler_board_market_hour: int = 15
+    scheduler_board_market_minute: int = 45
     # 美股收盘（美东 16:00）折合北京时间约凌晨 4~5 点，所以 6:30 之后取日线，周二到周六触发。
     scheduler_us_bars_hour: int = 6
     scheduler_us_bars_minute: int = 30

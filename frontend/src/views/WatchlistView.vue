@@ -5,6 +5,8 @@
  *  - GET    /api/v1/watchlists                                     我的自选
  *  - POST   /api/v1/watchlists                                    新建分组（GroupCreate）
  *  - POST   /api/v1/watchlists/{group_id}/items                   加入自选（ItemCreate）
+ *  - POST   /api/v1/watchlists/{group_id}/items/batch             粘贴代码批量导入
+ *  - GET    /api/v1/watchlists/{group_id}/insights                自选看板（公开行情 + 行业 + 信号）
  *  - DELETE /api/v1/watchlists/{group_id}/items/{instrument_id}   移出自选
  *  - GET    /api/v1/instruments/search                             选证券
  *  - GET    /api/v1/market/bars/{instrument_id}?limit=                指标变化（收盘价 + simple_return）
@@ -25,7 +27,9 @@ import StatusPill from "../components/ui/StatusPill.vue"
 import { ApiError, apiUrl, authorizedFetch, readJson } from "../api/client"
 import { describeHit, routeForHit, searchInstruments, type InstrumentHit } from "../api/instruments"
 import { asString, dataOf, listOf } from "../api/json"
+import { importCodes } from "../api/watchlistInsights"
 import { restoreSession, useSessionStore } from "../stores/auth"
+import WatchlistInsightsPanel from "./parts/watchlist/WatchlistInsightsPanel.vue"
 
 const session = useSessionStore()
 
@@ -74,6 +78,10 @@ const searching = ref(false)
 const actionError = ref("")
 const actionOk = ref("")
 const busy = ref(false)
+const importText = ref("")
+const importGroup = ref("")
+const insightGroup = ref("")
+const insightVersion = ref(0)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 const signedIn = computed<boolean>(() => Boolean(session.accessToken))
@@ -209,9 +217,13 @@ async function load(): Promise<void> {
       return
     }
     groups.value = listOf(dataOf(result.body)?.groups).flatMap(parseGroup)
-    if (!groups.value.some((group) => group.id === activeGroup.value)) {
-      activeGroup.value = groups.value[0]?.id ?? ""
+    const first = groups.value[0]?.id ?? ""
+    for (const choice of [activeGroup, importGroup, insightGroup]) {
+      if (!groups.value.some((group) => group.id === choice.value)) {
+        choice.value = first
+      }
     }
+    insightVersion.value += 1
     phase.value = "ready"
     await loadMoves()
   } catch (caught) {
@@ -403,6 +415,40 @@ async function addFirstHit(): Promise<void> {
     return
   }
   await addItem(hit)
+}
+
+/** 粘贴代码批量加入；后端按代码匹配已收录证券，只回报加入 / 已存在 / 未收录 / 无法识别。 */
+async function importBatch(): Promise<void> {
+  actionError.value = ""
+  actionOk.value = ""
+  if (!importGroup.value || !importText.value.trim()) {
+    actionError.value = "先选分组并粘贴至少一个股票代码"
+    return
+  }
+  busy.value = true
+  try {
+    const result = await importCodes(importGroup.value, importText.value, session.accessToken, refreshToken)
+    const parts = [`新加入 ${result.added.length} 只`]
+    if (result.existing.length) {
+      parts.push(`已在分组 ${result.existing.length} 只`)
+    }
+    if (result.missing.length) {
+      parts.push(`本系统未收录：${result.missing.join("、")}`)
+    }
+    if (result.invalid.length) {
+      parts.push(`无法识别：${result.invalid.join("、")}`)
+    }
+    actionOk.value = parts.join("；")
+    if (result.added.length) {
+      importText.value = ""
+    }
+    insightGroup.value = importGroup.value
+    await load()
+  } catch (caught) {
+    actionError.value = caught instanceof Error ? caught.message : "无法连接接口"
+  } finally {
+    busy.value = false
+  }
 }
 
 async function removeItem(group: WatchGroup, item: WatchItem): Promise<void> {
@@ -630,8 +676,40 @@ onMounted(() => {
         </PanelCard>
       </div>
 
+      <PanelCard
+        v-if="groups.length"
+        title="批量导入"
+        info="可直接粘贴东财 / 同花顺自选导出的代码列表，支持 600519、SH600519、600519.SH、1.600519 等写法，逗号、空格或换行分隔，一次最多 300 个"
+      >
+        <template #icon><el-icon><Plus /></el-icon></template>
+        <div class="import-row">
+          <el-select v-model="importGroup" placeholder="导入到分组" aria-label="导入到分组" style="width: 160px">
+            <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+          </el-select>
+          <el-input
+            v-model="importText"
+            type="textarea"
+            :rows="3"
+            aria-label="股票代码列表"
+            placeholder="例如：600519 000858 300750.SZ SH601318"
+          />
+          <el-button type="primary" :loading="busy" :disabled="!importText.trim()" @click="importBatch">导入</el-button>
+        </div>
+        <p class="inline-note">只在本系统账号里保存代码，不需要、也不会保存东财 / 同花顺的登录信息。</p>
+      </PanelCard>
+
       <p v-if="actionOk" class="action-note" role="status">{{ actionOk }}</p>
       <p v-if="actionError" class="action-note danger" role="alert">{{ actionError }}</p>
+
+      <template v-if="groups.length">
+        <div class="insight-head">
+          <span class="muted">看板分组</span>
+          <el-radio-group v-model="insightGroup" size="small">
+            <el-radio-button v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</el-radio-button>
+          </el-radio-group>
+        </div>
+        <WatchlistInsightsPanel v-if="insightGroup" :group-id="insightGroup" :version="insightVersion" />
+      </template>
 
       <PanelCard v-if="!groups.length" title="我的自选">
         <template #icon><el-icon><Star /></el-icon></template>
@@ -720,6 +798,24 @@ onMounted(() => {
 .login-line {
   flex: none;
   color: var(--accent);
+  font-size: 13px;
+}
+
+.import-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.import-row :deep(.el-textarea) {
+  flex: 1 1 auto;
+}
+
+.insight-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   font-size: 13px;
 }
 

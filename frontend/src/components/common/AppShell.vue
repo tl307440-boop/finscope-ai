@@ -111,7 +111,7 @@ const groups = computed<NavGroup[]>(() => {
       label: "产业研究",
       icon: DataBoard,
       primary: "/industry",
-      children: [],
+      children: [{ index: "/industry/pulse", label: "轮动与情绪" }],
     },
     {
       key: "hotspots",
