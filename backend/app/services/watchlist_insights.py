@@ -1,6 +1,7 @@
 """自选股看板：自选里只存证券，行情、行业、资金、涨停、调研、热度全部从公开数据现查。
 
-- 实时行情来自东财个股行情；拿不到时用本系统已入库的日线收盘价计算涨跌幅，并标 stored / stale。
+- 实时行情来自东财个股行情；东财不可用时改用腾讯个股行情（多日涨跌按入库日线 + 腾讯最新价计算），
+  两者都拿不到时用本系统已入库的日线收盘价计算涨跌幅，并标 stored / stale。
 - 涨停状态、机构调研、热榜排名各自独立获取，某一项失败只在 signal_section 里说明，不影响其他列。
 - 汇总与行业暴露都在后端算：等权平均涨跌、市值加权涨跌、主力净流入合计、各行业市值占比。
 """
@@ -16,6 +17,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 from app.providers import eastmoney_boards as em
+from app.providers import tencent_market as tx
 from app.providers.errors import ProviderError
 from app.repositories.watchlists import RecentClose, WatchGroup, WatchItem
 from app.schemas.industry_market import Section, SourceRef
@@ -33,6 +35,10 @@ from app.utils.time import utc_now
 
 MAX_IMPORT = 300
 _TTL_QUOTES = 60
+_TENCENT_BATCH = 60
+_EM_SOURCE = ("东方财富 个股行情", "https://quote.eastmoney.com/")
+_TENCENT_SOURCE = ("腾讯行情 个股快照", "https://gu.qq.com/")
+_STORED_SOURCE = ("本系统入库日线", "https://quote.eastmoney.com/")
 _TWO = Decimal("0.01")
 _HUNDRED = Decimal(100)
 _EXCHANGES = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}
@@ -114,7 +120,7 @@ class WatchlistInsightsService:
         supported = [item for item in group.items if _supported(item)]
         unsupported = [item.display_symbol for item in group.items if not _supported(item)]
         today = self.now().astimezone(SHANGHAI).date()
-        stocks, quote_section = await self._quotes(supported, recent, today)
+        stocks, quote_section, quote_source = await self._quotes(supported, recent, today)
         names, signals, signal_section = await self._signals()
         for index, stock in enumerate(stocks):
             stocks[index] = stock.model_copy(
@@ -135,11 +141,7 @@ class WatchlistInsightsService:
             rules=RULES,
             sources=[
                 SourceRef(
-                    name="东方财富 个股行情"
-                    if quote_section.origin == "live"
-                    else "本系统入库日线",
-                    url="https://quote.eastmoney.com/",
-                    fetched_at=quote_section.fetched_at,
+                    name=quote_source[0], url=quote_source[1], fetched_at=quote_section.fetched_at
                 ),
                 SourceRef(name="东方财富 涨停板行情", url="https://quote.eastmoney.com/ztb/"),
                 SourceRef(name="东方财富 机构调研", url="https://data.eastmoney.com/jgdy/"),
@@ -155,9 +157,9 @@ class WatchlistInsightsService:
         items: list[WatchItem],
         recent: Callable[[Sequence[UUID], date], dict[UUID, list[RecentClose]]],
         today: date,
-    ) -> tuple[list[WatchStock], Section]:
+    ) -> tuple[list[WatchStock], Section, tuple[str, str]]:
         if not items:
-            return [], Section(status="unavailable", reason="这个分组里没有 A 股")
+            return [], Section(status="unavailable", reason="这个分组里没有 A 股"), _EM_SOURCE
         secids = sorted(secid_for(item.exchange, item.symbol) for item in items)
         try:
             cached = await self.cache.get(
@@ -166,11 +168,40 @@ class WatchlistInsightsService:
         except ProviderError as error:
             since = min(today - timedelta(days=130), date(today.year - 1, 12, 15))
             closes = await asyncio.to_thread(recent, [item.instrument_id for item in items], since)
+            symbols = sorted(tx.a_share_symbol(item.symbol) for item in items)
+            try:
+                tencent = await self.cache.get(
+                    "watch-tx:" + ",".join(symbols),
+                    _TTL_QUOTES,
+                    lambda: self._load_tencent(symbols),
+                )
+            except ProviderError:
+                tencent = None
+            if tencent is not None and tencent.value:
+                stocks = [
+                    _tencent_stock(
+                        item,
+                        tencent.value.get(tx.a_share_symbol(item.symbol)),
+                        closes.get(item.instrument_id, []),
+                        today,
+                    )
+                    for item in items
+                ]
+                return (
+                    stocks,
+                    Section(
+                        status="stale" if tencent.stale else "ok",
+                        reason=f"东财行情暂不可用（{error.message}），已改用腾讯行情；"
+                        "5 / 10 / 60 日与年初至今涨跌按入库日线 + 腾讯最新价计算",
+                        fetched_at=tencent.fetched_at,
+                    ),
+                    _TENCENT_SOURCE,
+                )
             stocks = [
                 _stored_stock(item, closes.get(item.instrument_id, []), today) for item in items
             ]
             dates = [row.trade_date for rows in closes.values() for row in rows[-1:]]
-            return stocks, Section(
+            section = Section(
                 status="stale" if dates else "unavailable",
                 reason=(
                     f"实时行情暂不可用（{error.message}），涨跌幅按入库日线计算"
@@ -180,13 +211,24 @@ class WatchlistInsightsService:
                 origin="stored",
                 data_date=max(dates) if dates else None,
             )
+            return stocks, section, _STORED_SOURCE
         quotes = cached.value
         stocks = [_live_stock(item, quotes.get(item.symbol)) for item in items]
-        return stocks, Section(
+        section = Section(
             status="stale" if cached.stale else "ok",
             reason=cached.stale_reason,
             fetched_at=cached.fetched_at,
         )
+        return stocks, section, _EM_SOURCE
+
+    async def _load_tencent(self, symbols: list[str]) -> dict[str, tx.Quote]:
+        quotes: dict[str, tx.Quote] = {}
+        for start in range(0, len(symbols), _TENCENT_BATCH):
+            payload = await self.gateway.get(
+                tx.quote_url(symbols[start : start + _TENCENT_BATCH]), tx.TENCENT_HEADERS
+            )
+            quotes.update(tx.parse_quotes(payload))
+        return quotes
 
     async def _load_quotes(self, secids: list[str]) -> dict[str, em.MemberQuote]:
         quotes: dict[str, em.MemberQuote] = {}
@@ -330,6 +372,32 @@ def _live_stock(item: WatchItem, quote: em.MemberQuote | None) -> WatchStock:
             "market_cap": quote.market_cap,
             "main_net_inflow": quote.main_net_inflow,
             "industry": quote.sub_industry,
+        }
+    )
+
+
+def _tencent_stock(
+    item: WatchItem, quote: tx.Quote | None, closes: list[RecentClose], today: date
+) -> WatchStock:
+    day = None if quote is None else quote.quote_date
+    if quote is None or quote.last is None or day is None:
+        return _stored_stock(item, closes, today)
+    series = [row for row in closes if row.trade_date < day]
+    series.append(RecentClose(trade_date=day, close=quote.last))
+    return _base(item, "live").model_copy(
+        update={
+            "name": quote.name or item.name_cn,
+            "last": quote.last,
+            "change_pct": quote.change_pct,
+            "change_5d_pct": window_change(series, 5),
+            "change_10d_pct": window_change(series, 10),
+            "change_60d_pct": window_change(series, 60),
+            "change_ytd_pct": ytd_change(series, today.year),
+            "amount": quote.amount,
+            "turnover_pct": quote.turnover_pct,
+            "pe_dynamic": quote.pe_dynamic,
+            "pb": quote.pb,
+            "market_cap": quote.market_cap,
         }
     )
 

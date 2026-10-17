@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from app.core.security import PasswordService
 from app.db.session import create_db_engine
 from app.repositories.accounts import AccountRepository
 from app.services.accounts import bootstrap_admin
+from app.services.cockpit import keep_macro_warm
 from app.services.login_limiter import LoginRateLimiter
 
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
@@ -66,7 +68,15 @@ def create_app() -> FastAPI:
             window_seconds=settings.login_failure_window_seconds,
         )
         _bootstrap_admin(engine, settings)
+        # 宏观上游（FRED / 东财 / 外盘）冷启动要多次跨境请求：
+        # 后台预热并定期续命，用户打开总览时直接命中缓存。
+        warmer = (
+            asyncio.create_task(keep_macro_warm(engine)) if settings.app_env != "test" else None
+        )
         yield
+        if warmer is not None:
+            warmer.cancel()
+            await asyncio.gather(warmer, return_exceptions=True)
         engine.dispose()
 
     app = FastAPI(

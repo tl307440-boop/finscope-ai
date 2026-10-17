@@ -16,10 +16,12 @@ from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import SyncJobRepository
 from app.schemas.auth import list_provider_credentials
 from app.schemas.bars import AkshareSyncRequest, AkshareSyncResult
+from app.schemas.fred_snapshot import FredSnapshotPush, FredSnapshotPushResult
 from app.schemas.macro import FredSyncRequest, FredSyncResult
 from app.schemas.provider import ProbeRequest
 from app.services.akshare_sync import apply_bars, fetch_bars, valid_window
 from app.services.auth_types import UserRecord
+from app.services.cockpit import attach_repositories, get_dashboard_service
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.services.provider_probe import probe_details, probe_upstream
 from app.services.runtime_settings import effective_settings
@@ -93,6 +95,21 @@ async def sync_fred(
         rows_written=written,
         preserved_existing=True,
     )
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.post(
+    "/dashboard-fred-snapshots", summary="推送总览用的 FRED 序列（服务器直连 FRED 不通时）"
+)
+async def push_dashboard_fred(
+    body: FredSnapshotPush,
+    request: Request,
+    _: Annotated[UserRecord, Depends(require_admin)],
+) -> JSONResponse:
+    service = get_dashboard_service()
+    attach_repositories(service, cast(Engine, request.app.state.engine))
+    points = await service.ingest_fred(body.series)
+    payload = FredSnapshotPushResult(series=sorted(body.series), points=points)
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 

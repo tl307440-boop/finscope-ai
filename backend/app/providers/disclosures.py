@@ -105,6 +105,70 @@ def cninfo_query_form(
     }
 
 
+@dataclass(frozen=True)
+class MarketAnnouncement:
+    announcement_id: str
+    code: str
+    name: str
+    title: str
+    url: str
+    published_at: datetime
+
+
+def cninfo_market_form(
+    *, start: date, end: date, page: int, category: str = "", searchkey: str = ""
+) -> dict[str, str]:
+    """全市场查询：stock 留空、column=szse 时覆盖沪深京全部 A 股，单页最多 30 条。"""
+
+    return {
+        "pageNum": str(page),
+        "pageSize": "30",
+        "column": "szse",
+        "tabName": "fulltext",
+        "stock": "",
+        "searchkey": searchkey,
+        "category": f"{category};" if category else "",
+        "seDate": f"{start.isoformat()}~{end.isoformat()}",
+        "isHLtitle": "true",
+    }
+
+
+def parse_cninfo_market(payload: bytes) -> tuple[MarketAnnouncement, ...]:
+    document = _json(payload)
+    rows = document.get("announcements")
+    if rows is None:
+        return ()
+    if not isinstance(rows, list):
+        raise _payload_error("巨潮公告")
+    found: list[MarketAnnouncement] = []
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        item = cast(dict[str, object], raw)
+        title = _clean_title(item.get("announcementTitle"))
+        adjunct, stamp = item.get("adjunctUrl"), item.get("announcementTime")
+        code, name, ident = item.get("secCode"), item.get("secName"), item.get("announcementId")
+        if not (
+            title
+            and isinstance(adjunct, str)
+            and isinstance(stamp, int)
+            and isinstance(code, str)
+            and isinstance(name, str)
+        ):
+            continue
+        found.append(
+            MarketAnnouncement(
+                announcement_id=str(ident) if ident is not None else adjunct,
+                code=code,
+                name=_clean_title(name),
+                title=title,
+                url=CNINFO_STATIC + adjunct.lstrip("/"),
+                published_at=datetime.fromtimestamp(stamp / 1000, tz=_SHANGHAI).astimezone(UTC),
+            )
+        )
+    return tuple(found)
+
+
 def parse_cninfo_announcements(payload: bytes) -> tuple[DisclosureDraft, ...]:
     document = _json(payload)
     rows = document.get("announcements")

@@ -1,0 +1,880 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>智能投研驾驶舱 · 原型</title>
+<script src="../../../frontend/node_modules/echarts/dist/echarts.min.js"></script>
+<script>window.echarts || document.write('<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"><\/script>')</script>
+<script src="snapshot.js"></script>
+<style>
+:root{
+  --bg:#070d19;--panel:#0d1729;--panel-top:#111f37;--panel-soft:#13213a;--panel-deep:#091222;--panel-raise:#1a2b49;
+  --text:#e6edf8;--text-strong:#f5f8fd;--muted:#94a4be;--faint:#5d6d88;
+  --accent:#3b82f6;--accent-soft:rgb(59 130 246/14%);--cyan:#22d3ee;--violet:#a78bfa;--orange:#fb923c;
+  --ok:#34d399;--warn:#fbbf24;--danger:#f87171;--rise:#f6465d;--fall:#1fc37d;
+  --line:rgb(96 140 220/16%);--line-soft:rgb(96 140 220/8%);--edge-light:rgb(120 170 255/34%);
+  --gap:14px;--radius:10px;
+  --font-num:"Bahnschrift","DIN Alternate","Roboto Mono","Segoe UI",sans-serif;
+  --font-ui:"Segoe UI","PingFang SC","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--font-ui);color:var(--text);line-height:1.5;
+  background:radial-gradient(1200px 520px at 70% -10%,rgb(37 99 235/14%),transparent 70%),radial-gradient(800px 400px at -10% 110%,rgb(34 211 238/5%),transparent 70%),var(--bg);background-attachment:fixed;font-size:13px}
+.page{max-width:1760px;margin:0 auto;padding:18px 22px 28px}
+.num{font-family:var(--font-num);font-variant-numeric:tabular-nums}
+.up{color:var(--rise)}.down{color:var(--fall)}.flat{color:var(--muted)}
+.muted{color:var(--muted)}.faint{color:var(--faint)}
+header.top{display:flex;align-items:baseline;gap:14px;margin-bottom:14px}
+header.top h1{margin:0;font-size:24px;font-weight:700;color:var(--text-strong)}
+header.top .sub{color:var(--muted)}
+header.top .right{margin-left:auto;display:flex;gap:14px;align-items:center;color:var(--muted);font-size:12px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);margin-right:6px}
+.dot.warn{background:var(--warn)}
+.card{position:relative;background:linear-gradient(180deg,var(--panel-top),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;min-width:0}
+.card::before{content:"";position:absolute;left:14px;right:14px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--tone,var(--edge-light)),transparent)}
+.card:hover{border-color:rgb(96 140 220/28%)}
+.card.clickable{cursor:pointer}
+.head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.head h2{margin:0;font-size:15px;font-weight:600;color:var(--text-strong)}
+.head .icon{width:24px;height:24px;border-radius:6px;display:grid;place-items:center;font-size:13px;background:color-mix(in srgb,var(--tone,var(--accent)) 16%,transparent);color:var(--tone,var(--accent))}
+.head .sub{color:var(--muted);font-size:13px}
+.head .more{margin-left:auto;color:var(--muted);font-size:13px;text-decoration:none;cursor:pointer;white-space:nowrap}
+.head .more:hover{color:var(--accent)}
+.info{display:inline-grid;place-items:center;width:15px;height:15px;border:1px solid var(--faint);border-radius:50%;font-size:10px;color:var(--muted);cursor:help}
+.tone-cyan{--tone:var(--cyan)}.tone-orange{--tone:var(--orange)}.tone-violet{--tone:var(--violet)}.tone-blue{--tone:var(--accent)}.tone-ok{--tone:var(--ok)}.tone-warn{--tone:var(--warn)}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.kpi{min-height:150px}
+.kpi .big{font-family:var(--font-num);font-size:30px;font-weight:600;color:var(--text-strong);line-height:1.1}
+.kpi .big small{font-size:15px;color:var(--muted);font-weight:500;margin-left:4px}
+.kpi .caption{color:var(--muted);font-size:12.5px;line-height:1.6;margin-top:6px}
+.kv{display:flex;gap:8px;align-items:baseline;margin:2px 0}
+.kv .k{color:var(--muted);min-width:84px}
+.kv .v{font-size:17px;font-weight:600}
+.row{display:flex;gap:12px;align-items:center}
+.grow{flex:1;min-width:0}
+.tempbar{position:relative;height:8px;border-radius:5px;margin:12px 0 6px;background:linear-gradient(90deg,#1e3a8a,#3b82f6 30%,#94a3b8 50%,#fb923c 72%,#f6465d)}
+.tempbar i{position:absolute;top:-4px;width:4px;height:16px;border-radius:2px;background:#fff;box-shadow:0 0 8px #fff;transform:translateX(-50%)}
+.factor-line{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.factor-line b{font-family:var(--font-num);font-weight:600;margin-left:4px}
+.main{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:var(--gap)}
+.col{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--gap)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{background:transparent;border:0;color:var(--muted);padding:3px 10px;cursor:pointer;font:inherit;font-size:12px}
+.seg button.on{background:var(--accent);color:#fff}
+.chips{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:8px}
+.chip{border:1px solid var(--line);border-radius:8px;padding:6px 10px;background:var(--panel-deep);cursor:pointer;text-align:left;color:var(--text);font:inherit}
+.chip.on{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;background:color-mix(in srgb,var(--accent) 10%,var(--panel-deep))}
+.chip .n{font-size:12px;color:var(--muted)}
+.chip .p{font-family:var(--font-num);font-size:17px;font-weight:600}
+.chip .c{font-family:var(--font-num);font-size:12.5px;margin-left:6px}
+.index-body{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:12px}
+#chartIndex{height:360px}
+.overview{border-left:1px solid var(--line-soft);padding-left:12px;font-size:13px}
+.overview h3,.sec-title{margin:0 0 6px;font-size:13px;color:var(--muted);font-weight:500}
+.ov-row{display:flex;justify-content:space-between;padding:3.5px 0;border-bottom:1px dashed var(--line-soft)}
+.ov-row span:last-child{font-family:var(--font-num)}
+.stack-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;margin:6px 0 4px}
+.stack-bar i{display:block;height:100%}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{color:var(--muted);font-weight:500;text-align:left;padding:6px 6px;background:color-mix(in srgb,var(--text) 5%,transparent);white-space:nowrap}
+td{padding:6px 6px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
+td.r,th.r{text-align:right}
+td .sub{color:var(--faint);font-size:11.5px}
+tr:hover td{background:color-mix(in srgb,var(--accent) 7%,transparent)}
+.ellipsis{overflow:hidden;text-overflow:ellipsis;max-width:220px;display:inline-block;vertical-align:bottom}
+.heat{display:inline-block;min-width:34px;text-align:center;border-radius:4px;padding:1px 6px;font-family:var(--font-num);font-weight:600;color:#fff}
+.tag{display:inline-block;padding:0 6px;border-radius:4px;font-size:11.5px;line-height:18px;margin-right:4px;background:var(--accent-soft);color:var(--accent)}
+.tag.rise{background:rgb(246 70 93/14%);color:var(--rise)}
+.tag.fall{background:rgb(31 195 125/14%);color:var(--fall)}
+.tag.warn{background:rgb(251 191 36/12%);color:var(--warn)}
+.tag.violet{background:rgb(167 139 250/14%);color:var(--violet)}
+.tag.muted{background:rgb(148 164 190/10%);color:var(--muted)}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.tile{background:var(--panel-deep);border:1px solid var(--line-soft);border-radius:8px;padding:8px 10px}
+.tile .l{font-size:12px;color:var(--muted)}
+.tile .v{font-family:var(--font-num);font-size:22px;font-weight:700;color:var(--text-strong)}
+.tile .d{font-family:var(--font-num);font-size:12px;color:var(--accent)}
+.tile .p{font-size:11px;color:var(--faint)}
+.gauge{margin-top:12px}
+.gauge .lab{display:flex;align-items:center;gap:6px;margin-bottom:4px}
+.gauge .lab b{font-weight:600}
+.gauge .lab .num{margin-left:auto;font-size:15px;font-weight:600;color:var(--text-strong)}
+.gauge .track{position:relative;height:8px;border-radius:5px}
+.gauge .track i{position:absolute;top:-4px;width:14px;height:14px;border-radius:50%;background:#fff;border:3px solid var(--panel);box-shadow:0 0 0 1px #fff,0 0 10px rgb(255 255 255/50%);transform:translateX(-50%)}
+.gauge .ends{display:flex;justify-content:space-between;font-size:11.5px;color:var(--faint);margin-top:4px}
+.assets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-top:12px}
+.asset{font-size:12px;background:var(--panel-deep);border-radius:6px;padding:5px 8px;border:1px solid var(--line-soft)}
+.asset .num{font-size:13px}
+.tabs{display:flex;gap:16px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.tabs button{background:none;border:0;color:var(--muted);padding:4px 0 7px;font:inherit;font-size:13.5px;cursor:pointer;border-bottom:2px solid transparent}
+.tabs button.on{color:var(--text-strong);border-color:var(--accent);font-weight:600}
+.empty{color:var(--muted);padding:16px 4px;line-height:1.7}
+.empty b{color:var(--warn)}
+.note{color:var(--faint);font-size:11.5px;margin-top:6px;line-height:1.6}
+.flame{letter-spacing:-2px}
+.flame .on{color:var(--orange)}.flame .off{color:#334155}
+footer{display:flex;gap:16px;align-items:center;margin-top:14px;padding-top:10px;border-top:1px solid var(--line-soft);color:var(--faint);font-size:12px;flex-wrap:wrap}
+footer .right{margin-left:auto}
+.modal-mask{position:fixed;inset:0;background:rgb(2 6 15/72%);display:none;align-items:flex-start;justify-content:center;z-index:50;overflow:auto;padding:40px 16px}
+.modal-mask.show{display:flex}
+.modal{width:min(1100px,100%);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.modal h2{margin:0 0 4px;font-size:18px;color:var(--text-strong)}
+.modal .close{float:right;background:none;border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:2px 10px;cursor:pointer}
+.modal .formula{background:var(--panel-deep);border:1px solid var(--line-soft);border-radius:8px;padding:10px 12px;font-family:Consolas,var(--font-num);font-size:12.5px;color:#cbd5e1;white-space:pre-wrap;line-height:1.7;margin:10px 0}
+.modal .charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+.modal .chart{height:260px;background:var(--panel-deep);border-radius:8px;border:1px solid var(--line-soft)}
+.contrib{display:inline-block;height:6px;border-radius:3px;background:var(--accent);vertical-align:middle}
+.banner{border:1px dashed rgb(251 191 36/40%);color:var(--warn);background:rgb(251 191 36/6%);border-radius:8px;padding:6px 10px;font-size:12px;margin-bottom:var(--gap)}
+@media (max-width:1280px){.main{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:760px){.kpis,.grid-2,.tiles,.chips{grid-template-columns:1fr 1fr}.index-body{grid-template-columns:1fr}.overview{border:0;padding:0}}
+</style>
+</head>
+<body>
+<main class="page" id="app">
+  <header class="top">
+    <h1>智能投研驾驶舱</h1>
+    <span class="sub">快速把握今日市场大况：全球流动性 · A股温度 · 指数 · 热点 · 自选 · 公告</span>
+    <span class="right" id="topStatus"></span>
+  </header>
+  <div class="banner" id="banner"></div>
+
+  <section class="kpis">
+    <article class="card kpi tone-cyan clickable" id="kpiMacro"></article>
+    <article class="card kpi tone-orange clickable" id="kpiTemp"></article>
+    <article class="card kpi tone-orange clickable" id="kpiHot"></article>
+    <article class="card kpi tone-blue" id="kpiWatch"></article>
+  </section>
+
+  <section class="main">
+    <div class="col">
+      <article class="card tone-blue" id="indexCard">
+        <div class="head">
+          <span class="icon">▤</span><h2>A股主要指数走势</h2>
+          <span class="info" title="K线：腾讯日K（不复权）；均线、成交额柱、振幅均由日线现算。分时：腾讯分钟线，纵轴为相对昨收涨跌幅。周K/月K 由日K按自然周/月聚合。">i</span>
+          <span class="more" style="cursor:default"><span class="seg" id="periodSeg"></span></span>
+        </div>
+        <div class="chips" id="indexChips"></div>
+        <div class="index-body">
+          <div id="chartIndex"></div>
+          <aside class="overview" id="indexOverview"></aside>
+        </div>
+      </article>
+      <div class="grid-2">
+        <article class="card tone-orange" id="sectorCard"></article>
+        <article class="card tone-orange" id="stockCard"></article>
+      </div>
+    </div>
+    <div class="col">
+      <article class="card tone-cyan" id="macroCard"></article>
+      <article class="card tone-blue" id="watchCard"></article>
+      <article class="card tone-warn" id="annCard"></article>
+    </div>
+  </section>
+
+  <footer id="footer"></footer>
+</main>
+
+<div class="modal-mask" id="modalMask"><div class="modal" id="modal"></div></div>
+
+<script>
+"use strict";
+const S = window.SNAPSHOT || {};
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/* ---------------- 基础工具 ---------------- */
+const clamp = (v, lo = 0, hi = 100) => Math.max(lo, Math.min(hi, v));
+const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+const r1 = (v) => Math.round(v * 10) / 10;
+const r2 = (v) => Math.round(v * 100) / 100;
+const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+const signed = (v, d = 2, suf = "%") => !isNum(v) ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}${suf}`;
+const cls = (v) => !isNum(v) ? "flat" : v > 0 ? "up" : v < 0 ? "down" : "flat";
+const fmt = (v, d = 2) => !isNum(v) ? "—" : v.toLocaleString("zh-CN", { minimumFractionDigits: d, maximumFractionDigits: d });
+const yi = (yuan) => !isNum(yuan) ? "—" : yuan >= 1e12 ? `${(yuan / 1e12).toFixed(2)} 万亿` : `${(yuan / 1e8).toFixed(yuan >= 1e10 ? 0 : 2)} 亿`;
+const pctChg = (last, prev) => isNum(last) && isNum(prev) && prev !== 0 ? (last / prev - 1) * 100 : null;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const lastOf = (xs) => xs && xs.length ? xs[xs.length - 1] : null;
+const unavailable = (what) => `<div class="empty"><b>不可用</b>：${esc(what)}</div>`;
+const sourceErr = (key) => (S.errors || []).find((e) => e.block === key || e.block.startsWith(key + "."));
+
+function spark(points, { w = 90, h = 26, color = css("--accent"), area = false } = {}) {
+  if (!points || points.length < 2) return "";
+  const lo = Math.min(...points), hi = Math.max(...points), span = hi - lo || 1;
+  const xy = points.map((p, i) => [(i / (points.length - 1)) * w, h - 2 - ((p - lo) / span) * (h - 4)]);
+  const d = xy.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join("");
+  const fill = area ? `<path d="${d}L${w},${h}L0,${h}Z" fill="${color}" opacity=".14"/>` : "";
+  const [lx, ly] = xy[xy.length - 1];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">${fill}<path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"/><circle cx="${lx}" cy="${ly}" r="2.4" fill="${color}"/></svg>`;
+}
+function flames(n, max = 3) {
+  return `<span class="flame">${Array.from({ length: max }, (_, i) => `<span class="${i < n ? "on" : "off"}">🔥</span>`).join("")}</span>`;
+}
+function heatColor(v) { return v >= 80 ? "#dc2626" : v >= 65 ? "#ea580c" : v >= 50 ? "#d97706" : "#475569"; }
+
+/* 序列工具：[[date, value]] */
+function valueOnOrBefore(series, date) {
+  let found = null;
+  for (const [d, v] of series) { if (d <= date) found = v; else break; }
+  return found;
+}
+function nAgo(series, n) { return series.length > n ? series[series.length - 1 - n] : null; }
+
+/* ---------------- 两市成交额（腾讯日K 字段 6，单位万元） ---------------- */
+function marketAmounts() {
+  const sh = S.klines?.sh000001, sz = S.klines?.sz399001;
+  if (!sh || !sz) return null;
+  const szMap = new Map(sz.map((r) => [r[0], r[6]]));
+  return sh.filter((r) => isNum(r[6]) && isNum(szMap.get(r[0]))).map((r) => [r[0], (r[6] + szMap.get(r[0])) * 1e4]);
+}
+
+/* =====================================================================
+ * 一、A股市场温度 market-temperature-v2
+ * 保留现有 v1 的四因子结构与权重（趋势30% 广度35% 活跃20% 波动15%），输入全部换成全市场数据。
+ * ===================================================================== */
+function computeTemperature() {
+  const out = { factors: [], missing: [] };
+  const fb = S.fenbu?.buckets;
+  // ---- 广度 35% ----
+  if (fb) {
+    let up = 0, down = 0, strong = 0, weak = 0;
+    for (const [k, n] of Object.entries(fb)) {
+      const key = Number(k);
+      if (key > 0) up += n; if (key < 0) down += n;
+      if (key >= 4) strong += n; if (key <= -4) weak += n;
+    }
+    const flat = fb["0"] || 0, total = up + down + flat;
+    const lu = fb["11"] || 0, ld = fb["-11"] || 0;
+    const a = (up / (up + down)) * 100;
+    const b = clamp(50 + ((strong - weak) / total) * 250);
+    const c = lu + ld > 0 ? (lu / (lu + ld)) * 100 : 50;
+    const score = 0.5 * a + 0.25 * b + 0.25 * c;
+    Object.assign(out, { up, down, flat, total, lu, ld, strong, weak });
+    out.factors.push({ code: "breadth", label: "广度", weight: 0.35, score,
+      raw: `上涨 ${up} / 下跌 ${down} / 平 ${flat}（共 ${total}）；涨>3% ${strong} 家，跌>3% ${weak} 家；涨停 ${lu}，跌停 ${ld}`,
+      formula: `0.5×上涨占比(${r1(a)}) + 0.25×强弱差分(${r1(b)}) + 0.25×涨跌停比(${r1(c)})` });
+  } else out.missing.push("广度（涨跌分布不可用）");
+
+  // ---- 活跃度 20% ----
+  const amts = marketAmounts();
+  const zt = S.pools?.zt?.rows?.length, zb = S.pools?.zb?.rows?.length;
+  if (amts && amts.length >= 21) {
+    const today = lastOf(amts)[1];
+    const base = mean(amts.slice(-21, -1).map((r) => r[1]));
+    const ratio = today / base;
+    const volScore = clamp(50 + (ratio - 1) * 125);
+    let seal = null, sealScore = null, score = volScore;
+    if (isNum(zt) && isNum(zb) && zt + zb > 0) {
+      seal = (zt / (zt + zb)) * 100; sealScore = clamp((seal - 40) * 2);
+      score = 0.7 * volScore + 0.3 * sealScore;
+    }
+    Object.assign(out, { amountToday: today, amountBase: base, amountRatio: ratio, seal, zt, zb, amts });
+    out.factors.push({ code: "activity", label: "活跃度", weight: 0.20, score,
+      raw: `两市成交额 ${yi(today)}，前20日均额 ${yi(base)}，量比 ${ratio.toFixed(3)}；封板率 ${seal === null ? "—" : r2(seal) + "%"}（涨停 ${zt ?? "—"} / 炸板 ${zb ?? "—"}）`,
+      formula: `0.7×量能分(${r1(volScore)}) + 0.3×封板率分(${sealScore === null ? "缺" : r1(sealScore)})` });
+  } else out.missing.push("活跃度（成交额历史不足 21 日）");
+
+  // ---- 趋势 30%：中证全指 ----
+  const kl = S.klines?.sh000985;
+  if (kl && kl.length >= 61) {
+    const closes = kl.map((r) => r[2]);
+    const close = lastOf(closes);
+    const ma20 = mean(closes.slice(-20)), ma60 = mean(closes.slice(-60));
+    const conds = [close > ma20, close > ma60, ma20 > ma60];
+    const state = (conds.filter(Boolean).length / 3) * 100;
+    const ret20 = (close / closes[closes.length - 21] - 1) * 100;
+    const score = 0.5 * state + 0.5 * clamp(50 + ret20 * 5);
+    Object.assign(out, { trendClose: close, ma20, ma60, ret20 });
+    out.factors.push({ code: "trend", label: "趋势", weight: 0.30, score,
+      raw: `中证全指 ${fmt(close)}，MA20 ${fmt(ma20)}，MA60 ${fmt(ma60)}，20日涨跌 ${signed(ret20)}`,
+      formula: `0.5×均线状态(${r1(state)}：${conds.map((c) => (c ? "✓" : "✗")).join("")} 收>MA20/收>MA60/MA20>MA60) + 0.5×clamp(50+20日涨跌%×5)` });
+  } else out.missing.push("趋势（中证全指日线不足 61 日）");
+
+  // ---- 波动 15%：中证全指 20日收益波动在近一年的分位 ----
+  if (kl && kl.length >= 60) {
+    const closes = kl.map((r) => r[2]);
+    const rets = closes.slice(1).map((c, i) => c / closes[i] - 1);
+    const sd = (xs) => { const m = mean(xs); return Math.sqrt(mean(xs.map((x) => (x - m) ** 2))); };
+    const vols = [];
+    for (let i = 20; i <= rets.length; i++) vols.push(sd(rets.slice(i - 20, i)));
+    const window = vols.slice(-250), current = lastOf(window);
+    const rank = window.filter((v) => v <= current).length / window.length;
+    const score = clamp(100 - rank * 100);
+    Object.assign(out, { vol20: current * Math.sqrt(250) * 100, volRank: rank, volWindows: window.length });
+    out.factors.push({ code: "volatility", label: "波动", weight: 0.15, score,
+      raw: `20日年化波动 ${r2(current * Math.sqrt(250) * 100)}%，处于近 ${window.length} 个窗口的 ${r1(rank * 100)}% 分位`,
+      formula: `100 − 分位×100（波动越处高位，得分越低）` });
+  } else out.missing.push("波动（日线不足）");
+
+  const wsum = out.factors.reduce((a, f) => a + f.weight, 0);
+  out.score = wsum ? r1(out.factors.reduce((a, f) => a + f.score * f.weight, 0) / wsum) : null;
+  out.label = out.score === null ? "无法判断" : out.score >= 80 ? "过热" : out.score >= 65 ? "偏强" : out.score >= 55 ? "中性偏强" : out.score >= 45 ? "中性" : out.score >= 35 ? "中性偏弱" : out.score >= 20 ? "偏弱" : "冰点";
+  out.tradeDate = S.fenbu?.qdate;
+  return out;
+}
+
+/* =====================================================================
+ * 二、全球流动性评分 global-liquidity-v1（越高越松）
+ * ===================================================================== */
+function seriesChange(id, n) {
+  const s = S.fred?.[id]; if (!s || s.length <= n) return null;
+  return { last: lastOf(s), prev: nAgo(s, n), delta: lastOf(s)[1] - nAgo(s, n)[1] };
+}
+function computeLiquidity() {
+  const f = [], missing = [];
+  // L1 美联储净流动性
+  const walcl = S.fred?.WALCL, tga = S.fred?.WTREGEN, rrp = S.fred?.RRPONTSYD;
+  let netSeries = null;
+  if (walcl && tga && rrp) {
+    netSeries = walcl.map(([d, v]) => {
+      const t = valueOnOrBefore(tga, d), r = valueOnOrBefore(rrp, d);
+      return t === null || r === null ? null : [d, (v - t - r * 1000) / 1000];
+    }).filter(Boolean);
+    if (netSeries.length > 4) {
+      const last = lastOf(netSeries), prev = nAgo(netSeries, 4), d = last[1] - prev[1];
+      f.push({ code: "fed_net", label: "美联储净流动性 4周变化", weight: 0.25, score: clamp(50 + d / 4),
+        raw: `${last[0]} 净流动性 ${fmt(last[1], 0)} 十亿美元，较 ${prev[0]} ${signed(d, 0, " 十亿")}`,
+        formula: "净流动性 = WALCL − WTREGEN − RRPONTSYD×1000（百万美元）；得分 = clamp(50 + Δ4周(十亿)/4)", value: d });
+    }
+  } else missing.push("美联储净流动性");
+  const pushDelta = (id, label, weight, mult, unit, scale, sign, desc) => {
+    const c = seriesChange(id, 20);
+    if (!c) { missing.push(label); return; }
+    const delta = unit === "%" ? (c.last[1] / c.prev[1] - 1) * 100 : c.delta * scale;
+    f.push({ code: id, label, weight, score: clamp(50 + sign * delta * mult),
+      raw: `${c.last[0]} ${c.last[1]} ，较 20 个观测前（${c.prev[0]} ${c.prev[1]}）${signed(delta, unit === "%" ? 2 : 0, unit === "%" ? "%" : " bp")}`,
+      formula: desc, value: delta });
+  };
+  pushDelta("DTWEXBGS", "美元指数(广义) 20期变化", 0.15, 10, "%", 1, -1, "得分 = clamp(50 − 20期涨跌%×10)：美元走强 = 全球美元流动性收紧");
+  pushDelta("DFII10", "美债10Y实际利率 20期变化", 0.15, 1, "bp", 100, -1, "得分 = clamp(50 − Δbp×1)：实际利率上行 = 收紧");
+  pushDelta("BAMLH0A0HYM2", "美国高收益债利差 20期变化", 0.10, 0.5, "bp", 100, -1, "得分 = clamp(50 − Δbp×0.5)：信用利差走阔 = 收紧");
+  const nfci = lastOf(S.fred?.NFCI || []);
+  if (nfci) f.push({ code: "NFCI", label: "芝加哥联储金融条件指数", weight: 0.10, score: clamp(50 - nfci[1] * 50),
+    raw: `${nfci[0]} NFCI = ${nfci[1]}（负值 = 金融条件宽于历史均值）`, formula: "得分 = clamp(50 − NFCI×50)", value: nfci[1] });
+  else missing.push("NFCI");
+  const on = S.shibor_on;
+  if (on && on.length >= 40) {
+    const a = mean(on.slice(-20).map((r) => r[1])), b = mean(on.slice(-40, -20).map((r) => r[1])), d = (a - b) * 100;
+    f.push({ code: "shibor", label: "SHIBOR隔夜 20日均值变化", weight: 0.15, score: clamp(50 - d),
+      raw: `近20日均值 ${a.toFixed(3)}%，前20日均值 ${b.toFixed(3)}%，变化 ${signed(d, 1, " bp")}；最新 ${lastOf(on)[0]} ${lastOf(on)[1]}%`,
+      formula: "得分 = clamp(50 − Δbp)：国内资金价格下行 = 宽松", value: d });
+  } else missing.push("SHIBOR");
+  const tr = S.treasury;
+  if (tr && tr.length > 20) {
+    const sp = (r) => (r.cn10y - r.us10y) * 100;
+    const last = lastOf(tr), prev = nAgo(tr, 20), d = sp(last) - sp(prev);
+    f.push({ code: "cnus", label: "中美10Y利差 20日变化", weight: 0.10, score: clamp(50 + d),
+      raw: `${last.date} 中国10Y ${last.cn10y}% − 美国10Y ${last.us10y}% = ${fmt(sp(last), 0)} bp，较 ${prev.date} ${signed(d, 0, " bp")}`,
+      formula: "得分 = clamp(50 + Δbp)：倒挂收窄 = 人民币资产外部约束放松", value: d });
+  } else missing.push("中美利差");
+  const wsum = f.reduce((a, x) => a + x.weight, 0);
+  const score = wsum ? r1(f.reduce((a, x) => a + x.score * x.weight, 0) / wsum) : null;
+  const label = score === null ? "无法判断" : score >= 65 ? "偏松" : score >= 55 ? "中性偏松" : score >= 45 ? "中性" : score >= 35 ? "中性偏紧" : "偏紧";
+  return { factors: f, missing, score, label, netSeries };
+}
+
+/* =====================================================================
+ * 三、全球经济热度 global-growth-v1 与宏观趋势判定
+ * ===================================================================== */
+function yoyAt(series, idx) {
+  const [d, v] = series[idx];
+  const target = `${Number(d.slice(0, 4)) - 1}${d.slice(4, 7)}`;
+  const base = series.find(([x]) => x.slice(0, 7) === target);
+  return base ? (v / base[1] - 1) * 100 : null;
+}
+function computeGrowth() {
+  const f = [], missing = [];
+  const un = S.fred?.UNRATE;
+  if (un && un.length > 3) {
+    const d = lastOf(un)[1] - nAgo(un, 3)[1];
+    f.push({ label: "美国失业率 3个月变化", weight: 0.3, score: clamp(50 - d * 100),
+      raw: `${lastOf(un)[0].slice(0, 7)} ${lastOf(un)[1]}%，3个月前 ${nAgo(un, 3)[1]}%，变化 ${signed(d, 2, " pp")}`, formula: "得分 = clamp(50 − Δpp×100)" });
+  } else missing.push("失业率");
+  const pay = S.fred?.PAYEMS;
+  if (pay && pay.length > 3) {
+    const adds = [1, 2, 3].map((i) => pay[pay.length - i][1] - pay[pay.length - i - 1][1]);
+    const avg = mean(adds);
+    f.push({ label: "美国非农近3月平均新增", weight: 0.3, score: clamp(50 + (avg - 100) * 0.25),
+      raw: `近3个月新增 ${adds.map((x) => fmt(x, 0)).join(" / ")} 千人，均值 ${fmt(avg, 0)} 千人`, formula: "得分 = clamp(50 + (均值−100)×0.25)" });
+  } else missing.push("非农");
+  const pmi = S.china_pmi;
+  if (pmi && pmi.length) {
+    const [d, v] = lastOf(pmi);
+    f.push({ label: "中国制造业PMI", weight: 0.4, score: clamp(50 + (v - 50) * 10),
+      raw: `${d.slice(0, 7)} PMI ${v}（50 为荣枯线）`, formula: "得分 = clamp(50 + (PMI−50)×10)" });
+  } else missing.push("中国PMI");
+  const wsum = f.reduce((a, x) => a + x.weight, 0);
+  const score = wsum ? r1(f.reduce((a, x) => a + x.score * x.weight, 0) / wsum) : null;
+  const label = score === null ? "无法判断" : score >= 60 ? "偏热" : score >= 45 ? "中性" : "偏冷";
+  // 通胀动能：CPI 同比与 3 个月前同比之差
+  let inflMomentum = null, cpiYoy = null, cpiPrevYoy = null;
+  const cpi = S.fred?.CPIAUCSL;
+  if (cpi && cpi.length > 16) {
+    cpiYoy = yoyAt(cpi, cpi.length - 1); cpiPrevYoy = yoyAt(cpi, cpi.length - 2);
+    const y3 = yoyAt(cpi, cpi.length - 4);
+    if (cpiYoy !== null && y3 !== null) inflMomentum = cpiYoy - y3;
+  }
+  let regime = "无法判断";
+  if (score !== null && inflMomentum !== null) {
+    if (score >= 55) regime = inflMomentum > 0 ? "扩张伴随通胀升温" : "温和扩张";
+    else if (score <= 45) regime = inflMomentum > 0 ? "滞胀压力" : "增长放缓";
+    else regime = inflMomentum > 0.2 ? "通胀回升" : inflMomentum < -0.2 ? "平稳降温" : "平稳";
+  }
+  return { factors: f, missing, score, label, inflMomentum, cpiYoy, cpiPrevYoy, regime };
+}
+
+/* =====================================================================
+ * 四、热点板块：热度指数 board-heat-v1
+ * ===================================================================== */
+function computeBoards() {
+  const ths = [...(S.ths_concept || []).map((x) => ({ ...x, kind: "概念" })), ...(S.ths_industry || []).map((x) => ({ ...x, kind: "行业" }))];
+  if (!ths.length) return null;
+  const maxHeat = Math.max(...ths.map((x) => x.heat || 0)) || 1;
+  const changes = ths.map((x) => x.change_pct).filter(isNum).sort((a, b) => a - b);
+  const pctRank = (v) => (changes.filter((c) => c <= v).length / changes.length) * 100;
+  const rows = ths.map((x) => {
+    const m = /(\d+)家涨停/.exec(x.tag || "");
+    const limitUps = m ? Number(m[1]) : 0;
+    const heatScore = ((x.heat || 0) / maxHeat) * 100;
+    const changeScore = isNum(x.change_pct) ? pctRank(x.change_pct) : 0;
+    const luScore = Math.min(limitUps / 10, 1) * 100;
+    const index = 0.4 * heatScore + 0.3 * changeScore + 0.3 * luScore;
+    const leader = (S.sina_concept || []).concat(S.sina_industry || []).find((s) => s.name === x.name);
+    return { ...x, limitUps, heatScore, changeScore, luScore, index: Math.round(index), leader };
+  }).sort((a, b) => b.index - a.index);
+  const hot = rows.filter((r) => r.index >= 60 && (r.change_pct ?? 0) >= 1);
+  return { rows, hot };
+}
+
+/* =====================================================================
+ * 五、公告：重要度与热度
+ * ===================================================================== */
+const ANN_RULES = [
+  ["质押", 1, "muted", /质押/],
+  ["风险", 3, "fall", /立案|处罚|警示函|退市|风险警示|终止上市|违规|司法冻结|重大诉讼|仲裁/],
+  ["重组", 3, "violet", /重大资产重组|发行股份购买|吸收合并|控制权|实际控制人.*变更|要约收购|收购.*股权/],
+  ["业绩", 3, "rise", /业绩预告|业绩快报|预增|预减|扭亏|首亏/],
+  ["定期报告", 2, "", /第三季度报告|季度报告|半年度报告|年度报告/],
+  ["问询", 2, "warn", /问询函|关注函|监管函|监管工作函/],
+  ["增持回购", 2, "rise", /回购|增持/],
+  ["减持", 2, "fall", /减持/],
+  ["合同订单", 2, "", /中标|重大合同|签订.*(合同|协议)|项目定点/],
+  ["分红", 1, "", /分红|权益分派|利润分配/],
+  ["股权激励", 1, "", /股权激励|员工持股/],
+];
+/* 附属文件（中介意见、评估报告、董事会说明等）一律不计重要度，避免一个事件刷屏 */
+const ANN_ROUTINE = /法律意见书|核查意见|评估报告|审计报告|审阅报告|董事会关于|监事会关于|的说明|董事会决议|监事会决议|独立董事|会议资料|提示性公告|投资者关系|调研活动|章程|制度|保荐|专项说明|摘要|英文版/;
+function classifyAnn(a) {
+  const title = a.title || "";
+  if (ANN_ROUTINE.test(title)) return { type: a.column || "常规", level: 0, tone: "muted" };
+  // 只匹配标题：东财栏目名是复合词（如「股份质押、冻结」），拿来匹配会误判
+  for (const [type, level, tone, re] of ANN_RULES) if (re.test(title)) return { type, level, tone };
+  return { type: a.column || "其他", level: 0, tone: "muted" };
+}
+function cleanTitle(a) {
+  let t = a.title || "";
+  for (const part of [a.code, a.name]) if (part && t.startsWith(part)) t = t.slice(part.length);
+  t = t.replace(/^[\s:：]+/, "");
+  if (a.name && t.startsWith(a.name)) t = t.slice(a.name.length).replace(/^[\s:：]+/, "");
+  return a.name ? `${a.name}：${t}` : t;
+}
+/* 同一股票同一类型只保留一条（最短标题通常是主公告） */
+function dedupeAnn(rows) {
+  const best = new Map();
+  for (const a of rows) {
+    const key = `${a.code}|${a.type}`, cur = best.get(key);
+    if (!cur || a.title.length < cur.title.length) best.set(key, a);
+  }
+  return [...best.values()];
+}
+function stockHeatMap() {
+  const map = new Map();
+  const bump = (code, v, why) => { const cur = map.get(code); if (!cur || cur.v < v) map.set(code, { v, why }); };
+  (S.ths_hot || []).forEach((h) => bump(h.code, h.rank <= 20 ? 3 : 2, `同花顺热榜第${h.rank}`));
+  (S.pools?.zt?.rows || []).forEach((r) => bump(r.code, 1, r.streak > 1 ? `${r.streak}连板` : "涨停"));
+  (S.pools?.dt?.rows || []).forEach((r) => bump(r.code, 1, "跌停"));
+  (S.gainers || []).slice(0, 40).forEach((g) => bump(g.code, 1, "涨幅榜前40"));
+  return map;
+}
+
+/* ---------------- 渲染：顶部状态 ---------------- */
+const TEMP = computeTemperature();
+const LIQ = computeLiquidity();
+const GROWTH = computeGrowth();
+const BOARDS = computeBoards();
+const HEAT = stockHeatMap();
+const tradeDate = S.fenbu?.qdate ? `${S.fenbu.qdate.slice(0, 4)}-${S.fenbu.qdate.slice(4, 6)}-${S.fenbu.qdate.slice(6)}` : "—";
+
+function renderTop() {
+  const errs = (S.errors || []).length, ok = Object.keys(S.sources || {}).length;
+  $("topStatus").innerHTML = `<span>A股交易日 <b class="num">${tradeDate}</b></span><span>抓取于 ${S.generated_at ? new Date(S.generated_at).toLocaleString("zh-CN") : "—"}</span><span><i class="dot ${errs ? "warn" : ""}"></i>数据源 ${ok} 项正常${errs ? ` · ${errs} 项不可用` : ""}</span>`;
+  $("banner").innerHTML = S.generated_at
+    ? `原型说明：所有数字来自 snapshot.js 的真实抓取（${new Date(S.generated_at).toLocaleString("zh-CN")}），评分在本页按提示词公式现算；点「市场温度」「全球宏观状态」「热点板块数」卡片可看完整计算依据。参考效果图里的文字与数值均不采用。`
+    : `没有找到 snapshot.js：先运行 <code>python docs/prototypes/dashboard/fetch_snapshot.py</code>。`;
+}
+
+/* ---------------- 渲染：四张指标卡 ---------------- */
+function renderKpis() {
+  // 1 全球宏观状态
+  const net = LIQ.netSeries ? LIQ.netSeries.slice(-26).map((r) => r[1]) : [];
+  const top2 = [...LIQ.factors].sort((a, b) => Math.abs(b.score - 50) - Math.abs(a.score - 50)).slice(0, 2);
+  const liqTone = LIQ.score === null ? "var(--muted)" : LIQ.score >= 55 ? "var(--ok)" : LIQ.score < 45 ? "var(--warn)" : "var(--cyan)";
+  $("kpiMacro").innerHTML = `
+    <div class="head"><span class="icon">◎</span><h2>全球宏观状态</h2><span class="more">依据 ›</span></div>
+    <div class="row"><div class="grow">
+      <div class="kv"><span class="k">流动性环境</span><span class="v" style="color:${liqTone}">${LIQ.label}</span><span class="num muted">${LIQ.score ?? "—"}</span></div>
+      <div class="kv"><span class="k">全球宏观趋势</span><span class="v" style="color:var(--cyan)">${GROWTH.regime}</span></div>
+    </div><div title="美联储净流动性近26周（十亿美元）">${spark(net, { w: 96, h: 40, color: css("--cyan"), area: true })}</div></div>
+    <div class="caption">${top2.length ? top2.map((x) => `${x.label.replace(/ 20期变化| 4周变化| 20日均值变化| 20日变化/, "")}${x.score >= 50 ? "偏松" : "偏紧"}（${x.code === "NFCI" ? x.value : signed(x.value, x.code === "DTWEXBGS" ? 2 : 0, x.code === "DTWEXBGS" ? "%" : x.code === "fed_net" ? " 十亿$" : " bp")}）`).join("；") + "。" : "数据不足"}经济热度 ${GROWTH.score ?? "—"}（${GROWTH.label}），CPI 同比动能 ${signed(GROWTH.inflMomentum, 2, " pp")}。</div>`;
+  $("kpiMacro").onclick = openLiquidityModal;
+
+  // 2 A股市场温度
+  const fs = Object.fromEntries(TEMP.factors.map((f) => [f.code, f]));
+  const sc = (code) => fs[code] ? `<b class="num" style="color:${fs[code].score >= 55 ? "var(--rise)" : fs[code].score < 45 ? "var(--fall)" : "var(--text)"}">${Math.round(fs[code].score)}</b>` : `<b class="faint">缺</b>`;
+  $("kpiTemp").innerHTML = `
+    <div class="head"><span class="icon">🌡</span><h2>A股市场温度</h2><span class="more">计算依据 ›</span></div>
+    <div class="row"><span class="big">${TEMP.score ?? "—"}<small>/ 100</small></span><span style="font-size:16px;font-weight:600;color:var(--orange);margin-left:auto">${TEMP.label}</span></div>
+    <div class="tempbar"><i style="left:${TEMP.score ?? 0}%"></i></div>
+    <div class="factor-line"><span>趋势 30%${sc("trend")}</span><span>广度 35%${sc("breadth")}</span><span>活跃度 20%${sc("activity")}</span><span>波动 15%${sc("volatility")}</span></div>
+    <div class="caption">全市场 ${TEMP.total ?? "—"} 只：涨 ${TEMP.up ?? "—"} / 跌 ${TEMP.down ?? "—"}，两市成交 ${yi(TEMP.amountToday)}（量比 ${TEMP.amountRatio ? TEMP.amountRatio.toFixed(2) : "—"}）</div>`;
+  $("kpiTemp").onclick = openTemperatureModal;
+
+  // 3 热点板块数
+  if (BOARDS) {
+    const bars = BOARDS.hot.slice(0, 12).map((r) => r.change_pct);
+    $("kpiHot").innerHTML = `
+      <div class="head"><span class="icon">🔥</span><h2>热点板块数</h2><span class="more">口径 ›</span></div>
+      <div class="row"><span class="big">${BOARDS.hot.length}<small>个</small></span>
+      <div style="margin-left:auto">${barSpark(bars)}</div></div>
+      <div class="caption">热度指数 ≥ 60 且当日涨幅 ≥ 1%。前三：${BOARDS.hot.slice(0, 3).map((r) => `${esc(r.name)} <span class="up num">${signed(r.change_pct)}</span>`).join("、") || "无"}</div>
+      <div class="caption faint">较昨日：需每日收盘入库后才有对比</div>`;
+  } else $("kpiHot").innerHTML = `<div class="head"><span class="icon">🔥</span><h2>热点板块数</h2></div>${unavailable("同花顺热门板块拉取失败")}`;
+  $("kpiHot").onclick = openBoardModal;
+
+  // 4 重点关注股票
+  const w = watchRows();
+  const groups = { 强势: w.filter((x) => x.state === "强势"), 震荡: w.filter((x) => x.state === "震荡"), 弱势: w.filter((x) => x.state === "弱势") };
+  const n = w.length || 1;
+  $("kpiWatch").innerHTML = `
+    <div class="head"><span class="icon">◉</span><h2>重点关注股票</h2><span class="info" title="按近5个交易日涨跌幅分组：≥+3% 强势，≤−3% 弱势，其余震荡">i</span><a class="more" href="#watchCard">管理自选 ›</a></div>
+    <div class="row"><span class="big">${w.length}<small>只</small></span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+        ${ring([[groups.强势.length, css("--rise")], [groups.震荡.length, css("--accent")], [groups.弱势.length, css("--fall")]], w.length)}
+        <div style="font-size:12.5px;line-height:1.9">
+          <div><span class="tag rise">强势</span><span class="num">${groups.强势.length}</span> <span class="faint">(${r1((groups.强势.length / n) * 100)}%)</span></div>
+          <div><span class="tag">震荡</span><span class="num">${groups.震荡.length}</span> <span class="faint">(${r1((groups.震荡.length / n) * 100)}%)</span></div>
+          <div><span class="tag fall">弱势</span><span class="num">${groups.弱势.length}</span> <span class="faint">(${r1((groups.弱势.length / n) * 100)}%)</span></div>
+        </div></div></div>`;
+}
+function barSpark(values, w = 120, h = 40) {
+  if (!values.length) return "";
+  const hi = Math.max(...values.map(Math.abs)) || 1, bw = w / values.length;
+  return `<svg width="${w}" height="${h}">${values.map((v, i) => { const bh = Math.max(2, (Math.abs(v) / hi) * (h - 4)); return `<rect x="${i * bw + 1}" y="${h - bh}" width="${bw - 2}" height="${bh}" rx="1.5" fill="${v >= 0 ? css("--rise") : css("--fall")}" opacity="${0.55 + 0.45 * (1 - i / values.length)}"/>`; }).join("")}</svg>`;
+}
+function ring(parts, total, size = 64, th = 9) {
+  const rr = (size - th) / 2, c = 2 * Math.PI * rr; let off = 0;
+  const arcs = total ? parts.map(([v, color]) => { const len = (v / total) * c; const s = `<circle r="${rr}" cx="${size / 2}" cy="${size / 2}" fill="none" stroke="${color}" stroke-width="${th}" stroke-dasharray="${len} ${c - len}" stroke-dashoffset="${-off}"/>`; off += len; return s; }).join("") : "";
+  return `<svg width="${size}" height="${size}" style="transform:rotate(-90deg)"><circle r="${rr}" cx="${size / 2}" cy="${size / 2}" fill="none" stroke="#1e293b" stroke-width="${th}"/>${arcs}</svg>`;
+}
+
+/* ---------------- 指数走势 ---------------- */
+const MAIN_INDICES = ["sh000001", "sz399001", "sz399006", "sh000300", "sh000688"];
+let curIndex = "sh000001", curPeriod = "day";
+let indexChart = null;
+function renderIndexChips() {
+  const map = new Map((S.indices || []).map((r) => [r.code, r]));
+  $("indexChips").innerHTML = MAIN_INDICES.map((code) => {
+    const q = map.get(code); if (!q) return `<button class="chip"><div class="n">${code}</div><div class="faint">不可用</div></button>`;
+    const p = pctChg(q.last, q.prev_close);
+    return `<button class="chip ${code === curIndex ? "on" : ""}" data-code="${code}"><div class="n">${q.name}</div><span class="p num ${cls(p)}">${fmt(q.last)}</span><span class="c ${cls(p)}">${signed(p)}</span></button>`;
+  }).join("");
+  $("indexChips").querySelectorAll("[data-code]").forEach((b) => b.onclick = () => { curIndex = b.dataset.code; renderIndexChips(); renderIndexChart(); renderOverview(); });
+  const periods = [["min", "分时"], ["day", "日K"], ["week", "周K"], ["month", "月K"]];
+  $("periodSeg").innerHTML = periods.map(([k, l]) => `<button class="${k === curPeriod ? "on" : ""}" data-p="${k}">${l}</button>`).join("");
+  $("periodSeg").querySelectorAll("button").forEach((b) => b.onclick = () => { curPeriod = b.dataset.p; renderIndexChips(); renderIndexChart(); });
+}
+function aggregate(rows, period) {
+  if (period === "day") return rows;
+  const key = (d) => { if (period === "month") return d.slice(0, 7); const t = new Date(d + "T00:00:00"); const day = (t.getDay() + 6) % 7; t.setDate(t.getDate() - day); return t.toISOString().slice(0, 10); };
+  const out = [];
+  for (const r of rows) {
+    const k = key(r[0]), last = lastOf(out);
+    if (last && last.k === k) { last.r[0] = r[0]; last.r[2] = r[2]; last.r[3] = Math.max(last.r[3], r[3]); last.r[4] = Math.min(last.r[4], r[4]); last.r[5] += r[5]; last.r[6] = (last.r[6] ?? 0) + (r[6] ?? 0); }
+    else out.push({ k, r: [...r] });
+  }
+  return out.map((x) => x.r);
+}
+function ma(closes, n) { return closes.map((_, i) => i < n - 1 ? null : r2(mean(closes.slice(i - n + 1, i + 1)))); }
+function renderIndexChart() {
+  if (!window.echarts) { $("chartIndex").innerHTML = unavailable("ECharts 未加载"); return; }
+  indexChart = indexChart || echarts.init($("chartIndex"));
+  indexChart.clear();
+  const axis = { axisLine: { lineStyle: { color: "#26385a" } }, axisLabel: { color: "#8a9bb8", fontSize: 11 }, splitLine: { show: false } };
+  const yaxis = { scale: true, axisLabel: { color: "#8a9bb8", fontSize: 11 }, splitLine: { lineStyle: { color: "rgba(96,140,220,.08)" } } };
+  const tooltip = { trigger: "axis", backgroundColor: "#0b1424", borderColor: "#24365a", textStyle: { color: "#e6edf8", fontSize: 12 }, axisPointer: { type: "cross", lineStyle: { color: "#3b4f75" } } };
+  if (curPeriod === "min") {
+    const rows = S.minutes?.[curIndex]; const q = (S.indices || []).find((r) => r.code === curIndex);
+    if (!rows || !q) { indexChart.dispose(); indexChart = null; $("chartIndex").innerHTML = unavailable("该指数分时数据不可用"); return; }
+    const prev = q.prev_close;
+    const amt = rows.map((r, i) => (r[2] - (i ? rows[i - 1][2] : 0)) / 1e8);
+    indexChart.setOption({
+      animation: false, tooltip,
+      grid: [{ left: 50, right: 50, top: 16, height: "62%" }, { left: 50, right: 50, top: "78%", height: "16%" }],
+      xAxis: [{ type: "category", data: rows.map((r) => r[0]), ...axis, boundaryGap: false }, { type: "category", gridIndex: 1, data: rows.map((r) => r[0]), ...axis, axisLabel: { show: false } }],
+      yAxis: [{ ...yaxis, min: (v) => Math.min(v.min, prev * 0.995), max: (v) => Math.max(v.max, prev * 1.005) },
+              { ...yaxis, position: "right", axisLabel: { formatter: (v) => `${((v / prev - 1) * 100).toFixed(2)}%`, color: "#8a9bb8", fontSize: 11 }, min: (v) => Math.min(v.min, prev * 0.995), max: (v) => Math.max(v.max, prev * 1.005), splitLine: { show: false } },
+              { gridIndex: 1, ...yaxis, name: "亿", nameTextStyle: { color: "#8a9bb8", fontSize: 10 }, splitNumber: 2 }],
+      series: [
+        { type: "line", data: rows.map((r) => r[1]), showSymbol: false, lineStyle: { width: 1.6, color: "#60a5fa" }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: "rgba(96,165,250,.25)" }, { offset: 1, color: "rgba(96,165,250,0)" }]) },
+          markLine: { symbol: "none", silent: true, data: [{ yAxis: prev }], lineStyle: { color: "#94a3b8", type: "dashed" }, label: { formatter: `昨收 ${prev}`, color: "#94a3b8" } } },
+        { type: "line", yAxisIndex: 1, data: rows.map((r) => r[1]), showSymbol: false, lineStyle: { opacity: 0 }, tooltip: { show: false } },
+        { type: "bar", xAxisIndex: 1, yAxisIndex: 2, data: amt.map((v, i) => ({ value: r2(v), itemStyle: { color: i && rows[i][1] < rows[i - 1][1] ? css("--fall") : css("--rise") } })) },
+      ],
+    });
+    return;
+  }
+  const raw = S.klines?.[curIndex];
+  if (!raw) { indexChart.dispose(); indexChart = null; $("chartIndex").innerHTML = unavailable("该指数日线不可用"); return; }
+  const rows = aggregate(raw, curPeriod);
+  const closes = rows.map((r) => r[2]);
+  const view = Math.min(rows.length, curPeriod === "day" ? 120 : 80);
+  const start = ((rows.length - view) / rows.length) * 100;
+  const hiIdx = rows.slice(-view).reduce((m, r, i, a) => r[3] > a[m][3] ? i : m, 0) + rows.length - view;
+  const loIdx = rows.slice(-view).reduce((m, r, i, a) => r[4] < a[m][4] ? i : m, 0) + rows.length - view;
+  const maColors = ["#fbbf24", "#60a5fa", "#c084fc"];
+  indexChart.setOption({
+    animation: false, tooltip,
+    legend: { top: 0, left: 50, icon: "circle", itemWidth: 8, textStyle: { color: "#94a4be", fontSize: 11 }, data: ["MA5", "MA10", "MA20"] },
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    grid: [{ left: 50, right: 16, top: 26, height: "60%" }, { left: 50, right: 16, top: "76%", height: "17%" }],
+    xAxis: [{ type: "category", data: rows.map((r) => r[0]), ...axis }, { type: "category", gridIndex: 1, data: rows.map((r) => r[0]), ...axis, axisLabel: { show: false } }],
+    yAxis: [yaxis, { gridIndex: 1, ...yaxis, splitNumber: 2, axisLabel: { color: "#8a9bb8", fontSize: 10, formatter: (v) => `${(v / 1e4).toFixed(0)}亿` } }],
+    dataZoom: [{ type: "inside", xAxisIndex: [0, 1], start, end: 100 }],
+    series: [
+      { name: "K线", type: "candlestick", data: rows.map((r) => [r[1], r[2], r[4], r[3]]),
+        itemStyle: { color: css("--rise"), color0: css("--fall"), borderColor: css("--rise"), borderColor0: css("--fall") },
+        markPoint: { symbol: "pin", symbolSize: 1, label: { color: "#e6edf8", fontSize: 11, formatter: (p) => p.name },
+          data: [{ name: `高 ${fmt(rows[hiIdx][3])}`, coord: [rows[hiIdx][0], rows[hiIdx][3]], label: { position: "top" } }, { name: `低 ${fmt(rows[loIdx][4])}`, coord: [rows[loIdx][0], rows[loIdx][4]], label: { position: "bottom" } }] } },
+      ...[5, 10, 20].map((n, i) => ({ name: `MA${n}`, type: "line", data: ma(closes, n), showSymbol: false, lineStyle: { width: 1.1, color: maColors[i] }, itemStyle: { color: maColors[i] } })),
+      { name: "成交额(万)", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: rows.map((r) => ({ value: r[6], itemStyle: { color: r[2] >= r[1] ? "rgba(246,70,93,.7)" : "rgba(31,195,125,.7)" } })) },
+    ],
+  });
+}
+function renderOverview() {
+  const q = (S.indices || []).find((r) => r.code === curIndex);
+  if (!q) { $("indexOverview").innerHTML = unavailable("指数行情不可用"); return; }
+  const chg = q.last - q.prev_close, p = pctChg(q.last, q.prev_close), amp = ((q.high - q.low) / q.prev_close) * 100;
+  const T = TEMP, tot = (T.up || 0) + (T.down || 0) + (T.flat || 0) || 1;
+  const kl = S.klines?.[curIndex] || []; const vol5 = kl.length > 5 ? mean(kl.slice(-6, -1).map((r) => r[6])) : null;
+  $("indexOverview").innerHTML = `
+    <h3>今日行情概览（${q.name}）</h3>
+    <div class="ov-row"><span class="muted">今开</span><span>${fmt(q.open)}</span></div>
+    <div class="ov-row"><span class="muted">最高</span><span class="up">${fmt(q.high)}</span></div>
+    <div class="ov-row"><span class="muted">最低</span><span class="down">${fmt(q.low)}</span></div>
+    <div class="ov-row"><span class="muted">收盘</span><span class="${cls(p)}">${fmt(q.last)}</span></div>
+    <div class="ov-row"><span class="muted">涨跌</span><span class="${cls(p)}">${signed(chg, 2, "")}（${signed(p)}）</span></div>
+    <div class="ov-row"><span class="muted">振幅</span><span>${fmt(amp)}%</span></div>
+    <div class="ov-row"><span class="muted">成交额</span><span>${yi(q.amount_wan * 1e4)}</span></div>
+    <div class="ov-row"><span class="muted">较5日均额</span><span class="${cls(vol5 ? q.amount_wan / vol5 - 1 : null)}">${vol5 ? signed((q.amount_wan / vol5 - 1) * 100, 1) : "—"}</span></div>
+    <h3 style="margin-top:12px">两市全景</h3>
+    <div class="ov-row"><span class="muted">两市成交额</span><span>${yi(T.amountToday)}</span></div>
+    <div class="ov-row"><span class="muted">较前20日均额</span><span class="${cls(T.amountRatio ? T.amountRatio - 1 : null)}">${T.amountRatio ? signed((T.amountRatio - 1) * 100, 1) : "—"}</span></div>
+    <div class="stack-bar"><i style="width:${((T.up || 0) / tot) * 100}%;background:var(--rise)"></i><i style="width:${((T.flat || 0) / tot) * 100}%;background:#64748b"></i><i style="width:${((T.down || 0) / tot) * 100}%;background:var(--fall)"></i></div>
+    <div class="ov-row" style="border:0"><span class="up num">涨 ${T.up ?? "—"}</span><span class="faint num">平 ${T.flat ?? "—"}</span><span class="down num">跌 ${T.down ?? "—"}</span></div>
+    <div class="ov-row"><span class="muted">涨停 / 炸板 / 跌停</span><span><span class="up">${T.lu ?? "—"}</span> / ${T.zb ?? "—"} / <span class="down">${T.ld ?? "—"}</span></span></div>
+    <div class="ov-row"><span class="muted">封板率 · 最高连板</span><span>${T.seal ? r2(T.seal) + "%" : "—"} · ${Math.max(0, ...(S.pools?.zt?.rows || []).map((r) => r.streak || 1))} 板</span></div>`;
+}
+
+/* ---------------- 热点板块表 ---------------- */
+function renderSectors() {
+  const card = $("sectorCard");
+  const head = `<div class="head"><span class="icon">▦</span><h2>热点板块</h2><span class="sub">/ 涨幅居前板块</span><span class="info" title="热度指数 = 0.4×热榜热度分 + 0.3×当日涨幅分位 + 0.3×涨停家数分（上限10家）。点击查看口径。">i</span><span class="more" id="sectorTabs"></span></div>`;
+  if (!BOARDS) { card.innerHTML = head + unavailable("同花顺热门板块不可用"); return; }
+  const tabs = [["heat", "按热度"], ["chg", "按涨幅"]];
+  const mode = card.dataset.mode || "heat";
+  let rows;
+  if (mode === "heat") rows = BOARDS.rows.slice(0, 8);
+  else rows = (S.sina_concept || []).slice(0, 8).map((s) => ({ name: s.name, kind: "概念", change_pct: s.change_pct, leader: s, index: null, limitUps: null }));
+  card.innerHTML = head + `
+    <table><thead><tr><th>排名</th><th>板块</th><th class="r">${mode === "heat" ? "热度指数" : "成分数"}</th><th class="r">今日涨幅</th><th>领涨 / 标签</th></tr></thead><tbody>
+    ${rows.map((r, i) => `<tr><td class="num">${i + 1}</td><td><span class="ellipsis" style="max-width:140px">${esc(r.name)}</span> <span class="sub">${r.kind}</span></td>
+      <td class="r">${mode === "heat" ? `<span class="heat" style="background:${heatColor(r.index)}">${r.index}</span>` : `<span class="num">${r.leader?.members ?? "—"}</span>`}</td>
+      <td class="r num ${cls(r.change_pct)}">${signed(r.change_pct)}</td>
+      <td><span class="ellipsis" style="max-width:170px">${r.leader ? `${esc(r.leader.leader_name)} <span class="num ${cls(r.leader.leader_change_pct)}">${signed(r.leader.leader_change_pct)}</span> ` : ""}${r.limitUps ? `<span class="tag rise">${r.limitUps}家涨停</span>` : ""}${r.hot_tag ? `<span class="tag warn">${esc(r.hot_tag)}</span>` : ""}</span></td></tr>`).join("")}
+    </tbody></table>
+    <div class="note">${mode === "heat" ? "热度来自同花顺热门板块；领涨股来自新浪同名板块（名称对不上则留空）。正式版用东财板块5日涨幅与入库日线画趋势。" : "新浪概念板块当日等权涨幅排行（原型替代东财概念板块）。"}</div>`;
+  $("sectorTabs").innerHTML = `<span class="seg">${tabs.map(([k, l]) => `<button class="${k === mode ? "on" : ""}" data-m="${k}">${l}</button>`).join("")}</span>`;
+  $("sectorTabs").querySelectorAll("button").forEach((b) => b.onclick = () => { card.dataset.mode = b.dataset.m; renderSectors(); });
+}
+
+/* ---------------- 热点股票表（无关注状态列） ---------------- */
+function renderStocks() {
+  const card = $("stockCard");
+  const mode = card.dataset.mode || "hot";
+  const head = `<div class="head"><span class="icon">★</span><h2>热点股票</h2><span class="sub">/ 涨的好的票</span><span class="more" id="stockTabs"></span></div>`;
+  let rows = [], note = "";
+  if (mode === "hot") {
+    const q = S.hot_quotes || {};
+    rows = (S.ths_hot || []).slice(0, 8).map((h) => ({ code: h.code, name: h.name, last: q[h.code]?.last, chg: isNum(h.change_pct) ? h.change_pct : pctChg(q[h.code]?.last, q[h.code]?.prev_close), pe: q[h.code]?.pe_ttm, tag: h.popularity_tag || h.concepts?.[0] }));
+    note = "同花顺1小时热榜前8；价格、市盈率(TTM) 来自腾讯行情。";
+  } else {
+    rows = (S.gainers || []).filter((g) => !/^[NC]/.test(g.name) && g.amount >= 3e8).slice(0, 8).map((g) => ({ code: g.code, name: g.name, last: g.last, chg: g.change_pct, pe: null, tag: `成交 ${yi(g.amount)}` }));
+    note = "全市场涨幅榜，剔除上市首5日新股（N/C 开头）与成交额 < 3 亿的个股，避免小票噪音。";
+  }
+  card.innerHTML = head + (rows.length ? `
+    <table><thead><tr><th>股票名称</th><th>代码</th><th class="r">最新价</th><th class="r">涨跌幅</th><th class="r">${mode === "hot" ? "市盈率(TTM)" : "成交额"}</th><th>标签</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td class="num muted">${r.code}</td><td class="r num">${fmt(r.last)}</td><td class="r num ${cls(r.chg)}">${signed(r.chg)}</td>
+      <td class="r num">${mode === "hot" ? (isNum(r.pe) ? (r.pe < 0 ? "亏损" : fmt(r.pe, 1)) : "—") : r.tag}</td><td>${mode === "hot" && r.tag ? `<span class="tag ${/板/.test(r.tag) ? "rise" : ""}">${esc(r.tag)}</span>` : ""}</td></tr>`).join("")}
+    </tbody></table><div class="note">${note}</div>` : unavailable(mode === "hot" ? "同花顺热榜不可用" : "涨幅榜不可用"));
+  $("stockTabs").innerHTML = `<span class="seg"><button class="${mode === "hot" ? "on" : ""}" data-m="hot">人气热股</button><button class="${mode === "gain" ? "on" : ""}" data-m="gain">涨幅居前</button></span>`;
+  $("stockTabs").querySelectorAll("button").forEach((b) => b.onclick = () => { card.dataset.mode = b.dataset.m; renderStocks(); });
+}
+
+/* ---------------- 全球宏观概览 ---------------- */
+function renderMacro() {
+  const cpi = GROWTH.cpiYoy, cpiD = isNum(GROWTH.cpiYoy) && isNum(GROWTH.cpiPrevYoy) ? GROWTH.cpiYoy - GROWTH.cpiPrevYoy : null;
+  const un = S.fred?.UNRATE, ff = S.fred?.FEDFUNDS, tr = S.treasury;
+  const tile = (l, v, d, p) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d}</div><div class="p">${p}</div></div>`;
+  const tiles = [
+    tile("美国CPI同比", isNum(cpi) ? `${cpi.toFixed(1)}%` : "—", `较上月 ${signed(cpiD, 2, " pp")}`, S.fred?.CPIAUCSL ? lastOf(S.fred.CPIAUCSL)[0].slice(0, 7) : "不可用"),
+    tile("美国失业率", un ? `${lastOf(un)[1].toFixed(1)}%` : "—", un ? `较上月 ${signed(lastOf(un)[1] - nAgo(un, 1)[1], 1, " pp")}` : "", un ? lastOf(un)[0].slice(0, 7) : "不可用"),
+    tile("联邦基金利率", ff ? `${lastOf(ff)[1].toFixed(2)}%` : "—", ff ? `较上月 ${signed((lastOf(ff)[1] - nAgo(ff, 1)[1]) * 100, 0, " bp")}` : "", ff ? `${lastOf(ff)[0].slice(0, 7)} 月均` : "不可用"),
+    tile("中国10年国债", tr ? `${lastOf(tr).cn10y.toFixed(3)}%` : "—", tr ? `较前日 ${signed((lastOf(tr).cn10y - nAgo(tr, 1).cn10y) * 100, 1, " bp")}` : "", tr ? lastOf(tr).date : "不可用"),
+  ].join("");
+  const gauge = (label, score, labelText, ends, grad, title) => `
+    <div class="gauge" title="${esc(title)}"><div class="lab"><b>${label}</b><span class="info">i</span><span class="tag ${score >= 55 ? "rise" : score < 45 ? "" : "muted"}" style="margin-left:6px">${labelText}</span><span class="num">${score ?? "—"}</span></div>
+    <div class="track" style="background:${grad}">${score !== null ? `<i style="left:${score}%"></i>` : ""}</div><div class="ends">${ends.map((e) => `<span>${e}</span>`).join("")}</div></div>`;
+  const glob = (S.global || []).map((g) => ({ name: g.name, last: g.last, p: pctChg(g.last, g.prev_close) }));
+  if (S.usdcny) glob.push({ name: "美元兑人民币", last: S.usdcny.last, p: S.usdcny.change_pct });
+  $("macroCard").innerHTML = `
+    <div class="head"><span class="icon">◍</span><h2>全球宏观概览</h2><span class="more" id="macroMore">计算依据 ›</span></div>
+    <div class="tiles">${tiles}</div>
+    ${gauge("全球经济热度", GROWTH.score, GROWTH.label, ["偏冷", "中性", "偏热"], "linear-gradient(90deg,#1d4ed8,#64748b 50%,#ea580c)", GROWTH.factors.map((f) => `${f.label}：${Math.round(f.score)}（${f.raw}）`).join("\n"))}
+    ${gauge("流动性环境", LIQ.score, LIQ.label, ["偏紧", "中性", "偏松"], "linear-gradient(90deg,#b45309,#64748b 50%,#059669)", LIQ.factors.map((f) => `${f.label}：${Math.round(f.score)}`).join("\n"))}
+    <div class="assets">${glob.map((g) => `<div class="asset"><div class="muted">${g.name}</div><span class="num">${fmt(g.last, g.name.includes("人民币") ? 4 : 2)}</span> <span class="num ${cls(g.p)}">${signed(g.p)}</span></div>`).join("")}</div>`;
+  $("macroMore").onclick = openLiquidityModal;
+}
+
+/* ---------------- 我的重点关注（无添加按钮，读现有自选分组） ---------------- */
+function watchRows() {
+  return (S.watch_sample || []).map((w) => {
+    const closes = (w.closes || []).map((c) => c[1]);
+    const d1 = pctChg(w.last, w.prev_close);
+    const d5 = closes.length > 5 ? (closes[closes.length - 1] / closes[closes.length - 6] - 1) * 100 : null;
+    const state = d5 === null ? "震荡" : d5 >= 3 ? "强势" : d5 <= -3 ? "弱势" : "震荡";
+    const zt = (S.pools?.zt?.rows || []).find((r) => r.code === w.code);
+    const zb = (S.pools?.zb?.rows || []).find((r) => r.code === w.code);
+    const dt = (S.pools?.dt?.rows || []).find((r) => r.code === w.code);
+    const hot = (S.ths_hot || []).find((h) => h.code === w.code);
+    const signals = [];
+    if (zt) signals.push(["rise", zt.streak > 1 ? `${zt.streak}连板` : "涨停"]);
+    if (zb) signals.push(["warn", "炸板"]);
+    if (dt) signals.push(["fall", "跌停"]);
+    if (hot) signals.push(["violet", `热榜#${hot.rank}`]);
+    if (Math.abs(d1 ?? 0) >= 5 && !zt && !dt) signals.push([d1 > 0 ? "rise" : "fall", "异动"]);
+    return { ...w, d1, d5, state, closes, signals };
+  });
+}
+function renderWatch() {
+  const rows = watchRows();
+  $("watchCard").innerHTML = `
+    <div class="head"><span class="icon">◉</span><h2>我的重点关注</h2><span class="sub">读取「自选关注」分组</span><a class="more" href="#" onclick="return false" title="正式版跳转 /watchlist">管理自选 ›</a></div>
+    ${rows.length ? `<table><thead><tr><th>名称</th><th class="r">最新价</th><th class="r">日涨跌</th><th class="r">近5日</th><th>走势</th><th>信号</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${esc(r.name)} <span class="sub num">${r.code}</span></td><td class="r num">${fmt(r.last)}</td><td class="r num ${cls(r.d1)}">${signed(r.d1)}</td><td class="r num ${cls(r.d5)}">${signed(r.d5)}</td>
+      <td>${spark(r.closes.slice(-10), { w: 64, h: 20, color: (r.d5 ?? 0) >= 0 ? css("--rise") : css("--fall") })}</td>
+      <td>${r.signals.map(([t, s]) => `<span class="tag ${t}">${s}</span>`).join("") || `<span class="faint">—</span>`}</td></tr>`).join("")}
+    </tbody></table><div class="note">原型使用示例代码；正式版读当前用户的自选分组（可切换），信号来自涨停/炸板/跌停池与热榜，不展示无后端支持的「备注/预警」。</div>`
+    : `<div class="empty">还没有自选股。到「自选关注」页面添加后，这里显示行情与信号。</div>`}`;
+}
+
+/* ---------------- 公告 ---------------- */
+function renderAnn() {
+  const card = $("annCard"); const mode = card.dataset.mode || "important";
+  const all = (S.announcements || []).map((a) => ({ ...a, ...classifyAnn(a), heat: HEAT.get(a.code) }));
+  const list = dedupeAnn(all);
+  let rows;
+  if (mode === "important") rows = list.filter((a) => a.level >= 2).sort((a, b) => b.level - a.level || b.display_time.localeCompare(a.display_time)).slice(0, 8);
+  else rows = list.filter((a) => a.heat && a.level >= 1).sort((a, b) => b.heat.v - a.heat.v || b.level - a.level).slice(0, 8);
+  const counts = {}; list.filter((a) => a.level >= 1).forEach((a) => counts[a.type] = (counts[a.type] || 0) + 1);
+  card.innerHTML = `
+    <div class="tabs"><button class="${mode === "important" ? "on" : ""}" data-m="important">重要公告</button><button class="${mode === "hot" ? "on" : ""}" data-m="hot">热门公告</button>
+      <span style="margin-left:auto;color:var(--faint);font-size:12px;align-self:center">${all.length} 条（去重 ${list.length}）· ${Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k}${v}`).join(" ")}</span></div>
+    ${!S.announcements ? unavailable("东财公告中心不可用") : rows.length ? `<table><thead><tr><th>时间</th><th>标题</th><th>类型</th><th>${mode === "hot" ? "热度" : "重要度"}</th></tr></thead><tbody>
+    ${rows.map((a) => `<tr title="${esc(a.heat?.why || "")}"><td class="num muted">${a.display_time.slice(5, 16)}</td><td><a class="ellipsis" style="color:var(--text);text-decoration:none;max-width:250px" href="${a.url}" target="_blank" rel="noopener" title="${esc(a.title)}">${esc(cleanTitle(a))}</a></td>
+      <td><span class="tag ${a.tone}">${esc(a.type)}</span></td><td>${mode === "hot" ? flames(a.heat.v) : flames(a.level)}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty">当前公告里没有${mode === "hot" ? "热门标的（热榜/涨跌停/涨幅榜）的" : "重要度 ≥ 2 的"}公告。</div>`}
+    <div class="note">${mode === "important" ? "重要度按东财公告栏目 + 标题关键词规则判定（风险/重组/业绩预告=3，定期报告/问询/增减持/回购/重大合同=2）。" : "热度 = 公告标的的市场关注：同花顺热榜前20=3，前100=2，涨停/跌停/涨幅榜前40=1。"}</div>`;
+  card.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => { card.dataset.mode = b.dataset.m; renderAnn(); });
+}
+
+/* ---------------- 依据弹窗 ---------------- */
+function openModal(html, charts = []) {
+  $("modal").innerHTML = `<button class="close" onclick="closeModal()">关闭</button>${html}`;
+  $("modalMask").classList.add("show");
+  setTimeout(() => charts.forEach(([id, option]) => { const el = $(id); if (el && window.echarts) echarts.init(el).setOption(option); }), 0);
+}
+function closeModal() { $("modalMask").classList.remove("show"); }
+$("modalMask").onclick = (e) => { if (e.target.id === "modalMask") closeModal(); };
+function factorTable(factors) {
+  const wsum = factors.reduce((a, f) => a + f.weight, 0) || 1;
+  return `<table><thead><tr><th>因子</th><th class="r">权重</th><th>原始数据</th><th>换算</th><th class="r">得分</th><th class="r">贡献</th></tr></thead><tbody>
+  ${factors.map((f) => { const c = (f.score * f.weight) / wsum; return `<tr><td><b>${f.label}</b></td><td class="r num">${(f.weight * 100).toFixed(0)}%</td><td style="white-space:normal;max-width:380px">${esc(f.raw)}</td><td style="white-space:normal;max-width:300px" class="muted">${esc(f.formula)}</td><td class="r num">${r1(f.score)}</td><td class="r num"><span class="contrib" style="width:${c}px"></span> ${r1(c)}</td></tr>`; }).join("")}</tbody></table>`;
+}
+const chartBase = { backgroundColor: "transparent", textStyle: { color: "#94a4be" }, grid: { left: 50, right: 20, top: 36, bottom: 30 }, tooltip: { trigger: "axis", backgroundColor: "#0b1424", borderColor: "#24365a", textStyle: { color: "#e6edf8" } } };
+function openTemperatureModal() {
+  const fb = S.fenbu?.buckets || {};
+  const keys = Object.keys(fb).map(Number).sort((a, b) => a - b);
+  const label = (k) => k === 11 ? "涨停" : k === -11 ? "跌停" : k === 0 ? "平" : k > 0 ? `${k === 10 ? "≥9" : k - 1 + "~" + k}%` : `${k === -10 ? "≤-9" : k + "~" + (k + 1)}%`;
+  const amts = (TEMP.amts || []).slice(-40);
+  const ma20 = amts.map((_, i) => { const idx = (TEMP.amts.length - amts.length) + i; return idx >= 20 ? r1(mean(TEMP.amts.slice(idx - 20, idx).map((r) => r[1])) / 1e8) : null; });
+  openModal(`
+    <h2>A股市场温度 ${TEMP.score ?? "—"} · ${TEMP.label}</h2><div class="muted">交易日 ${tradeDate} · 口径 market-temperature-v2（沿用 v1 四因子与权重，输入换成全市场）· 描述性温度，不是收益预测</div>
+    <div class="formula">温度 = Σ(因子得分 × 权重) / Σ(可用权重)，缺失因子按剩余权重归一并在 coverage 中写明
+标签：≥80 过热 · 65–80 偏强 · 55–65 中性偏强 · 45–55 中性 · 35–45 中性偏弱 · 20–35 偏弱 · <20 冰点${TEMP.missing.length ? "\n缺失：" + TEMP.missing.join("；") : ""}</div>
+    ${factorTable(TEMP.factors)}
+    <div class="charts"><div class="chart" id="mFenbu"></div><div class="chart" id="mAmount"></div></div>
+    <div class="note">涨跌分布来自东财 getTopicZDFenBu：键 11/−11 = 涨停/跌停（已与涨停池条数 ${S.pools?.zt?.rows?.length ?? "—"} / 跌停池 ${S.pools?.dt?.rows?.length ?? "—"} 交叉核对），0 = 平盘，其余为 1% 宽的涨跌幅区间。两市成交额 = 上证指数成交额 + 深证成指成交额（深成指成交额即深市全市场，已与深证综指核对一致）。</div>`,
+  [["mFenbu", { ...chartBase, title: { text: "全市场涨跌分布（家数）", textStyle: { color: "#e6edf8", fontSize: 13 } }, xAxis: { type: "category", data: keys.map(label), axisLabel: { color: "#8a9bb8", fontSize: 10, rotate: 45 } }, yAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(96,140,220,.08)" } } }, series: [{ type: "bar", data: keys.map((k) => ({ value: fb[String(k)], itemStyle: { color: k > 0 ? css("--rise") : k < 0 ? css("--fall") : "#64748b" } })), label: { show: true, position: "top", color: "#94a4be", fontSize: 10 } }] }],
+   ["mAmount", { ...chartBase, title: { text: "两市成交额（亿）与前20日均额", textStyle: { color: "#e6edf8", fontSize: 13 } }, legend: { right: 10, top: 6, textStyle: { color: "#94a4be" } }, xAxis: { type: "category", data: amts.map((r) => r[0].slice(5)), axisLabel: { color: "#8a9bb8", fontSize: 10 } }, yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "rgba(96,140,220,.08)" } } }, series: [{ name: "成交额", type: "bar", data: amts.map((r) => r1(r[1] / 1e8)), itemStyle: { color: "#3b82f6" } }, { name: "前20日均额", type: "line", data: ma20, showSymbol: false, lineStyle: { color: "#fbbf24" } }] }]]);
+}
+function openLiquidityModal() {
+  const net = (LIQ.netSeries || []).slice(-52);
+  const dxy = (S.fred?.DTWEXBGS || []).slice(-120), ry = (S.fred?.DFII10 || []).slice(-120);
+  openModal(`
+    <h2>全球宏观状态：流动性 ${LIQ.score ?? "—"}（${LIQ.label}） · 经济热度 ${GROWTH.score ?? "—"}（${GROWTH.label}） · 趋势「${GROWTH.regime}」</h2>
+    <div class="muted">口径 global-liquidity-v1 / global-growth-v1 · 规则计算，不是经济定论 · FRED 只取各序列已公布的最新观测</div>
+    <div class="formula">流动性 = Σ(得分×权重)/Σ权重，越高越松：≥65 偏松 · 55–65 中性偏松 · 45–55 中性 · 35–45 中性偏紧 · <35 偏紧
+经济热度：≥60 偏热 · 45–60 中性 · <45 偏冷；宏观趋势 = 经济热度 × CPI 同比动能（同比 − 3个月前同比 = ${signed(GROWTH.inflMomentum, 2, " pp")}）的四象限规则${LIQ.missing.length || GROWTH.missing.length ? "\n缺失：" + [...LIQ.missing, ...GROWTH.missing].join("；") : ""}</div>
+    <h3 class="sec-title">流动性因子</h3>${factorTable(LIQ.factors)}
+    <h3 class="sec-title" style="margin-top:12px">经济热度因子</h3>${factorTable(GROWTH.factors)}
+    <div class="charts"><div class="chart" id="mNet"></div><div class="chart" id="mDxy"></div></div>`,
+  [["mNet", { ...chartBase, title: { text: "美联储净流动性（十亿美元，周）", textStyle: { color: "#e6edf8", fontSize: 13 } }, xAxis: { type: "category", data: net.map((r) => r[0]), axisLabel: { color: "#8a9bb8", fontSize: 10 } }, yAxis: { type: "value", scale: true, splitLine: { lineStyle: { color: "rgba(96,140,220,.08)" } } }, series: [{ type: "line", data: net.map((r) => r1(r[1])), showSymbol: false, areaStyle: { opacity: 0.12 }, lineStyle: { color: "#22d3ee" }, itemStyle: { color: "#22d3ee" } }] }],
+   ["mDxy", { ...chartBase, title: { text: "美元指数(广义) vs 10Y实际利率", textStyle: { color: "#e6edf8", fontSize: 13 } }, legend: { right: 10, top: 6, textStyle: { color: "#94a4be" } }, xAxis: { type: "category", data: dxy.map((r) => r[0]), axisLabel: { color: "#8a9bb8", fontSize: 10 } }, yAxis: [{ type: "value", scale: true, splitLine: { lineStyle: { color: "rgba(96,140,220,.08)" } } }, { type: "value", scale: true, splitLine: { show: false }, axisLabel: { formatter: "{value}%" } }], series: [{ name: "美元指数", type: "line", data: dxy.map((r) => r[1]), showSymbol: false, lineStyle: { color: "#a78bfa" } }, { name: "10Y实际利率", type: "line", yAxisIndex: 1, data: dxy.map((r) => valueOnOrBefore(ry, r[0])), showSymbol: false, lineStyle: { color: "#fb923c" } }] }]]);
+}
+function openBoardModal() {
+  if (!BOARDS) return;
+  openModal(`<h2>热点板块口径 board-heat-v1</h2>
+    <div class="formula">热度指数 = 0.4 × 热榜热度分 + 0.3 × 当日涨幅分位 + 0.3 × 涨停家数分
+  热榜热度分 = 板块同花顺热度 / 当日榜首热度 × 100（不在榜 = 0）
+  当日涨幅分位 = 该板块涨幅在候选板块中的百分位 × 100
+  涨停家数分 = min(涨停家数 / 10, 1) × 100
+热点板块 = 热度指数 ≥ 60 且当日涨幅 ≥ 1% → 今日 ${BOARDS.hot.length} 个</div>
+    <table><thead><tr><th>板块</th><th>类型</th><th class="r">热度分</th><th class="r">涨幅分位</th><th class="r">涨停分</th><th class="r">热度指数</th><th class="r">涨幅</th><th>热点?</th></tr></thead><tbody>
+    ${BOARDS.rows.slice(0, 24).map((r) => `<tr><td>${esc(r.name)}</td><td class="muted">${r.kind}</td><td class="r num">${r1(r.heatScore)}</td><td class="r num">${r1(r.changeScore)}</td><td class="r num">${r1(r.luScore)}（${r.limitUps}家）</td><td class="r"><span class="heat" style="background:${heatColor(r.index)}">${r.index}</span></td><td class="r num ${cls(r.change_pct)}">${signed(r.change_pct)}</td><td>${BOARDS.hot.includes(r) ? '<span class="tag rise">是</span>' : '<span class="faint">否</span>'}</td></tr>`).join("")}
+    </tbody></table>`);
+}
+
+/* ---------------- 页脚 ---------------- */
+function renderFooter() {
+  const srcs = [...new Set(Object.values(S.sources || {}))];
+  $("footer").innerHTML = `<span>数据截至 ${tradeDate} 收盘</span><span>数据来源：${srcs.map(esc).join(" / ")}</span>${(S.errors || []).length ? `<span style="color:var(--warn)">不可用：${S.errors.map((e) => esc(e.block)).join("、")}</span>` : ""}<span class="right">仅供研究参考，不构成投资建议</span>`;
+}
+
+renderTop(); renderKpis(); renderIndexChips(); renderIndexChart(); renderOverview();
+renderSectors(); renderStocks(); renderMacro(); renderWatch(); renderAnn(); renderFooter();
+window.addEventListener("resize", () => indexChart && indexChart.resize());
+</script>
+</body>
+</html>

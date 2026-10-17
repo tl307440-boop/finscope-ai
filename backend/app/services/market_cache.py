@@ -73,31 +73,73 @@ class TtlCache:
             )
             return Cached(value=value, fetched_at=fetched_at, stale=False)
 
+    def peek(self, key: str) -> Cached[Any] | None:
+        """不触发回源，直接看缓存里有没有值；已过期的按 stale 返回。"""
+
+        entry: _Entry[Any] | None = self._entries.get(key)
+        if entry is None:
+            return None
+        expired = entry.expires_at <= self._clock()
+        return Cached(
+            value=entry.value,
+            fetched_at=entry.fetched_at,
+            stale=expired,
+            stale_reason="正在后台刷新" if expired else None,
+        )
+
+    def put(self, key: str, value: Any, fetched_at: datetime, ttl_seconds: float) -> None:
+        """直接写入一个有效期内的值（例如管理员从外部推送的数据）。"""
+
+        self._entries[key] = _Entry(
+            value=value, fetched_at=fetched_at, expires_at=self._clock() + ttl_seconds
+        )
+
+    def seed(self, key: str, value: Any, fetched_at: datetime) -> None:
+        """用持久化的旧值填充还没有的 key；立即视为过期，下一次读取仍会尝试回源。"""
+
+        if key not in self._entries:
+            self._entries[key] = _Entry(value=value, fetched_at=fetched_at, expires_at=0.0)
+
     def clear(self) -> None:
         self._entries.clear()
 
 
 class PacedGateway:
-    """串行、限速的 GET/POST 出口。境内行情源一律直连，不走系统代理。"""
+    """限速的 GET/POST 出口。行情源一律直连，不走系统代理。
 
-    def __init__(self, *, min_interval: float = 0.4, timeout: float = 12.0) -> None:
+    `concurrency=1`（默认）时完全串行；大于 1 时允许多个请求同时在途，
+    但相邻两次发起之间仍至少间隔 `min_interval` 秒。
+    """
+
+    def __init__(
+        self, *, min_interval: float = 0.4, timeout: float = 12.0, concurrency: int = 1
+    ) -> None:
         self._min_interval = min_interval
         self._timeout = timeout
-        self._lock = asyncio.Lock()
+        self._slots = asyncio.Semaphore(max(1, concurrency))
+        self._pace = asyncio.Lock()
         self._last = 0.0
 
     async def get(self, url: str, headers: Mapping[str, str]) -> bytes:
         return await self._send(lambda http: http.get(url, headers))
 
-    async def post(self, url: str, body: bytes, headers: Mapping[str, str]) -> bytes:
-        merged = {**headers, "Content-Type": "application/json"}
+    async def post(
+        self,
+        url: str,
+        body: bytes,
+        headers: Mapping[str, str],
+        content_type: str = "application/json",
+    ) -> bytes:
+        merged = {**headers, "Content-Type": content_type}
         return await self._send(lambda http: http.post(url, content=body, headers=merged))
 
     async def _send(self, call: Callable[[ResilientHttpClient], Awaitable[bytes]]) -> bytes:
-        async with self._lock:
-            wait = self._last + self._min_interval - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
+        async with self._slots:
+            async with self._pace:
+                wait = self._last + self._min_interval - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._last = time.monotonic()
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(self._timeout), trust_env=False
