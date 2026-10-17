@@ -1023,7 +1023,7 @@ onMounted(() => {
       <div class="grid-3">
         <PanelCard
           title="同步 FRED 序列"
-          info="按观察区间拉取美国宏观序列。5–50 年与「全部」填入截至今天的区间；全部为 100 年，再长会被接口拒绝。未配置 FRED_API_KEY 时只能取到最新修订值"
+          info="按观察区间拉取美国宏观序列。5–50 年与「全部」填入截至今天的区间；全部是 36500 天，正好是接口上限，再多一天会被拒绝。未配置 FRED_API_KEY 时只能取到最新修订值"
         >
           <template #icon><el-icon><DataLine /></el-icon></template>
           <form class="form-stack" @submit.prevent="syncFred">
@@ -1080,7 +1080,7 @@ onMounted(() => {
 
         <PanelCard
           title="同步 A 股日线"
-          info="把所选标的与日期区间加入同步队列，由后台任务依次执行。日线最长约 10 年，只提供 5 年和 10 年"
+          info="把所选标的与日期区间加入同步队列，由后台任务依次执行。全部是 3660 天，正好是日线接口上限"
         >
           <template #icon><el-icon><DataLine /></el-icon></template>
           <form class="form-stack" @submit.prevent="syncBars">
