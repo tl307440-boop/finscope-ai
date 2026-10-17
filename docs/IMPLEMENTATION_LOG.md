@@ -1284,15 +1284,21 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 后端（`d:\finscrope\finscope-ai\backend\.venv` 解释器，在工作树 `backend` 下运行）：`ruff check .` 通过；`ruff format --check .` 305 个文件已格式化；`mypy app` 只剩 `app/trading_agents/upstream.py` 的 4 个既有错误（venv 缺 `langchain_core`，3 个 import-not-found + 1 个 subclass Any）；`pytest -q -rs` 共 429 个用例：355 passed、74 skipped、0 failed，74 个跳过全部是集成测试，原因「PostgreSQL 不可用」（本机没有可连的 PostgreSQL，含本轮新增的 `test_us_macro_eastmoney.py` 2 个用例）；`pytest tests/unit` 343 passed。
 - 前端：`npm run typecheck`（vue-tsc --noEmit）无错误；`npm run test` 35 个文件 / 174 个用例通过；`npm run build` 成功（只有既有的单 chunk 超过 500 kB 提示）。
-- 未做真实数据运行验证：没有执行 `bootstrap_data --only fred`，没有启动前后端，也没有 `/macro/us` 页面截图。
+- 真实库验证（本机 Docker `pgvector/pgvector:pg16` 测试库 `finscope-testdb`，端口 55432，只对该测试库操作）：
+  - 本轮新增的 `tests/integration/test_us_macro_eastmoney.py` 2 个用例在真实 PostgreSQL 上通过（修订行写入与批量接口 SQL）。完整 `pytest` 429 个用例中其余 72 个集成用例未连库，仍为跳过。
+  - `bootstrap_data --only fred`：19 条序列中 17 条写入成功（ISM_MFG 70 条、ISM_SVC 71 条；FRED 各序列 23–2191 条），`FEDFUNDS`、`GDP` 因「上游连接中断」失败（临时网络问题，未重试，二者不在指标带上，只供规则引擎使用，所以规则解读里「增长」暂显示数据不足）。
+  - 启动后端（8010）与前端（5180）打开 `/macro/us`：15 格顺序与口径正确，失业率 4.20%、政策利率区间 3.75–4.00%、ISM 制造业 54.5 / 服务业 54.9，涨红跌绿；ISM 两格 `?` 提示含 `EMG00002790` / `EMG00002791` 与「最新修订」；滚轮横移、Ctrl 缩放与横向滑动放行、到端点放行、两侧箭头显隐均在真实浏览器里验证。
+  - 真实浏览器发现并修复一个单测测不到的布局问题：`section.ticker` 作为 grid 子项 `min-width: auto` 被内容撑到 2908px，整页变宽、轨道不滚动，已加 `min-width: 0`（提交 7c87b4a）。
+  - 没有 FRED API key，走公开 CSV 通道，其 `realtime_start` 取同步当天，按「发布日当天不可见」的规则，当天同步的 FRED 数据次日才可见（既有保守设计）。为了做页面截图核对，把测试库里当天同步的 12636 行 FRED 行 `realtime_start` 手工改到前一天（只改可见性元数据，不动数值，仅限该测试库）。ISM 用东方财富给的真实发布日，不受影响。
 
 ### 已知局限
 
 - ISM 首次同步前的历史为东方财富最新修订值；东方财富为页面匿名接口，字段变化会以 UPSTREAM_PAYLOAD 失败并保留已入库数据。
 - FRED 原生版本仍沿用 FRED 的 `下一版起点 − 1 天`，FRED 修订的观测在修订当天不可见。这是既有行为，不在本次范围。
-- 集成测试和页面效果都还没在真实 PostgreSQL 与真实数据上跑过。
+- Playwright e2e（`core.spec.ts` 用例 04）已更新断言但未运行：本机 8000 端口上的后端不是本分支代码。
+- 修订路径（首次写入、同值重复同步不写、数值变化新增版本）在真实 PostgreSQL 上用构造数据验证过；真实上游目前还没出现过修订事件，所以没有用真实修订验证过。
 
 ### 下一步
 
-- 在有 PostgreSQL 的环境跑集成测试，执行 `bootstrap_data --only fred` 同步 19 条序列，打开 `/macro/us` 截图核对指标带与走势图。
+- 补同步 `GDP`、`FEDFUNDS`；跑 e2e 用例 04。
 - 子项目 3（通胀走势图 + 多指标对比分析，2020-01=100 指数化、双轴、导出）。
