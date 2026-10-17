@@ -91,7 +91,10 @@ class Settings(BaseSettings):
     scheduler_us_market_exchange: str = "XNYS"
     scheduler_a_stock_close_delay_minutes: int = 30
     scheduler_a_stock_lag_trading_days: int = 1
-    scheduler_fred_series: str = "GDP,UNRATE,PAYEMS,CPIAUCSL,PCEPILFE,FEDFUNDS,DGS2,DGS10,T10Y2Y"
+    scheduler_fred_series: str = (
+        "GDP,UNRATE,PAYEMS,CPIAUCSL,PCEPILFE,FEDFUNDS,DGS2,DGS10,T10Y2Y,"
+        "CES0500000003,GDPC1,PCEC96,DGS5,DGS20,DFEDTARL,DFEDTARU,ICSA,ISM_MFG,ISM_SVC"
+    )
     # 未实现的执行器默认关闭，打开后调度器才会登记对应 job；禁止假成功。
     scheduler_enable_fred: bool = True
     scheduler_enable_a_stock_bars: bool = True

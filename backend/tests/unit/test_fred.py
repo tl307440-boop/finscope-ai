@@ -1,17 +1,19 @@
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
-from app.catalog.macro_series import fred_series_catalog
+from app.catalog.macro_series import catalog_codes, fred_codes, fred_series_catalog, seed_for
+from app.providers.eastmoney_us_macro import LatestValue
 from app.providers.errors import ProviderError
 from app.providers.fred import FredAdapter, FredVintage, parse_observations
 from app.providers.fred_public import fetch_public_csv, parse_graph_csv, public_realtime_start
 from app.providers.http_client import OutboundRequest, RawResponse, ResilientHttpClient, Transport
 from app.providers.vintage import VintagePoint, pit_date, select_visible, vintage_visible
 from app.repositories.macro import MacroRepository
-from app.schemas.macro import build_observations
+from app.schemas.macro import FredSyncRequest, build_observations
 from app.services.fred_sync import sync_fred_series
 
 
@@ -60,6 +62,16 @@ def test_catalog_keeps_verified_units_and_no_observations() -> None:
         "DGS2",
         "DGS10",
         "T10Y2Y",
+        "CES0500000003",
+        "GDPC1",
+        "PCEC96",
+        "DGS5",
+        "DGS20",
+        "DFEDTARL",
+        "DFEDTARU",
+        "ICSA",
+        "ISM_MFG",
+        "ISM_SVC",
     }
     assert seeds["GDP"].frequency == "Quarterly"
     assert seeds["GDP"].base_unit == "Billions of Dollars"
@@ -73,12 +85,57 @@ def test_catalog_keeps_verified_units_and_no_observations() -> None:
     assert seeds["FEDFUNDS"].seasonal_adjustment == "Not Seasonally Adjusted"
     assert seeds["DGS10"].frequency == "Daily"
     assert seeds["T10Y2Y"].frequency == "Daily"
+    assert seeds["CES0500000003"].base_unit == "Dollars per Hour"
+    assert seeds["GDPC1"].base_unit == "Billions of Chained 2017 Dollars"
+    assert seeds["GDPC1"].frequency == "Quarterly"
+    assert seeds["PCEC96"].frequency == "Monthly"
+    assert seeds["ICSA"].frequency == "Weekly"
+    assert seeds["ICSA"].base_unit == "Number"
+    assert seeds["DFEDTARL"].frequency == "Daily"
+    assert seeds["ISM_MFG"].provider == "eastmoney"
+    assert seeds["ISM_MFG"].source_key == "EMG00002790"
+    assert seeds["ISM_SVC"].source_key == "EMG00002791"
     for seed in seeds.values():
         assert len(seed.name_en) <= 128
         assert len(seed.name_cn) <= 128
         assert len(seed.base_unit) <= 32
         assert len(seed.seasonal_adjustment) <= 32
         assert len(seed.frequency) <= 16
+        assert len(seed.series_code) <= 32
+        assert (seed.provider == "eastmoney") == bool(seed.source_key)
+
+
+def test_fred_codes_exclude_eastmoney_series() -> None:
+    assert "ISM_MFG" not in fred_codes()
+    assert "ISM_SVC" not in fred_codes()
+    assert "GDPC1" in fred_codes()
+    assert {"ISM_MFG", "ISM_SVC"} <= catalog_codes()
+    found = seed_for("ISM_SVC")
+    assert found is not None and found.provider == "eastmoney"
+    assert seed_for("NOT_A_SERIES") is None
+
+
+def test_fred_adapters_refuse_eastmoney_series_before_any_request() -> None:
+    transport = ScriptTransport(b"{}")
+    client = ResilientHttpClient(transport, sleeper=_sleep, max_attempts=1)
+
+    async def keyed() -> None:
+        await FredAdapter(client, "k").fetch_vintages("ISM_MFG", date(2026, 1, 1), date(2026, 2, 1))
+
+    async def public() -> None:
+        await fetch_public_csv(
+            client,
+            "ISM_MFG",
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+            fetched_at=datetime(2026, 10, 16, 6, 0, tzinfo=UTC),
+        )
+
+    for action in (keyed, public):
+        with pytest.raises(ProviderError) as caught:
+            asyncio.run(action())
+        assert caught.value.code == "VALIDATION_ERROR"
+    assert transport.calls == 0
 
 
 def test_parser_skips_missing_marker_and_keeps_decimal() -> None:
@@ -284,3 +341,149 @@ def test_observations_url_keeps_vintage_dates_under_fred_limit() -> None:
     assert "realtime_start=2020-10-17" in url
     assert "realtime_end=9999-12-31" in url
     assert "1776-07-04" not in url
+
+
+class LatestRepository(MacroRepository):
+    def __init__(self) -> None:
+        self.latest: list[tuple[str, list[LatestValue]]] = []
+
+    def upsert_latest_values(
+        self,
+        series_code: str,
+        points: Sequence[LatestValue],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        self.latest.append((series_code, list(points)))
+        return len(points)
+
+
+def test_ism_sync_goes_to_eastmoney_and_keeps_only_the_window() -> None:
+    repository = LatestRepository()
+
+    async def no_fred(series_code: str, start: date, end: date) -> tuple[FredVintage, ...]:
+        raise AssertionError("ISM 不应请求 FRED")
+
+    async def latest(indicator_id: str) -> tuple[LatestValue, ...]:
+        assert indicator_id == "EMG00002791"
+        return (
+            LatestValue(date(2026, 7, 1), date(2026, 8, 5), Decimal("54.1")),
+            LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9")),
+        )
+
+    written = asyncio.run(
+        sync_fred_series(
+            repository,
+            series_code="ISM_SVC",
+            observation_start=date(2026, 8, 1),
+            observation_end=date(2026, 10, 17),
+            fetch=no_fred,
+            fetched_at=datetime(2026, 10, 17, 15, tzinfo=UTC),
+            fetch_latest=latest,
+        )
+    )
+    assert written == 1
+    assert repository.latest == [
+        ("ISM_SVC", [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9"))])
+    ]
+
+
+def test_sync_request_accepts_underscored_codes() -> None:
+    body = FredSyncRequest(
+        series_code="ISM_MFG",
+        observation_start=date(2026, 1, 1),
+        observation_end=date(2026, 2, 1),
+    )
+    assert body.series_code == "ISM_MFG"
+
+
+def test_scheduler_syncs_every_catalog_series_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+
+    monkeypatch.delenv("SCHEDULER_FRED_SERIES", raising=False)
+    settings = Settings(_env_file=None)
+    assert set(settings.scheduler_series_codes()) == set(catalog_codes())
+
+
+class StoredVintagesRepository(MacroRepository):
+    def __init__(self, stored: list[VintagePoint]) -> None:
+        self.stored = stored
+        self.loads: list[tuple[str, date | None, date | None]] = []
+        self.writes: list[tuple[str, list[FredVintage], datetime]] = []
+
+    def list_vintages(
+        self,
+        series_code: str,
+        *,
+        start: date | None,
+        end: date | None,
+    ) -> list[VintagePoint] | None:
+        self.loads.append((series_code, start, end))
+        return self.stored
+
+    def upsert_vintages(
+        self,
+        series_code: str,
+        vintages: tuple[FredVintage, ...] | list[FredVintage],
+        *,
+        fetched_at: datetime,
+    ) -> int:
+        self.writes.append((series_code, list(vintages), fetched_at))
+        return len(vintages)
+
+
+def _stored_ism(value: str) -> VintagePoint:
+    return VintagePoint(
+        observation_date=date(2026, 9, 1),
+        value=Decimal(value),
+        unit="Index",
+        realtime_start=date(2026, 10, 5),
+        realtime_end=date(9999, 12, 31),
+        revision_no=1,
+    )
+
+
+def test_latest_values_skip_unchanged_value_and_load_full_history() -> None:
+    repository = StoredVintagesRepository([_stored_ism("54.900000")])
+    written = repository.upsert_latest_values(
+        "ISM_SVC",
+        [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("54.9"))],
+        fetched_at=datetime(2026, 10, 18, 2, tzinfo=UTC),
+    )
+    assert written == 0
+    assert repository.writes == []
+    assert repository.loads == [("ISM_SVC", None, None)]
+
+
+def test_latest_values_revision_uses_the_new_york_fetch_day() -> None:
+    repository = StoredVintagesRepository([_stored_ism("54.900000")])
+    fetched_at = datetime(2026, 10, 18, 2, tzinfo=UTC)
+    written = repository.upsert_latest_values(
+        "ISM_SVC",
+        [LatestValue(date(2026, 9, 1), date(2026, 10, 5), Decimal("55.2"))],
+        fetched_at=fetched_at,
+    )
+    assert written == 2
+    assert repository.loads == [("ISM_SVC", None, None)]
+    assert repository.writes == [
+        (
+            "ISM_SVC",
+            [
+                FredVintage(
+                    observation_date=date(2026, 9, 1),
+                    value=Decimal("54.900000"),
+                    realtime_start=date(2026, 10, 5),
+                    realtime_end=date(2026, 10, 17),
+                ),
+                FredVintage(
+                    observation_date=date(2026, 9, 1),
+                    value=Decimal("55.2"),
+                    realtime_start=date(2026, 10, 17),
+                    realtime_end=date(9999, 12, 31),
+                ),
+            ],
+            fetched_at,
+        )
+    ]

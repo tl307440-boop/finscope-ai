@@ -89,6 +89,15 @@ export function unitLabel(unit: string): string {
   if (unit === "Thousands of Persons") {
     return "千人"
   }
+  if (unit === "Billions of Chained 2017 Dollars") {
+    return "十亿美元（2017 年不变价）"
+  }
+  if (unit === "Dollars per Hour") {
+    return "美元/小时"
+  }
+  if (unit === "Number") {
+    return "人"
+  }
   if (unit === "Index") {
     return "指数"
   }

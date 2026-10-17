@@ -63,7 +63,7 @@ test.describe("关键流程", () => {
     const [reloaded] = await Promise.all([
       page.waitForResponse(
         (reply) =>
-          reply.url().includes("/api/v1/macro/series/") && reply.url().includes("as_of=2024-06-01"),
+          reply.url().includes("/api/v1/macro/observations") && reply.url().includes("as_of=2024-06-01"),
         { timeout: 30_000 },
       ),
       (async () => {

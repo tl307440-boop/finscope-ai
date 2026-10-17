@@ -21,6 +21,8 @@ class MacroSeriesItem(BaseModel):
     frequency: str
     base_unit: str
     seasonal_adjustment: str
+    provider: str
+    source_key: str
 
 
 class MacroCatalog(BaseModel):
@@ -49,6 +51,11 @@ class ObservationPage(BaseModel):
     truncated: bool
 
 
+class ObservationBatch(BaseModel):
+    pit_date: date
+    items: list[ObservationPage]
+
+
 class FredSyncResult(BaseModel):
     series_code: str
     rows_written: int
@@ -56,7 +63,7 @@ class FredSyncResult(BaseModel):
 
 
 class FredSyncRequest(BaseModel):
-    series_code: str = Field(pattern=r"^[A-Z0-9]+$", min_length=1, max_length=32)
+    series_code: str = Field(pattern=r"^[A-Z0-9_]+$", min_length=1, max_length=32)
     observation_start: date
     observation_end: date
 
@@ -76,6 +83,8 @@ def build_catalog(seeds: list[MacroSeriesSeed], *, availability: Availability) -
                 frequency=item.frequency,
                 base_unit=item.base_unit,
                 seasonal_adjustment=item.seasonal_adjustment,
+                provider=item.provider,
+                source_key=item.source_key,
             )
             for item in ordered
         ],

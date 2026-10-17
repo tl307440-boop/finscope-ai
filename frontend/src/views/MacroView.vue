@@ -6,15 +6,15 @@
  *  - GET /api/v1/macro/series
  *      data = { provider_code, availability, notice, series[] }
  *      availability：configured / unavailable / not_required / public_csv（无密钥时走 FRED 公开 CSV，只有最新修订值）
- *  - GET /api/v1/macro/series/{series_code}/observations?limit=&as_of=
- *      data = { series_code, pit_date, time_precision, observations[], empty_message, truncated }
- *      observations 按观测日升序，limit 保留最近 N 条，最后一条即最新值。
+ *  - GET /api/v1/macro/observations?codes=&as_of=
+ *      data = { pit_date, items: [{ series_code, observations[], empty_message, truncated }] }
+ *      一次取回指标带与走势图所需的全部序列；limit 由后端按频率决定，observations 升序。
  *  - GET /api/v1/macro/assessments?as_of=
  *      data = { pit_date, regime_code, growth|inflation|liquidity: { code, value, reason, evidence[] },
  *               notice, version }
  *
  * 不编造数据（AGENTS.md 硬约束）：
- *  - 指标带只显示真实观测值；CPI / 核心 PCE 的同比按「12 个月前同月」的观测值计算，找不到就不显示。
+ *  - 指标带口径见 api/macroTiles.ts：同比按 12 个月前同月、非农为当月新增、实际 GDP 为环比折年率，缺数据就不显示。
  *  - 宏观象限只用后端规则分数定位；分数取不到时只画坐标系，不落点。
  *  - 规则解读正文来自 assessments 的 regime_code / evidence，不是模型生成文案。
  */
@@ -23,21 +23,20 @@ import type { EChartsCoreOption } from "echarts/core"
 import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { asNumber, asRecord, asString, listOf, scaleAmount } from "../api/json"
+import { cssColor, frequencyLabel, macroSourceLabel, parseEvidence, regimeText } from "../api/macro"
 import {
-  adjustmentLabel,
-  cssColor,
-  frequencyLabel,
-  macroSourceLabel,
-  parseEvidence,
-  regimeText,
-  unitLabel,
-  yearOverYear,
-} from "../api/macro"
+  applyTransform,
+  buildTile,
+  periodText,
+  TILE_SPECS,
+  tileCodes,
+  type Observation,
+  type TileCatalogItem,
+  type TileView,
+} from "../api/macroTiles"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
-import MetricTile from "../components/ui/MetricTile.vue"
-import DeltaValue from "../components/ui/DeltaValue.vue"
-import MiniSpark from "../components/ui/MiniSpark.vue"
+import MacroTicker from "./parts/macro/MacroTicker.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
 import SeriesPicker from "../components/ui/SeriesPicker.vue"
@@ -47,20 +46,7 @@ import SourceFooter from "../components/ui/SourceFooter.vue"
 type Phase = "loading" | "ready" | "error"
 type Tone = "ok" | "warn" | "danger" | "muted" | "accent"
 
-interface CatalogItem {
-  code: string
-  name: string
-  nameEn: string
-  category: string
-  frequency: string
-  unit: string
-  adjustment: string
-}
-
-interface Observation {
-  date: string
-  value: number
-}
+type CatalogItem = TileCatalogItem
 
 interface DimensionScore {
   code: string
@@ -78,25 +64,6 @@ interface Assessment {
   notice: string
   version: string
 }
-
-interface TileView {
-  code: string
-  label: string
-  value: string
-  unit: string
-  period: string
-  info: string
-  delta: number | null
-  deltaSuffix: string
-  spark: number[]
-}
-
-/** 指标带顺序与效果图一致。 */
-const TILE_CODES = ["GDP", "CPIAUCSL", "PCEPILFE", "UNRATE", "FEDFUNDS", "DGS10", "T10Y2Y", "DGS2"] as const
-
-/** 价格指数在指标带与通胀图里统一换算成同比。 */
-const YOY_CODES = new Set<string>(["CPIAUCSL", "PCEPILFE"])
-const YOY_LABELS: Record<string, string> = { CPIAUCSL: "CPI 同比", PCEPILFE: "核心 PCE 同比" }
 
 /** 规则打分引用的序列（backend/app/services/macro_rules.py）。 */
 const RULE_SERIES: Record<string, string> = { growth: "GDP", inflation: "CPIAUCSL", liquidity: "FEDFUNDS" }
@@ -140,94 +107,12 @@ function rowsOf(code: string): Observation[] {
   return observationsByCode.value[code] ?? []
 }
 
-const yoyByCode = computed<Record<string, Observation[]>>(() => {
-  const result: Record<string, Observation[]> = {}
-  for (const code of YOY_CODES) {
-    result[code] = yearOverYear(rowsOf(code))
-  }
-  return result
-})
-
 function formatPlain(value: number, digits = 2): string {
   return value.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
-function monthText(date: string, frequency: string): string {
-  if (frequency === "Quarterly") {
-    const month = Number(date.slice(5, 7))
-    return `${date.slice(0, 4)} Q${Math.floor((month - 1) / 3) + 1}`
-  }
-  if (frequency === "Monthly") {
-    return date.slice(0, 7)
-  }
-  return date
-}
-
-const tiles = computed<TileView[]>(() =>
-  TILE_CODES.map((code) => {
-    const item = catalogItem(code)
-    const rows = rowsOf(code)
-    const frequency = item?.frequency ?? ""
-    const baseInfo = item
-      ? `${item.nameEn || item.name} · FRED 代码 ${code} · 单位 ${unitLabel(item.unit)} · ${adjustmentLabel(item.adjustment)}`
-      : `暂未接入 ${code}`
-    const yoy = YOY_CODES.has(code) ? (yoyByCode.value[code] ?? []) : []
-    if (yoy.length) {
-      const latest = yoy[yoy.length - 1] as Observation
-      const previous = yoy.length > 1 ? (yoy[yoy.length - 2] as Observation) : null
-      const level = rows[rows.length - 1]
-      return {
-        code,
-        label: YOY_LABELS[code] ?? `${item?.name ?? code} 同比`,
-        value: formatPlain(latest.value),
-        unit: "%",
-        period: `${monthText(latest.date, frequency)} · ${frequencyLabel(frequency)}`,
-        info: `${baseInfo}。同比 = 当月指数 ÷ 12 个月前同月指数 − 1${level ? `；最新指数 ${formatPlain(level.value)}` : ""}`,
-        delta: previous ? latest.value - previous.value : null,
-        deltaSuffix: " pct",
-        spark: yoy.slice(-36).map((row) => row.value),
-      }
-    }
-    const latest = rows.length ? (rows[rows.length - 1] as Observation) : null
-    const previous = rows.length > 1 ? (rows[rows.length - 2] as Observation) : null
-    const unit = item?.unit ?? ""
-    let value = "—"
-    let shownUnit = ""
-    if (latest) {
-      if (unit === "Billions of Dollars") {
-        const scaled = scaleAmount(latest.value * 1e9)
-        value = scaled.text
-        shownUnit = `${scaled.scale}美元`
-      } else if (unit === "Percent") {
-        value = formatPlain(latest.value)
-        shownUnit = "%"
-      } else {
-        value = formatPlain(latest.value)
-      }
-    }
-    let delta: number | null = null
-    let deltaSuffix = ""
-    if (latest && previous) {
-      if (unit === "Percent") {
-        delta = latest.value - previous.value
-        deltaSuffix = " pct"
-      } else if (previous.value !== 0) {
-        delta = (latest.value / previous.value - 1) * 100
-        deltaSuffix = "%"
-      }
-    }
-    return {
-      code,
-      label: item?.name ?? code,
-      value,
-      unit: shownUnit,
-      period: latest ? `${monthText(latest.date, frequency)} · ${frequencyLabel(frequency)}` : "暂无数据",
-      info: baseInfo,
-      delta,
-      deltaSuffix,
-      spark: rows.slice(-60).map((row) => row.value),
-    }
-  }),
+const tileViews = computed<TileView[]>(() =>
+  TILE_SPECS.map((spec) => buildTile(spec, observationsByCode.value, catalog.value)),
 )
 
 const hasAnyObservation = computed<boolean>(() => Object.values(observationsByCode.value).some((rows) => rows.length))
@@ -268,6 +153,9 @@ function palette() {
     warn: cssColor("--warn", "#fbbf24"),
     ok: cssColor("--ok", "#34d399"),
     pink: "#f472b6",
+    teal: "#2dd4bf",
+    sky: "#38bdf8",
+    lime: "#a3e635",
     text: cssColor("--text", "#e6edf8"),
     muted: cssColor("--muted", "#94a4be"),
     line: cssColor("--line", "rgba(96,140,220,0.16)"),
@@ -280,33 +168,40 @@ function percentTip(value: unknown): string {
 }
 
 /**
- * 走势图可聚合的指标（与指标带一一对应，共 8 个）。
- *  - percent：百分比口径（CPI / 核心 PCE 为同比），共用左轴；
- *  - amount：GDP，单位换算成万亿美元，单独走右轴，避免把百分比压成一条直线；
- *  - step：联邦基金利率、GDP 是「公布后一直有效」的阶梯，其余按观测点连线。
- * 不同频率（日 / 月 / 季）都放在时间轴上，各画各的观测点，不插值、不补点。
+ * 走势图可聚合的指标：只放百分比口径，共用一根左轴（PMI、非农、初请留给后续的指数化对比）。
+ *  - transform 与指标带同一套换算（api/macroTiles.ts），保证两处数字对得上；
+ *  - step：政策利率、实际 GDP 是「公布后一直有效」的阶梯，其余按观测点连线。
+ * 不同频率（日 / 周 / 月 / 季）都放在时间轴上，各画各的观测点，不插值、不补点。
  */
-type PlotKind = "percent" | "amount"
-type PlotTone = "accent" | "orange" | "violet" | "warn" | "ok" | "cyan" | "pink" | "muted"
+type PlotTone = "accent" | "orange" | "violet" | "warn" | "ok" | "cyan" | "pink" | "muted" | "teal" | "sky" | "lime"
 
 interface PlotSpec {
-  code: (typeof TILE_CODES)[number]
+  code: string
   label: string
   tone: PlotTone
-  kind: PlotKind
+  transform: "level" | "yoy" | "saar"
   step: boolean
 }
 
 const PLOT_SPECS: readonly PlotSpec[] = [
-  { code: "GDP", label: "美国 GDP（右轴）", tone: "muted", kind: "amount", step: true },
-  { code: "CPIAUCSL", label: "CPI 同比", tone: "accent", kind: "percent", step: false },
-  { code: "PCEPILFE", label: "核心 PCE 同比", tone: "orange", kind: "percent", step: false },
-  { code: "UNRATE", label: "失业率", tone: "violet", kind: "percent", step: false },
-  { code: "FEDFUNDS", label: "联邦基金利率", tone: "warn", kind: "percent", step: true },
-  { code: "DGS10", label: "10 年期美债", tone: "ok", kind: "percent", step: false },
-  { code: "T10Y2Y", label: "10Y−2Y 利差", tone: "pink", kind: "percent", step: false },
-  { code: "DGS2", label: "2 年期美债", tone: "cyan", kind: "percent", step: false },
+  { code: "CPIAUCSL", label: "CPI 同比", tone: "accent", transform: "yoy", step: false },
+  { code: "PCEPILFE", label: "核心 PCE 同比", tone: "orange", transform: "yoy", step: false },
+  { code: "UNRATE", label: "失业率", tone: "violet", transform: "level", step: false },
+  { code: "CES0500000003", label: "平均时薪同比", tone: "pink", transform: "yoy", step: false },
+  { code: "GDPC1", label: "实际 GDP 环比折年", tone: "muted", transform: "saar", step: true },
+  { code: "PCEC96", label: "实际 PCE 同比", tone: "teal", transform: "yoy", step: false },
+  { code: "DFEDTARU", label: "政策利率上限", tone: "warn", transform: "level", step: true },
+  { code: "DGS5", label: "5 年期美债", tone: "sky", transform: "level", step: false },
+  { code: "DGS10", label: "10 年期美债", tone: "ok", transform: "level", step: false },
+  { code: "DGS20", label: "20 年期美债", tone: "lime", transform: "level", step: false },
+  { code: "T10Y2Y", label: "10Y−2Y 利差", tone: "cyan", transform: "level", step: false },
 ]
+
+/** 通胀图的 2% 目标线挂在第一条价格指数同比上。 */
+const INFLATION_CODES = new Set<string>(["CPIAUCSL", "PCEPILFE"])
+
+/** 页面一次性取回的序列：指标带 ∪ 走势图（共 16 条，不超过批量接口上限 20）。 */
+const OBSERVATION_CODES: readonly string[] = [...new Set([...tileCodes(), ...PLOT_SPECS.map((spec) => spec.code)])]
 
 const YEAR_OPTIONS = [1, 2, 3, 5] as const
 
@@ -315,17 +210,12 @@ interface TrendState {
   years: number
 }
 
-/** 两张图的默认组合保持原样；之后可在图例里自由增减任意指标。 */
+/** 默认：通胀图看 CPI 与核心 PCE 同比，利率图看政策利率上限与 5、10、20 年期美债；之后可在图例里自由增减任意指标。 */
 const inflationTrend = ref<TrendState>({ codes: ["CPIAUCSL", "PCEPILFE"], years: 5 })
-const ratesTrend = ref<TrendState>({ codes: ["FEDFUNDS", "DGS10", "DGS2"], years: 2 })
+const ratesTrend = ref<TrendState>({ codes: ["DFEDTARU", "DGS5", "DGS10", "DGS20"], years: 2 })
 
 function plotRows(spec: PlotSpec): Observation[] {
-  if (YOY_CODES.has(spec.code)) {
-    return yoyByCode.value[spec.code] ?? []
-  }
-  const rows = rowsOf(spec.code)
-  // GDP 观测值单位是十亿美元，换成万亿美元（与指标带的「万亿美元」一致）。
-  return spec.kind === "amount" ? rows.map((row) => ({ date: row.date, value: row.value / 1000 })) : rows
+  return applyTransform(spec.transform, rowsOf(spec.code))
 }
 
 function toneColor(tone: PlotTone, colors: ReturnType<typeof palette>): string {
@@ -338,6 +228,9 @@ function toneColor(tone: PlotTone, colors: ReturnType<typeof palette>): string {
     cyan: colors.cyan,
     pink: colors.pink,
     muted: colors.muted,
+    teal: colors.teal,
+    sky: colors.sky,
+    lime: colors.lime,
   }
   return map[tone]
 }
@@ -351,16 +244,10 @@ const pickerOptions = computed(() => {
       label: spec.label,
       color: toneColor(spec.tone, colors),
       disabled: plotRows(spec).length < 2,
-      hint: item
-        ? `${item.nameEn || item.name} · ${frequencyLabel(item.frequency)}${spec.kind === "amount" ? " · 单位 万亿美元" : ""}`
-        : spec.label,
+      hint: item ? `${item.nameEn || item.name} · ${frequencyLabel(item.frequency)}` : spec.label,
     }
   })
 })
-
-function amountTip(value: unknown): string {
-  return typeof value === "number" ? `${value.toFixed(2)} 万亿美元` : "—"
-}
 
 function shiftYears(date: string, years: number): string {
   return `${Number(date.slice(0, 4)) - years}${date.slice(4)}`
@@ -387,36 +274,23 @@ function buildTrend(state: TrendState): TrendPlot {
   const cutoff = shiftYears(newest, state.years)
   const windowed = picked.map((entry) => ({ ...entry, rows: entry.rows.filter((row) => row.date >= cutoff) }))
 
-  const axisKinds: PlotKind[] = []
-  for (const kind of ["percent", "amount"] as const) {
-    if (windowed.some((entry) => entry.spec.kind === kind)) {
-      axisKinds.push(kind)
-    }
-  }
-  const targetOwner = windowed.find((entry) => YOY_CODES.has(entry.spec.code))?.spec.code
+  const targetOwner = windowed.find((entry) => INFLATION_CODES.has(entry.spec.code))?.spec.code
 
   const option: EChartsCoreOption = {
     grid: { left: 8, right: 12, top: 12, bottom: 4, containLabel: true },
     tooltip: { trigger: "axis" },
     xAxis: { type: "time", axisLabel: { hideOverlap: true } },
-    yAxis: axisKinds.map((kind, index) => ({
-      type: "value",
-      scale: true,
-      position: index === 0 ? "left" : "right",
-      axisLabel: { formatter: kind === "percent" ? "{value}%" : "{value}万亿" },
-      splitLine: { show: index === 0 },
-    })),
+    yAxis: { type: "value", scale: true, axisLabel: { formatter: "{value}%" } },
     series: windowed.map(({ spec, rows }) => {
       const color = toneColor(spec.tone, colors)
       return {
         name: spec.label,
         type: "line",
-        yAxisIndex: axisKinds.indexOf(spec.kind),
         step: spec.step ? "end" : undefined,
         showSymbol: false,
         connectNulls: true,
         data: rows.map((row) => [row.date, row.value]),
-        tooltip: { valueFormatter: spec.kind === "amount" ? amountTip : percentTip },
+        tooltip: { valueFormatter: percentTip },
         lineStyle: { color, width: spec.step ? 2 : 1.7 },
         itemStyle: { color },
         markLine:
@@ -438,9 +312,8 @@ function buildTrend(state: TrendState): TrendPlot {
     if (!last) {
       return []
     }
-    const text = spec.kind === "amount" ? amountTip(last.value) : percentTip(last.value)
-    const shown = catalogItem(spec.code)?.frequency === "Daily" ? last.date : last.date.slice(0, 7)
-    return [`${spec.label.replace("（右轴）", "")} ${shown} ${text}`]
+    const shown = periodText(last.date, catalogItem(spec.code)?.frequency ?? "")
+    return [`${spec.label} ${shown} ${percentTip(last.value)}`]
   })
   return { option, latest }
 }
@@ -669,7 +542,7 @@ function evidenceSummary(score: DimensionScore): string {
   }
   const code = points[0]?.code ?? ""
   const frequency = catalogItem(code)?.frequency ?? ""
-  const steps = points.map((point) => `${monthText(point.date, frequency)} ${evidenceValue(point.code, point.value)}`)
+  const steps = points.map((point) => `${periodText(point.date, frequency)} ${evidenceValue(point.code, point.value)}`)
   return `${seriesName(code)}：${steps.join(" → ")}`
 }
 
@@ -733,10 +606,11 @@ function parseCatalog(value: unknown): CatalogItem[] {
         code,
         name,
         nameEn: asString(item.name_en) ?? "",
-        category: asString(item.category) ?? "",
         frequency: asString(item.frequency) ?? "",
         unit: asString(item.base_unit) ?? "",
         adjustment: asString(item.seasonal_adjustment) ?? "",
+        provider: asString(item.provider) ?? "fred",
+        sourceKey: asString(item.source_key) ?? "",
       },
     ]
   })
@@ -772,37 +646,33 @@ function parseScore(value: unknown): DimensionScore | null {
   }
 }
 
-/** limit 保留最近 N 条：日频取约四年交易日（接口上限 1000），月/季频取 10 年，足够算同比和画 1–5 年走势。 */
-function limitFor(code: string): number {
-  return catalogItem(code)?.frequency === "Daily" ? 1000 : 120
-}
-
 async function loadObservations(): Promise<void> {
   observationsBusy.value = true
-  const codes = TILE_CODES.filter((code) => catalog.value.some((item) => item.code === code))
+  const codes = OBSERVATION_CODES.filter((code) => catalog.value.some((item) => item.code === code))
   try {
-    const results = await Promise.all(
-      codes.map(async (code) => {
-        const params = new URLSearchParams({ limit: String(limitFor(code)) })
-        if (appliedAsOf.value) {
-          params.set("as_of", appliedAsOf.value)
-        }
-        const response = await fetch(
-          apiUrl(`/api/v1/macro/series/${encodeURIComponent(code)}/observations?${params.toString()}`),
-        )
-        const body = await readJson(response)
-        if (!response.ok) {
-          throw errorFrom(body, response.headers.get("X-Request-ID"))
-        }
-        const data = asRecord(asRecord(body)?.data)
-        const rows = Array.isArray(data?.observations) ? data.observations.flatMap(parseObservation) : []
-        rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
-        return { code, rows }
-      }),
-    )
+    if (!codes.length) {
+      observationsByCode.value = {}
+      return
+    }
+    const params = new URLSearchParams({ codes: codes.join(",") })
+    if (appliedAsOf.value) {
+      params.set("as_of", appliedAsOf.value)
+    }
+    const response = await fetch(apiUrl(`/api/v1/macro/observations?${params.toString()}`))
+    const body = await readJson(response)
+    if (!response.ok) {
+      throw errorFrom(body, response.headers.get("X-Request-ID"))
+    }
+    const data = asRecord(asRecord(body)?.data)
     const next: Record<string, Observation[]> = {}
-    for (const item of results) {
-      next[item.code] = item.rows
+    for (const item of listOf(data?.items)) {
+      const code = asString(item.series_code)
+      if (!code) {
+        continue
+      }
+      const rows = Array.isArray(item.observations) ? item.observations.flatMap(parseObservation) : []
+      rows.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+      next[code] = rows
     }
     observationsByCode.value = next
   } catch (caught) {
@@ -924,32 +794,7 @@ onMounted(() => {
           <el-button size="small" type="primary" @click="resetAsOf">回到今天</el-button>
         </div>
 
-        <div class="grid-8">
-          <MetricTile
-            v-for="tile in tiles"
-            :key="tile.code"
-            :label="tile.label"
-            :value="tile.value"
-            :unit="tile.unit"
-            :period="tile.period"
-            :info="tile.info"
-            delta-label="较上期"
-          >
-            <template #chart>
-              <MiniSpark
-                v-if="tile.spark.length > 1"
-                :points="tile.spark"
-                kind="area"
-                tone="accent"
-                :width="96"
-                :height="30"
-              />
-            </template>
-            <template #delta>
-              <DeltaValue :value="tile.delta" :suffix="tile.deltaSuffix" :colored="false" signed size="sm" />
-            </template>
-          </MetricTile>
-        </div>
+        <MacroTicker :tiles="tileViews" :loading="observationsBusy && !hasAnyObservation" />
 
         <div class="macro-main">
           <PanelCard
@@ -985,7 +830,7 @@ onMounted(() => {
           <div class="stack">
             <PanelCard
               title="通胀走势"
-              info="默认 CPI 与核心 PCE 的同比（%）；点上方色块可加入或移除任意指标（不限数量）。同比 = 当月指数 ÷ 12 个月前同月指数 − 1；GDP 走右轴（万亿美元）"
+              info="默认 CPI 与核心 PCE 的同比（%）；点上方色块可加入或移除任意百分比口径指标（不限数量）。同比 = 当月 ÷ 12 个月前同月 − 1；实际 GDP 为环比折年率"
             >
               <template #icon><span class="panel-icon">▲</span></template>
               <SeriesPicker
@@ -1006,8 +851,8 @@ onMounted(() => {
             </PanelCard>
 
             <PanelCard
-              title="联邦基金利率与美债收益率"
-              info="默认联邦基金有效利率（月度）与 2 年、10 年期美债收益率（日度）；点上方色块可加入或移除任意指标（不限数量），不同频率按时间轴对齐、不插值"
+              title="政策利率与美债收益率"
+              info="默认联邦基金目标区间上限与 5、10、20 年期美债收益率（均为日度）；点上方色块可加入或移除任意指标（不限数量），不同频率按时间轴对齐、不插值"
             >
               <template #icon><span class="panel-icon">▤</span></template>
               <SeriesPicker
@@ -1072,22 +917,25 @@ onMounted(() => {
 
         <SourceFooter
           :as-of="latestObservationDate || appliedAsOf"
-          :sources="[sourceLabel]"
+          :sources="[sourceLabel, '东方财富数据中心（ISM PMI）']"
           :stale="stale"
-          note="指标「较上期」为相邻两个已公布观测值之差；利率类按百分点，其余按百分比。"
+          note="「较上期」为相邻两期主口径之差：利率、同比类按百分点，非农与初请按千人，PMI 按点；政策利率按上一次调整计。"
         />
       </template>
     </div>
 
     <el-dialog v-model="helpOpen" title="数据说明" width="600px">
       <ul class="doc-list">
-        <li>数据来源：{{ sourceLabel }}，观察日 {{ appliedAsOf }}。</li>
+        <li>数据来源：{{ sourceLabel }}；ISM PMI 来自东方财富数据中心（转载 ISM）。观察日 {{ appliedAsOf }}。</li>
         <li v-if="availability === 'public_csv'">
           公开 CSV 只提供最新修订值，不能回看历史某天当时公布的版本；选择过去的观察日将看不到数据。
         </li>
-        <li>CPI、核心 PCE 显示同比：当月指数 ÷ 12 个月前同月指数 − 1；缺少上年同月数据的月份不显示。</li>
-        <li>GDP 为现价、季调年化口径（非实际增速）；「较上期」为环比变化。</li>
-        <li>利率、失业率、利差的「较上期」单位为百分点（pct）。</li>
+        <li>CPI、核心 PCE、平均时薪、实际个人消费支出显示同比：当月 ÷ 12 个月前同月 − 1；缺少上年同月数据的月份不显示。</li>
+        <li>非农就业显示当月新增（本月 − 上月，千人）；初请失业金为周度人数，换算成千人。</li>
+        <li>实际 GDP 显示环比折年率：(本季 ÷ 上季)^4 − 1，与美国经济分析局公布口径一致。</li>
+        <li>美联储政策利率显示联邦基金目标区间（下限–上限），「较上期」按上一次调整计。</li>
+        <li>ISM PMI 历史值为东方财富当前值（最新修订）；本系统自首次同步起记录修订，此后回看观察日才与当时公布值一致。</li>
+        <li>利率、失业率、利差与同比类的「较上期」单位为百分点（pct），非农与初请为千人，PMI 为点；颜色只表示最新一期的方向，不代表好坏。</li>
         <li>
           宏观象限与规则解读：比较 GDP、CPI、联邦基金利率最近两期已公布值的方向，上行记 70、下行记 30、持平记
           50；联邦基金利率上行视为流动性偏紧。
