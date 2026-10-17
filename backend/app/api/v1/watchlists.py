@@ -1,3 +1,4 @@
+import asyncio
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -10,7 +11,14 @@ from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.repositories.watchlists import WatchGroup, WatchlistRepository
+from app.schemas.watchlist_insights import ImportResult
 from app.services.auth_types import UserRecord
+from app.services.watchlist_insights import (
+    MAX_IMPORT,
+    WatchlistInsightsService,
+    get_insights_service,
+    parse_codes,
+)
 
 router = APIRouter(prefix="/watchlists", tags=["自选"])
 
@@ -102,6 +110,55 @@ def add_watch_item(
     if current is None:
         raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
     return JSONResponse(status_code=200, content=success_response(request, _group(current)))
+
+
+class BatchImport(BaseModel):
+    text: str = Field(min_length=1, max_length=8000)
+
+
+@router.post("/{group_id}/items/batch", summary="粘贴股票代码批量加入自选")
+def import_watch_items(
+    group_id: UUID,
+    body: BatchImport,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    codes, invalid = parse_codes(body.text)
+    if not codes:
+        raise AppError(
+            code="VALIDATION_ERROR",
+            message="没有识别到 A 股代码，支持 600519、SH600519、600519.SH 这几种写法",
+            status_code=422,
+        )
+    if len(codes) > MAX_IMPORT:
+        raise AppError(
+            code="VALIDATION_ERROR", message=f"一次最多导入 {MAX_IMPORT} 只", status_code=422
+        )
+    outcome = WatchlistRepository(_engine(request)).add_codes(user.id, group_id, codes)
+    if outcome is None:
+        raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
+    result = ImportResult(
+        added=list(outcome.added),
+        existing=list(outcome.existing),
+        missing=list(outcome.missing),
+        invalid=invalid[:50],
+    )
+    return JSONResponse(status_code=200, content=success_response(request, result))
+
+
+@router.get("/{group_id}/insights", summary="自选股看板：行情、行业暴露、涨停、调研、热度")
+async def read_watch_insights(
+    group_id: UUID,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+    service: Annotated[WatchlistInsightsService, Depends(get_insights_service)],
+) -> JSONResponse:
+    repository = WatchlistRepository(_engine(request))
+    group = await asyncio.to_thread(repository.get_group, user.id, group_id)
+    if group is None:
+        raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
+    insights = await service.build(group, repository.recent_closes)
+    return JSONResponse(status_code=200, content=success_response(request, insights))
 
 
 @router.delete("/{group_id}/items/{instrument_id}", summary="移出自选")

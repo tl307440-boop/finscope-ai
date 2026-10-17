@@ -11,6 +11,7 @@ from app.api.v1.documents import router as document_router
 from app.api.v1.filings import router as filing_router
 from app.api.v1.health import router as health_router
 from app.api.v1.industries import router as industry_router
+from app.api.v1.industry_market import router as industry_market_router
 from app.api.v1.instruments import router as instrument_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.jobs import router as job_router
@@ -25,6 +26,7 @@ router = APIRouter()
 router.include_router(health_router)
 router.include_router(instrument_router)
 router.include_router(industry_router)
+router.include_router(industry_market_router)
 router.include_router(macro_router)
 router.include_router(market_router)
 router.include_router(research_board_router)

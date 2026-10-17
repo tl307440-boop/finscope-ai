@@ -275,6 +275,21 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="六个序列分源抓取；部分失败仍写入成功的，整体按重试策略重来",
             )
         )
+    if settings.scheduler_enable_board_market:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_board_market",
+                task_name="sync_board_market",
+                trigger=CronTrigger(
+                    day_of_week="mon-fri",
+                    hour=settings.scheduler_board_market_hour,
+                    minute=settings.scheduler_board_market_minute,
+                    timezone=zone,
+                ),
+                builder=build_board_market_tasks,
+                failure_policy="非交易日不写快照；连续 3 次上游失败即停，最多重试 3 次",
+            )
+        )
     if settings.scheduler_enable_universe:
         triggers.append(
             TriggerRegistration(
@@ -648,6 +663,31 @@ def build_china_macro_tasks(
             scope={"display_symbol": "china-macro", "observation_end": day},
             provider_id=provider_id,
             failure_policy="分源抓取，部分失败保留已写入的数据",
+            max_attempts=3,
+        )
+    ]
+
+
+def build_board_market_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """东财板块收盘快照与日线：一天一条，执行器自己判断是不是交易日。"""
+
+    day = now.date().isoformat()
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="eastmoney_boards",
+        name="东财板块行情（公开网页接口）",
+        enabled=True,
+        config_public={"upstream": "https://quote.eastmoney.com", "credential": "none"},
+    )
+    return [
+        ScheduledTask(
+            task_name="sync_board_market",
+            job_type="board_market",
+            dedupe_key=f"board_market:{day}",
+            scope={"display_symbol": "eastmoney-boards", "observation_end": day},
+            provider_id=provider_id,
+            failure_policy="非交易日不写快照；连续 3 次上游失败即停",
             max_attempts=3,
         )
     ]

@@ -1167,3 +1167,97 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - **变更**：`chat_reply.py`、`assistant_context.py`、`chat_model.py`、`api/v1/assistant.py`、`tests/unit/test_chat_reply.py`、使用指南。
 - **验证**：`docker run` 挂载新代码到 `finscope-backend:local`，安装 pytest 后 `python -m pytest tests/unit/test_chat_reply.py -q` 为 7 passed；ruff check / format 通过；mypy 检查这 4 个文件无错误。集成测试未跑（需要 PostgreSQL）。
 - **局限**：助手暂不回答公司财报类问题；不提供自由 SQL/联网工具。
+
+## 2026-10-17 INDUSTRY 产业研究接入东财板块行情与热榜
+
+- **现象**：`/industry` 只依赖库内少量手工维护的行业与成分，面板几乎看不出信息；不能按东财口径选行业，也没有走势、资金、估值与热度。
+- **调研**：参考 akshare `stock_board_industry_*_em`（及其 2026 年东财三级行业升级 issue #7077）、板块轮动 RRG、资金流看板等开源项目，并用 REA 无头浏览器抓取东财行情中心页面实际调用的接口（`sidemenu_new.json` 行业树、`push2 clist/ulist` 行情与成分、`push2his kline`、`datacenter-web RPT_VALUEINDUSTRY_DET` 估值、`reportapi` 行业研报、`emappdata` 人气榜），以及同花顺 `dq.10jqka.com.cn` 公开热榜 JSON。
+- **数据边界**：只用无需登录、无需反爬令牌的公开接口；**不接入**东财自选股（需要用户登录 cookie）、同花顺 `q.10jqka` 板块页（需要 `hexin-v` 反爬令牌，属规避限制）。不轮换 push2 编号子域名来绕频控。
+
+### 变更文件
+
+- 后端
+  - `app/providers/eastmoney_boards.py`：东财板块树（一级 31 / 二级 128 / 三级 338 行业 + 概念）、板块行情、成分、日线、行业估值、研报、人气榜与同花顺热股/热门板块的 URL 构造和纯解析（`-`、缺字段一律为空，不补 0）。
+  - `app/services/board_analytics.py`：均线、区间涨幅、相对沪深300超额、估值分位（近 5 年）、涨跌分布、按成分 `f100` 聚合子行业（市值加权涨跌）。全部 `Decimal`。
+  - `app/services/market_cache.py`：进程内 TTL 缓存（同 key 并发只回源一次；有旧值时回源失败返回旧值并标 `stale`）与串行限速出口（两次请求间隔 ≥0.4s，直连不走代理，最多 2 次尝试）。
+  - `app/services/industry_market.py`、`app/schemas/industry_market.py`、`app/api/v1/industry_market.py`、`app/api/v1/router.py`：`GET /api/v1/industry-market/{catalog, boards?level=1|2|3|concept, boards/{BKxxxx}, boards/{BKxxxx}/reports, hot}`。详情各区块（行情 / 走势 / 成分 / 估值）独立标 `ok|stale|unavailable` 与原因；整页核心数据完全取不到时返回 503，不返回空壳。
+  - 测试：`tests/unit/test_eastmoney_boards.py`、`test_board_analytics.py`、`test_industry_market_service.py`（28 个用例，含缺字段、停牌、上游失败回退旧值、冷缓存失败报错、估值一级行业不可用等异常路径）。
+- 前端
+  - `src/api/industryMarket.ts`：响应收窄解析。
+  - `src/views/IndustryView.vue`：层级切换（一/二/三级、概念）、涨跌热力图、动量象限（10 日 × 60 日，取东财给定区间涨幅）、主力资金排行、可排序板块表、东财人气榜 / 同花顺热股与热门板块、与库内逻辑追踪行业的跳转。
+  - `src/views/IndustryBoardView.vue`（新路由 `/industry/board/:code`）：日 K + MA20/60、相对沪深300超额曲线、区间收益、成分股表（可跳公司页）、涨跌分布、子行业市值加权、PE/PB 历史与分位带、近 180 天行业研报。
+  - `src/views/parts/industry/chartKit.ts`、`src/charts/index.ts`（注册 treemap）、`src/router/index.ts`、`tests/unit/industryMarket.test.ts`（7 个用例）。
+
+### 验证
+
+- 后端（本机 venv，未装 `tradingagents`）：`ruff check app tests` 通过；`ruff format --check` 本次新增文件已格式化；`mypy app` 仅剩 `app/trading_agents/upstream.py` 因未安装 `langchain_core` 的 4 个既有错误，本次新增文件无错误；`pytest tests/unit` 286 passed。
+- 前端：`vue-tsc --noEmit` 无错误；`vitest run` 30 个文件 / 127 个用例通过。前端未配置 ESLint，未跑 lint。
+- 实网冒烟（2026-10-17）：板块目录（一级 31 / 二级 128 / 三级 338 / 概念 516）、半导体 BK1036 研报 30 篇、估值（PE-TTM 94.10，近 5 年分位 49.92%，1212 个样本）、同花顺热股 100 条与热门行业/概念各 20 条均正常。**push2 / push2his（板块行情、成分、日线、人气榜股票名）对本机 IP 返回 403 / 连接中断**（调研阶段探测较多触发了频控），对应区块按设计标 `unavailable`，总览与详情页返回 503 并提示原因；未做绕过。频控解除后需再跑一次完整冒烟与页面截图。
+
+### 已知局限
+
+- 板块行情是实时快照，未入库，不能按历史时点回看；不满足 PIT 回测要求，只作看盘与研究线索。
+- 行业估值与行业研报只覆盖东财二级行业；一级行业、三级行业与概念板块显示不可用并说明原因。
+- 进程内缓存，多副本部署时各自回源；push2 频控仍可能让页面短时不可用。
+- 动量象限只按东财给定的两个区间涨幅分区，不是 RRG 的相对强弱标准化。
+
+### 下一步
+
+- 调度任务在收盘后把每日板块快照与日线写入 PostgreSQL，页面优先读库，降低对实时接口的依赖并支持时点回看。
+- 补充北向持股按板块（`RPT_MUTUAL_BOARD_HOLDRANK_WEB`）、机构调研（`RPT_ORG_SURVEYNEW`）、涨停池面板；基于入库日线做标准化 RRG 轮动图。
+- 把逻辑追踪的行业假设与东财板块代码关联，在详情页直接展示对应假设与验证指标。
+
+## 2026-10-17 INDUSTRY-2 板块入库、轮动图、涨停 / 调研面板、自选看板、假设关联
+
+- **目标**：落实上一条「下一步」里的全部方向（用户选择：入库、自选、RRG、涨停/调研、假设关联、联调截图）。
+- **自选股口径（用户确认）**：自选里只保存证券代码（本系统账号下，支持粘贴批量导入）；看板所需的行情、所属行业、资金、涨停、调研、热榜一律从公开数据现查。**不保存、不使用东财 / 同花顺登录 cookie。**
+- **北向按板块不做**：`RPT_MUTUAL_BOARD_HOLDRANK_WEB` 最新 `TRADE_DATE` 停在 2024-08-16（交易所此后不再按日披露陆股通持股），做出来只会是过期数据；页面脚注说明原因。
+
+### 变更文件
+
+- 后端
+  - 迁移 `alembic/versions/20261017_0023_board_market.py`：`board_daily_snapshots`（板块 × 交易日，唯一键 `board_code, trade_date`）与 `board_daily_bars`（secid × 交易日 OHLC / 量额）。`app/db/models/board_market.py`、`app/repositories/board_market.py`（`on_conflict_do_update` 幂等写入、按日 / 按板块读取）。
+  - `app/services/board_market_sync.py` + 调度 `sync_board_market`（工作日 15:45，`dedupe_key=board_market:{day}`，最多 3 次）+ worker `board_market`：以沪深300最后一根日线定交易日；收盘后（≥15:05，或次日开盘前）写全量行业 / 概念快照；一、二级行业日线增量补齐（首次回补 420 天）；连续 3 个板块失败即停，部分失败标 `PARTIAL_SYNC` 交给重试。复用 0.4s 串行限速出口。
+  - `app/services/industry_market.py`：区块新增 `origin: live|stored` 与 `data_date`；`boards?as_of=` 只读入库快照；实时失败回退最近入库快照（标 stale）；盘后且库里日线足够（≥60 根且已到最近交易日）时走势优先读库；`GET /industry-market/snapshot-dates`。
+  - 轮动：`app/services/board_analytics.py` 新增 `rotation_tail`（RS = 板块 / 沪深300；RS-Ratio = 100 + 20 日滚动 z 分；RS-Momentum = 100 + RS-Ratio 变化率的 20 日 z 分；5 日一个点、8 个点尾巴）与象限；`GET /industry-market/rotation?level=1|2` 只用入库日线。
+  - 情绪：`app/providers/eastmoney_sentiment.py`、`app/services/market_sentiment.py`、`app/schemas/market_sentiment.py`：`GET /industry-market/limit-up?date=`（东财涨停 / 炸板 / 跌停池；封板率、连板梯队、行业分布、首封时间分桶；非交易日向前找最多 7 天）；`GET /industry-market/org-surveys?days=1..90`（东财 `RPT_ORG_SURVEYNEW`，每次调研只取 `NUMBERNEW=1` 一行；按日、接待方式、公司聚合；前 80 家公司的行业查不到时单独标 unavailable）。
+  - 自选：`app/services/watchlist_insights.py`、`app/schemas/watchlist_insights.py`、`app/repositories/watchlists.py`、`app/api/v1/watchlists.py`：`POST /watchlists/{id}/items/batch`（解析 600519 / SH600519 / 600519.SH / 1.600519，最多 300 个，回报 added / existing / missing / invalid）；`GET /watchlists/{id}/insights`（东财公开行情 → 失败改用库内日线按交易日计算；等权 / 市值加权涨跌、主力净流入合计、行业暴露；涨停池、30 日调研、同花顺热股 / 东财人气榜名次信号，任一来源失败只标 `signal_section` 缺失）。
+  - 假设关联：`app/services/board_theses.py` + `GET /industry-market/boards/{code}/theses`（需登录）：板块名去掉 Ⅱ/Ⅲ 后与逻辑追踪行业同名优先、否则名称包含；返回匹配方式、当前用户在这些行业下的假设及截至今天的支持 / 挑战依据条数。
+  - 测试：`tests/unit/test_board_market_store.py`（11）、`test_market_sentiment.py`（8）、`test_watchlist_insights.py`（5）、`test_board_theses.py`（2）；`tests/integration/test_board_market_repository.py`（2）、`test_watchlist_import.py`（2）。覆盖非交易时段不写快照、连续失败停止、无基准报错、实时失败回退库、外人分组 404、超量 422 等异常路径。
+- 前端
+  - `src/api/industryMarket.ts`（`origin` / `data_date`、`sectionBadge`、快照日期、`fetchBoardTheses`）、`src/api/marketPulse.ts`、`src/api/watchlistInsights.ts`。
+  - `src/views/IndustryView.vue`：历史日期选择（入库快照）、「实时 / 收盘快照 / 缓存」角标、进入「轮动与情绪」。
+  - 新页 `src/views/MarketPulseView.vue`（`/industry/pulse?tab=rotation|limit|survey`，侧栏「产业研究 › 轮动与情绪」）：`parts/pulse/RotationPanel.vue` + `rotationChart.ts`（RRG 四象限、尾巴开关、象限过滤、点选单看轨迹）、`LimitUpPanel.vue`、`SurveyPanel.vue`。
+  - `src/views/IndustryBoardView.vue`：新增「研究假设」页签（`parts/industry/BoardThesesPanel.vue`），入库快照提示。
+  - `src/views/WatchlistView.vue` + `parts/watchlist/WatchlistInsightsPanel.vue`：批量导入、分组看板（KPI、行业暴露 treemap、5 日 × 60 日动量散点、带信号的明细表）。
+  - `src/charts/index.ts` 注册 `MarkAreaComponent`；`tests/unit/marketPulse.test.ts`（7 个用例）。
+
+### 验证
+
+- 后端：`ruff format --check` / `ruff check` 通过；`mypy app` 只剩 `app/trading_agents/upstream.py` 的 4 个既有错误；`pytest tests/unit` 312 passed；`pytest tests/integration`（本机 Docker `pgvector/pgvector:pg16` 测试库，端口 55432）83 passed / 1 skipped；迁移 0023 upgrade / downgrade 均验证。
+- 前端：`vue-tsc --noEmit` 无错误；`vitest run` 31 个文件 / 134 个用例通过（未配置 ESLint）。
+- 页面联调（2026-10-17，周六，测试库 + 本机注册账号）：
+  - 涨停情绪：最近交易日 2026-10-16 涨停 61 / 炸板 49 / 跌停 10，封板率 55.5%，最高 11 连板，梯队与行业分布正常。
+  - 机构调研（近 30 天）：1457 次公告、1091 家公司、13258 家次；行业分布因 push2 频控标「上游请求失败」。
+  - 自选看板：粘贴 `600519 SH601318 000858.SZ 1.600036 688981 abc12` → 加入 4 只、688981 未收录、abc12 无法识别；实时行情不可用且库内无日线时整列为空并说明原因，同花顺热股名次正常显示。
+  - 假设关联：为「公用事业」写一条假设后，`BK0427 公用事业` 的 theses 接口按「同名」返回该假设；未登录 401。
+  - **push2 / push2his 仍对本机 IP 频控**：板块总览、板块详情返回 503，轮动图因尚无入库日线显示「收盘后任务跑过一次后才有」；未做任何绕过，未手动触发入库任务。
+
+### 已知局限
+
+- 轮动图与盘后读库都依赖 `sync_board_market` 至少成功跑过一次；一次全量约 170 个限速请求，worker 租约 300s 无续租，接近上限。
+- 板块与逻辑追踪行业只按名称对应（申万一级 vs 东财行业），同名之外的对应关系（如东财二级「白酒Ⅱ」对申万「食品饮料」）不会自动关联。
+- 板块详情页在实时行情和入库快照都没有时整页 503，「研究假设」「行业研报」页签也随之不可达。
+- 自选看板的实时行情与行业字段依赖 push2；频控期间只能用库内日线，没有行业暴露。
+- 涨停池行业名是东财股池原值，可能被截断（如「汽车零部」）。
+
+### 补充：行情与快照都没有时的降级显示
+
+- 现象：push2 限流且库里没有收盘快照时，`/industry` 整页只剩一个「实时行情暂不可用…库里也还没有收盘快照」错误框。
+- 处理：`IndustryView.vue` 在这种情况下保留页面骨架，行情区块显示「暂无板块行情」，同花顺热榜照常显示，并给出板块目录；`IndustryBoardView.vue` 在行情取不到时只保留「行业研报」「研究假设」页签（新增 `parts/industry/BoardReportsPanel.vue`）。不画任何占位数字。
+- 根本解决仍需 `sync_board_market` 成功跑一次（需 push2 恢复）。
+
+### 下一步
+
+- push2 频控解除后让 `sync_board_market` 跑一次，补 RRG、板块总览 / 详情和自选实时行情的页面截图。
+- 东财行业与申万行业建立显式映射表（带版本与生效日期），替代名称匹配。

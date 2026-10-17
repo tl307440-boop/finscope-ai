@@ -12,6 +12,7 @@ import CompanyFilingsView from "../views/CompanyFilingsView.vue"
 import CompanyView from "../views/CompanyView.vue"
 import DashboardView from "../views/DashboardView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
+import IndustryBoardView from "../views/IndustryBoardView.vue"
 import IndustryDetailView from "../views/IndustryDetailView.vue"
 import IndustryView from "../views/IndustryView.vue"
 import ForbiddenView from "../views/ForbiddenView.vue"
@@ -23,6 +24,7 @@ import MacroLiquidityView from "../views/MacroLiquidityView.vue"
 import MacroScenariosView from "../views/MacroScenariosView.vue"
 import MacroView from "../views/MacroView.vue"
 import MarketIndicesView from "../views/MarketIndicesView.vue"
+import MarketPulseView from "../views/MarketPulseView.vue"
 import MarketSectorsView from "../views/MarketSectorsView.vue"
 import MetricsView from "../views/MetricsView.vue"
 import NotFoundView from "../views/NotFoundView.vue"
@@ -98,6 +100,8 @@ export const routes = [
 
   // 产业研究（P1）
   { path: "/industry", name: "industry", component: IndustryView },
+  { path: "/industry/pulse", name: "industry-pulse", component: MarketPulseView },
+  { path: "/industry/board/:code", name: "industry-board", component: IndustryBoardView, props: true },
   { path: "/industry/:id", name: "industry-detail", component: IndustryDetailView, props: true },
 
   // 热点（P2）

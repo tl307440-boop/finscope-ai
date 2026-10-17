@@ -1,6 +1,7 @@
 from app.db.models.account import RefreshSession, User, UserPreference
 from app.db.models.analysis import AnalysisRun, Report
 from app.db.models.app_setting import AppSetting
+from app.db.models.board_market import BoardDailyBar, BoardDailySnapshot
 from app.db.models.chat import ChatMessage, ChatSession
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
@@ -39,6 +40,8 @@ __all__ = [
     "AgentSimulationRun",
     "AnalysisRun",
     "AppSetting",
+    "BoardDailyBar",
+    "BoardDailySnapshot",
     "ChatMessage",
     "ChatSession",
     "DataProvider",

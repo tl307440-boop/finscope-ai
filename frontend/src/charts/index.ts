@@ -1,12 +1,21 @@
 // 规格书 §技术选型：图表统一使用 Apache ECharts。
 // 这里按需注册用到的图表与组件，避免整包引入拖慢首屏。
-import { BarChart, CandlestickChart, HeatmapChart, LineChart, PieChart, ScatterChart } from "echarts/charts"
+import {
+  BarChart,
+  CandlestickChart,
+  HeatmapChart,
+  LineChart,
+  PieChart,
+  ScatterChart,
+  TreemapChart,
+} from "echarts/charts"
 import {
   DataZoomComponent,
   DatasetComponent,
   GraphicComponent,
   GridComponent,
   LegendComponent,
+  MarkAreaComponent,
   MarkLineComponent,
   MarkPointComponent,
   TitleComponent,
@@ -29,6 +38,7 @@ use([
   HeatmapChart,
   PieChart,
   ScatterChart,
+  TreemapChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
@@ -37,6 +47,7 @@ use([
   DatasetComponent,
   TransformComponent,
   VisualMapComponent,
+  MarkAreaComponent,
   MarkLineComponent,
   MarkPointComponent,
   GraphicComponent,

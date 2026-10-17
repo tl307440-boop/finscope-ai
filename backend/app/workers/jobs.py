@@ -8,9 +8,11 @@ from sqlalchemy import Engine
 from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, AdjustmentCode, target_for
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
+from app.repositories.board_market import BoardMarketRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_bars, fetch_bars
+from app.services.board_market_sync import sync_board_market
 from app.services.data_sync import (
     sync_china_macro,
     sync_cn_statements,
@@ -23,6 +25,7 @@ from app.services.document_index import index_document_by_id
 from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.services.hotspot_sync import sync_hotspot_events
 from app.services.macro_regime import compute_macro_regime
+from app.services.market_cache import PacedGateway
 from app.services.metrics_snapshot import snapshot_company_metrics
 from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
@@ -68,6 +71,10 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return asyncio.run(sync_cn_universe(engine))
     if job.job_type == "china_macro":
         return asyncio.run(sync_china_macro(engine))
+    if job.job_type == "board_market":
+        return asyncio.run(
+            sync_board_market(BoardMarketRepository(engine), PacedGateway(), utc_now())
+        )
     if job.job_type == "financial_metrics":
         return snapshot_company_metrics(
             engine, _text(job.scope, "instrument_id"), _day(job.scope, "as_of")
