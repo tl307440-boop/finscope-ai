@@ -9,8 +9,11 @@ describe("主布局", () => {
     expect(shellLayout(768)).toBe("sidebar")
   })
 
-  it("默认深色，可以切到浅色", () => {
-    expect(readTheme(null)).toBe("dark")
+  it("默认浅色，可以切到深色，无法识别的存储值回到浅色", () => {
+    expect(readTheme(null)).toBe("light")
+    expect(readTheme("dark")).toBe("dark")
+    expect(readTheme("light")).toBe("light")
+    expect(readTheme("unexpected")).toBe("light")
     expect(toggleTheme("dark")).toBe("light")
     expect(toggleTheme("light")).toBe("dark")
     const storage = {

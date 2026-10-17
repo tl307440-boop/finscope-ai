@@ -33,7 +33,7 @@ import {
 } from "@element-plus/icons-vue"
 import GlobalSearch from "./GlobalSearch.vue"
 import { fetchSystemStatus, formatShanghai, reasonText, type SystemSnapshot } from "../../api/health"
-import { applyTheme, readTheme, toggleTheme, type ThemeName } from "../../shell/theme"
+import { applyTheme, readTheme, THEME_STORAGE_KEY, toggleTheme, type ThemeName } from "../../shell/theme"
 import { logout, useSessionStore } from "../../stores/auth"
 
 interface NavChild {
@@ -260,7 +260,7 @@ const clockTime = computed(() =>
 )
 
 onMounted(() => {
-  theme.value = applyTheme(readTheme(window.localStorage.getItem("finscope-theme")))
+  theme.value = applyTheme(readTheme(window.localStorage.getItem(THEME_STORAGE_KEY)))
   void loadStatus()
   clock = window.setInterval(() => {
     now.value = new Date()
