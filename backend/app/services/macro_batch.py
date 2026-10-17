@@ -1,21 +1,33 @@
 """一次取回多条美国宏观序列在某观察日可见的观测。可见性与单序列接口同一套规则。"""
 
-from collections.abc import Sequence
-from datetime import date
+import math
+from collections.abc import Mapping, Sequence
+from datetime import date, timedelta
 from typing import Protocol
 
 from app.catalog.macro_series import catalog_codes, seed_for
+from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.providers.vintage import VintagePoint, select_visible
 from app.schemas.macro import ObservationBatch, build_observations
 
 MAX_BATCH_CODES = 20
-DEFAULT_LIMIT = 120
-_LIMIT_BY_FREQUENCY = {"Daily": 1000, "Weekly": 260}
+
+
+# 每条观测至少占多少个自然日（宁大勿小，保证下界之后一定够 limit 条）。
+# 日度按交易日约 0.69 条/天取 1.6 天，周度 8 天，月度 35 天，季度及未知 100 天。
+_DAYS_PER_OBSERVATION = {"Daily": 1.6, "Weekly": 8.0, "Monthly": 35.0}
+_DEFAULT_DAYS_PER_OBSERVATION = 100.0
+_LOOKBACK_MARGIN_DAYS = 30
 
 
 class VintageSource(Protocol):
-    def list_vintages_many(self, series_codes: Sequence[str]) -> dict[str, list[VintagePoint]]: ...
+    def list_vintages_many(
+        self,
+        series_codes: Sequence[str],
+        *,
+        since: Mapping[str, date] | None = None,
+    ) -> dict[str, list[VintagePoint]]: ...
 
 
 def parse_codes(raw: str) -> list[str]:
@@ -38,19 +50,46 @@ def parse_codes(raw: str) -> list[str]:
     return codes
 
 
-def limit_for(series_code: str) -> int:
-    """日度约四年交易日，周度约五年，月度 / 季度十年：够算同比和画 1–5 年走势。"""
+def limit_for(series_code: str, settings: Settings | None = None) -> int:
+    """按频率取最近 N 条，数值来自 MACRO_BATCH_LIMIT_*，够算同比和画多年走势。"""
 
+    active = settings or get_settings()
     seed = seed_for(series_code)
-    if seed is None:
-        return DEFAULT_LIMIT
-    return _LIMIT_BY_FREQUENCY.get(seed.frequency, DEFAULT_LIMIT)
+    frequency = seed.frequency if seed is not None else ""
+    if frequency == "Daily":
+        return active.macro_batch_limit_daily
+    if frequency == "Weekly":
+        return active.macro_batch_limit_weekly
+    return active.macro_batch_limit_other
+
+
+def read_floor(series_code: str, pit: date, settings: Settings | None = None) -> date:
+    """读库的观察日下界：库里历史存得再长，每次也只读 limit 条所需的那一段。"""
+
+    active = settings or get_settings()
+    seed = seed_for(series_code)
+    per_observation = (
+        _DAYS_PER_OBSERVATION.get(seed.frequency, _DEFAULT_DAYS_PER_OBSERVATION)
+        if seed is not None
+        else _DEFAULT_DAYS_PER_OBSERVATION
+    )
+    days = math.ceil(limit_for(series_code, active) * per_observation) + _LOOKBACK_MARGIN_DAYS
+    try:
+        return pit - timedelta(days=days)
+    except OverflowError:
+        return date.min
 
 
 def build_observation_batch(
-    source: VintageSource, codes: Sequence[str], pit: date
+    source: VintageSource,
+    codes: Sequence[str],
+    pit: date,
+    settings: Settings | None = None,
 ) -> ObservationBatch:
-    rows_by_code = source.list_vintages_many(codes)
+    active = settings or get_settings()
+    rows_by_code = source.list_vintages_many(
+        codes, since={code: read_floor(code, pit, active) for code in codes}
+    )
     return ObservationBatch(
         pit_date=pit,
         items=[
@@ -58,7 +97,7 @@ def build_observation_batch(
                 series_code=code,
                 pit=pit,
                 rows=select_visible(rows_by_code.get(code, []), pit),
-                limit=limit_for(code),
+                limit=limit_for(code, active),
             )
             for code in codes
         ],

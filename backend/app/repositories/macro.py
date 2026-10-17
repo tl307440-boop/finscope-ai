@@ -1,9 +1,9 @@
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Engine, select
+from sqlalchemy import ColumnElement, Engine, and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.catalog.macro_series import MacroProvider, MacroSeriesSeed, fred_series_catalog
@@ -149,18 +149,39 @@ class MacroRepository:
                     points.append(point)
             return points
 
-    def list_vintages_many(self, series_codes: Sequence[str]) -> dict[str, list[VintagePoint]]:
-        """批量读取：只同步一次目录、只查一次库。"""
+    def list_vintages_many(
+        self,
+        series_codes: Sequence[str],
+        *,
+        since: Mapping[str, date] | None = None,
+    ) -> dict[str, list[VintagePoint]]:
+        """批量读取：只同步一次目录、只查一次库。
+
+        since 给出每条序列的观察日下界（含）；不在其中的序列不设下界。
+        """
 
         self.ensure_catalog()
         found: dict[str, list[VintagePoint]] = {code: [] for code in series_codes}
         if not found:
             return found
+        floors = since or {}
+        bounded = [code for code in found if code in floors]
+        unbounded = [code for code in found if code not in floors]
+        scope: list[ColumnElement[bool]] = (
+            [MacroSeries.series_code.in_(unbounded)] if unbounded else []
+        )
+        scope.extend(
+            and_(
+                MacroSeries.series_code == code,
+                MacroObservation.observation_date >= floors[code],
+            )
+            for code in bounded
+        )
         with Session(self.engine) as session:
             rows = session.execute(
                 select(MacroSeries.series_code, MacroObservation)
                 .join(MacroSeries, MacroObservation.series_id == MacroSeries.id)
-                .where(MacroSeries.series_code.in_(list(found)))
+                .where(or_(*scope))
                 .order_by(MacroObservation.observation_date)
             ).all()
             for series_code, row in rows:

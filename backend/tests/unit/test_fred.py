@@ -1,14 +1,21 @@
 import asyncio
 import json
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from app.catalog.macro_series import catalog_codes, fred_codes, fred_series_catalog, seed_for
 from app.providers.eastmoney_us_macro import LatestValue
 from app.providers.errors import ProviderError
-from app.providers.fred import FredAdapter, FredVintage, parse_observations
+from app.providers.fred import (
+    FredAdapter,
+    FredVintage,
+    merge_adjacent_vintages,
+    parse_observations,
+    vintage_windows,
+)
 from app.providers.fred_public import fetch_public_csv, parse_graph_csv, public_realtime_start
 from app.providers.http_client import OutboundRequest, RawResponse, ResilientHttpClient, Transport
 from app.providers.vintage import VintagePoint, pit_date, select_visible, vintage_visible
@@ -328,19 +335,156 @@ async def _sleep(_: float) -> None:
     return None
 
 
-def test_observations_url_keeps_vintage_dates_under_fred_limit() -> None:
-    # FRED 对 JSON 限制区间内最多 2000 个版本日；日频序列从 1776 年起会超限被 400 拒绝。
-    from app.providers.fred import observations_url
+def _page(value: str, observed: str) -> bytes:
+    return json.dumps(
+        {
+            "observations": [
+                {
+                    "realtime_start": observed,
+                    "realtime_end": "9999-12-31",
+                    "date": observed,
+                    "value": value,
+                }
+            ]
+        }
+    ).encode()
 
-    url = observations_url(
-        series_id="DGS10",
-        api_key="k",
-        observation_start=date(2020, 10, 17),
-        observation_end=date(2026, 10, 16),
+
+def test_vintage_windows_stay_within_2000_dates() -> None:
+    start = date(2020, 10, 17)
+    within = start + timedelta(days=1999)
+    assert vintage_windows(start, within) == ((start, date(9999, 12, 31)),)
+
+    over = start + timedelta(days=2000)
+    first, second = vintage_windows(start, over)
+    assert first == (start, start + timedelta(days=1999))
+    assert second == (start + timedelta(days=2000), date(9999, 12, 31))
+
+    # 政策利率从 2020-10-17 覆盖到 2026-10-17 有 2192 个自然日，必须切开。
+    horizon = date(2026, 10, 17)
+    windows = vintage_windows(start, horizon)
+    assert len(windows) == 2
+    cursor = start
+    for realtime_start, realtime_end in windows:
+        assert realtime_start == cursor
+        end = horizon if realtime_end == date(9999, 12, 31) else realtime_end
+        assert (end - realtime_start).days + 1 <= 2000
+        cursor = end + timedelta(days=1)
+    assert cursor == horizon + timedelta(days=1)
+    assert "1776-07-04" not in str(windows)
+
+
+def test_fetch_vintages_splits_the_realtime_window() -> None:
+    class RecordingTransport(Transport):
+        def __init__(self) -> None:
+            self.urls: list[str] = []
+
+        async def send(self, request: OutboundRequest) -> RawResponse:
+            self.urls.append(request.url)
+            observed = "2020-10-17" if len(self.urls) == 1 else "2026-10-17"
+            content = _page(str(len(self.urls)), observed)
+            return RawResponse(status_code=200, headers={}, content=content)
+
+    transport = RecordingTransport()
+    client = ResilientHttpClient(transport, sleeper=_sleep, max_attempts=1)
+
+    async def run() -> tuple[FredVintage, ...]:
+        return await FredAdapter(client, "k").fetch_vintages(
+            "DFEDTARL",
+            date(2020, 10, 17),
+            date(2026, 10, 17),
+            as_of=date(2026, 10, 17),
+        )
+
+    rows = asyncio.run(run())
+    assert [row.value for row in rows] == [Decimal("1"), Decimal("2")]
+    assert len(transport.urls) == 2
+    queries = [parse_qs(urlsplit(url).query) for url in transport.urls]
+    assert queries[0]["realtime_start"] == ["2020-10-17"]
+    assert queries[0]["realtime_end"] == ["2026-04-08"]
+    assert queries[1]["realtime_start"] == ["2026-04-09"]
+    assert queries[1]["realtime_end"] == ["9999-12-31"]
+    for query in queries:
+        assert query["observation_start"] == ["2020-10-17"]
+        assert query["observation_end"] == ["2026-10-17"]
+        assert "1776-07-04" not in query["realtime_start"][0]
+
+
+def _vintage(observed: date, value: str, start: date, end: date) -> FredVintage:
+    return FredVintage(
+        observation_date=observed,
+        value=Decimal(value),
+        realtime_start=start,
+        realtime_end=end,
     )
-    assert "realtime_start=2020-10-17" in url
-    assert "realtime_end=9999-12-31" in url
-    assert "1776-07-04" not in url
+
+
+def test_merge_joins_a_vintage_cut_by_the_window_boundary() -> None:
+    observed = date(2024, 1, 1)
+    cut = [
+        _vintage(observed, "5.33", date(2020, 10, 17), date(2026, 4, 8)),
+        _vintage(observed, "5.33", date(2026, 4, 9), date(9999, 12, 31)),
+    ]
+    assert merge_adjacent_vintages(cut) == (
+        _vintage(observed, "5.33", date(2020, 10, 17), date(9999, 12, 31)),
+    )
+
+
+def test_merge_keeps_real_revisions_and_unrelated_rows() -> None:
+    observed = date(2024, 1, 1)
+    revised = [
+        _vintage(observed, "5.33", date(2020, 10, 17), date(2026, 4, 8)),
+        _vintage(observed, "5.50", date(2026, 4, 9), date(9999, 12, 31)),
+    ]
+    assert merge_adjacent_vintages(revised) == tuple(revised)
+
+    gap = [
+        _vintage(observed, "5.33", date(2020, 10, 17), date(2026, 4, 1)),
+        _vintage(observed, "5.33", date(2026, 4, 9), date(9999, 12, 31)),
+    ]
+    assert merge_adjacent_vintages(gap) == tuple(gap)
+
+    other_days = [
+        _vintage(date(2024, 1, 1), "5.33", date(2020, 10, 17), date(2026, 4, 8)),
+        _vintage(date(2024, 1, 2), "5.33", date(2026, 4, 9), date(9999, 12, 31)),
+    ]
+    assert merge_adjacent_vintages(other_days) == tuple(other_days)
+
+
+def test_fetch_vintages_returns_one_row_for_a_value_spanning_the_split() -> None:
+    class SpanningTransport(Transport):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def send(self, request: OutboundRequest) -> RawResponse:
+            self.calls += 1
+            query = parse_qs(urlsplit(request.url).query)
+            payload = {
+                "observations": [
+                    {
+                        "realtime_start": query["realtime_start"][0],
+                        "realtime_end": query["realtime_end"][0],
+                        "date": "2024-01-01",
+                        "value": "5.33",
+                    }
+                ]
+            }
+            return RawResponse(status_code=200, headers={}, content=json.dumps(payload).encode())
+
+    transport = SpanningTransport()
+    client = ResilientHttpClient(transport, sleeper=_sleep, max_attempts=1)
+    rows = asyncio.run(
+        FredAdapter(client, "k").fetch_vintages(
+            "DFEDTARL",
+            date(2020, 10, 17),
+            date(2026, 10, 17),
+            as_of=date(2026, 10, 17),
+        )
+    )
+    assert transport.calls == 2
+    assert len(rows) == 1
+    assert rows[0].realtime_start == date(2020, 10, 17)
+    assert rows[0].realtime_end == date(9999, 12, 31)
 
 
 class LatestRepository(MacroRepository):
