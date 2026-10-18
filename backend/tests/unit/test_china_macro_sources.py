@@ -11,6 +11,7 @@ from app.providers.china_macro_sources import (
     published_upper_bound,
 )
 from app.providers.errors import ProviderError
+from app.providers.nbs_macro import request_codes
 from app.services.china_macro import china_series_catalog
 
 CPI = next(spec for spec in EASTMONEY_SPECS if spec.series_code == "CPI_CN")
@@ -20,11 +21,29 @@ def _eastmoney(rows: list[dict[str, object]]) -> bytes:
     return json.dumps({"success": True, "code": 0, "result": {"data": rows}}).encode()
 
 
-def test_every_catalog_series_has_a_publish_rule_and_a_source() -> None:
+def test_every_auto_series_has_a_publish_rule_and_a_source() -> None:
+    auto = {spec.series_code for spec in china_series_catalog() if not spec.manual_only}
+    manual = {spec.series_code for spec in china_series_catalog() if spec.manual_only}
+    assert auto == set(PUBLISH_RULES)
+    covered = (
+        {spec.series_code for spec in EASTMONEY_SPECS} | {"SOCIAL_FINANCING"} | request_codes()
+    )
+    assert covered == auto
+    # 手工序列不能挂自动来源，否则目录与同步各说各话。
+    assert not manual & covered
+
+
+def test_manual_only_series_are_the_three_pboc_tables_and_dropped_ones_are_gone() -> None:
+    manual = {spec.series_code for spec in china_series_catalog() if spec.manual_only}
+    assert manual == {
+        "SOCIAL_FINANCING_STOCK_CN",
+        "ENT_MLT_LOAN_CN",
+        "GOV_BOND_NET_CN",
+    }
+    # 没有可取得数据的两个指标已丢弃，目录里不再登记空序列。
     codes = {spec.series_code for spec in china_series_catalog()}
-    assert codes == set(PUBLISH_RULES)
-    covered = {spec.series_code for spec in EASTMONEY_SPECS} | {"SOCIAL_FINANCING"}
-    assert covered == codes
+    assert "OMO_7D_CN" not in codes
+    assert "DR007_CN" not in codes
 
 
 def test_published_upper_bound_is_after_observation_month() -> None:
@@ -32,6 +51,15 @@ def test_published_upper_bound_is_after_observation_month() -> None:
     assert published_upper_bound("PMI_CN", date(2026, 9, 1)) == date(2026, 10, 1)
     assert published_upper_bound("M2_CN", date(2026, 12, 1)) == date(2027, 1, 20)
     assert published_upper_bound("SOCIAL_FINANCING", date(2026, 4, 1)) == date(2026, 5, 20)
+    assert published_upper_bound("INDUS_PROFIT_CN", date(2026, 8, 1)) == date(2026, 9, 28)
+
+
+def test_quarterly_upper_bound_uses_the_month_after_quarter_end() -> None:
+    # 观测日是季首日：Q2（4 月 1 日）→ 7 月 20 日；Q4（10 月 1 日）→ 次年 1 月 20 日。
+    assert published_upper_bound("GDP_CN", date(2026, 4, 1)) == date(2026, 7, 20)
+    assert published_upper_bound("GDP_CN", date(2026, 7, 1)) == date(2026, 10, 20)
+    assert published_upper_bound("GDP_CN", date(2026, 10, 1)) == date(2027, 1, 20)
+    assert published_upper_bound("GDP_CN", date(2026, 1, 1)) == date(2026, 4, 20)
 
 
 def test_parse_eastmoney_reads_value_field_and_skips_bad_rows() -> None:

@@ -13,7 +13,13 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from app.db.models.market import Instrument
-from app.providers import china_macro_sources, eastmoney_statements, tiingo_bars, universe
+from app.providers import (
+    china_macro_sources,
+    eastmoney_statements,
+    nbs_macro,
+    tiingo_bars,
+    universe,
+)
 from app.providers.errors import ProviderError
 from app.providers.http_client import ResilientHttpClient
 from app.providers.httpx_transport import HttpxTransport
@@ -120,16 +126,19 @@ async def sync_cn_statements(engine: Engine, *, display_symbol: str) -> int:
     return CnFinancialRepository(engine).upsert_facts(instrument_id, facts)
 
 
-async def sync_china_macro(engine: Engine) -> int:
-    """抓取中国宏观六序列（东方财富 + 商务部），按「序列 + 观察月 + 公布日上界」幂等写入。
+async def sync_china_macro(engine: Engine, *, today: date | None = None) -> int:
+    """抓取中国宏观序列（东方财富、商务部、国家统计局），按「序列 + 观察期 + 公布日上界」幂等写入。
 
     先把抓到的写进去，再对失败的序列统一报错：一个源挂了不影响其它序列入库，任务会按重试策略重来。
+    国家统计局站点有访问频率保护，请求间隔放宽到 1.5 秒，且每个目录只请求一次。
     """
 
+    day = today or date.today()
     raw, client = _client(trust_env=False, timeout=20.0, min_interval=0.5, attempts=3)
+    nbs_raw, nbs_client = _client(trust_env=False, timeout=30.0, min_interval=1.5, attempts=3)
     collected: list[CsvObservation] = []
     failures: list[str] = []
-    async with raw:
+    async with raw, nbs_raw:
         for spec in china_macro_sources.EASTMONEY_SPECS:
             try:
                 collected.extend(await china_macro_sources.fetch_eastmoney(client, spec))
@@ -139,6 +148,12 @@ async def sync_china_macro(engine: Engine) -> int:
             collected.extend(await china_macro_sources.fetch_social_financing(client))
         except ProviderError as exc:
             failures.append(f"SOCIAL_FINANCING: {exc.message}")
+        for request in nbs_macro.NBS_REQUESTS:
+            try:
+                collected.extend(await nbs_macro.fetch_nbs(nbs_client, request, day))
+            except ProviderError as exc:
+                names = "/".join(item.series_code for item in request.indicators)
+                failures.append(f"{names}: {exc.message}")
     written = 0
     if collected:
         written, _duplicates = MacroChinaRepository(engine).import_observations(collected)

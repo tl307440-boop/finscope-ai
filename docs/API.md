@@ -80,6 +80,8 @@
 
 美国宏观目录共 19 条：FRED 17 条 + 东方财富数据中心 `RPT_ECONOMICVALUE_USA` 转载的 ISM 制造业（`ISM_MFG` / `EMG00002790`）与服务业（`ISM_SVC` / `EMG00002791`）PMI。目录项带 `provider`（`fred` / `eastmoney`）与 `source_key`（东方财富指标 ID）。ISM 以发布日为 `realtime_start`，与 FRED 同样次日可见；来源只给最新值，首次同步前的历史为最新修订值，之后每次同步发现变化即新增修订版本：旧值截止到抓取日（纽约日历日）当天，新值从抓取日次日起可见。东方财富返回空列表或没有一行可解析时同步报 `UPSTREAM_PAYLOAD`，已入库数据不变；同一月份多行只留发布日最晚的一行。同步仍用 `fred_series` 任务，按序列的数据源分派。
 
+`POST /api/v1/macro/interpretation`（需登录）请求体 `{ "region": "us" | "cn", "as_of": "YYYY-MM-DD" }`，按观察日读白名单序列（美国：GDP 折年率、CPI / 核心 PCE 同比、失业率、政策利率上限、10Y、10Y−2Y；中国：GDP、工业增加值、社零、CPI、核心 CPI、PPI、PMI、M1、M2、出口），交给已配置的模型转述，回答里的每个数字都要出现在资料里（1–9 的个位数除外），否则丢弃。`data = { region, pit_date, status, message, text, model, facts[], notice }`，`status` 为 `ok` / `model_unavailable`（没配模型）/ `rejected`（数字核对未通过，`text` 为空）/ `error` / `no_data`；同一资料 1 小时内复用缓存；每个用户同时最多 2 个模型任务，超过返回 429。
+
 `GET /api/v1/macro/assessments?as_of=1776-07-04` 用截至该日已公布的 GDP、CPI 和联邦基金利率做规则分。数据不足时 `regime_code` 为 `insufficient_data`，不编造分数。增长分只看 GDP，不把就业人数水平加进去。说明里写明这不是经济定论。
 
 管理员 `POST /api/v1/admin/fred-syncs`，正文包含 `series_code`、`observation_start`、`observation_end`。没密钥时 HTTP 503，`error.code` 为 `DATA_UNAVAILABLE`，`rows_written` 为 0。密钥不会出现在响应里。

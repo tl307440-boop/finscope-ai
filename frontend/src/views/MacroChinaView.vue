@@ -5,7 +5,10 @@
  * 真实接口（与 backend/app/api/v1/research_board.py 的 read_china_macro 一致）：
  *  - GET /api/v1/macro/china
  *      data = { series: [{ code, name, unit, status, observation_count, latest_value,
- *                          latest_observation_date, source, published_at }], notice }
+ *                          latest_observation_date, source, published_at,
+ *                          frequency, source_agency, manual_only }], notice }
+ *  - GET /api/v1/macro/observations?codes=&as_of=（指标带 20 格一次取回，与美国页同一接口）
+ *      data = { pit_date, items: [{ series_code, observations[], empty_message, truncated }] }
  *      · status：stored（已入库）/ stale（数据陈旧）/ unavailable（库里没有观测值）
  *      · 没有任何观测值时仍然返回 200，只是每条 status=unavailable
  *  - GET /api/v1/macro/series/{series_code}/observations?limit=&as_of=
@@ -21,13 +24,35 @@ import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { asNumber, asRecord, asString, formatAmount, listOf } from "../api/json"
 import { cssColor, unitLabel } from "../api/macro"
+import { buildChinaTiles } from "../api/chinaTiles"
+import {
+  CHINA_COMPARE_SPECS,
+  CHINA_PLOT_SPECS,
+  COMPARE_DEFAULT,
+  GROWTH_DEFAULT,
+  INFLATION_DEFAULT,
+  QUADRANT_TEXT,
+  buildQuadrant,
+  buildReadout,
+  chinaObservationCodes,
+  chunkCodes,
+  latestSummary,
+  trendLines,
+  type PlotTone,
+  type QuadrantCode,
+} from "../api/chinaPanels"
+import type { TileView } from "../api/macroTiles"
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
-import MetricTile from "../components/ui/MetricTile.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
+import SeriesPicker from "../components/ui/SeriesPicker.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
+import MacroTicker from "./parts/macro/MacroTicker.vue"
+import MacroAiPanel from "./parts/macro/MacroAiPanel.vue"
+import MacroComparePanel from "./parts/macro/MacroComparePanel.vue"
+import MacroScenarioPanel from "./parts/macro/MacroScenarioPanel.vue"
 
 type Phase = "loading" | "ready" | "error"
 
@@ -39,6 +64,12 @@ interface ChinaSeries {
   count: number
   latestValue: string
   latestDate: string
+  frequency: string
+  /** 最近一条观测写入时记录的来源名 */
+  source: string
+  sourceAgency: string
+  /** 没有已核实的公开自动来源，只能管理员导入 CSV */
+  manualOnly: boolean
 }
 
 interface Observation {
@@ -54,6 +85,7 @@ const TABS = [
 ]
 
 const IMPORT_HINT = "后台每天从公开接口自动同步，首次同步完成前显示为暂无数据"
+const MANUAL_HINT = "来自中国人民银行调查统计司统计表，不做自动抓取，由管理员按月导入 CSV"
 
 const phase = ref<Phase>("loading")
 const failure = ref("")
@@ -95,14 +127,17 @@ function statusPill(row: ChinaSeries): { text: string; tone: "ok" | "warn" | "mu
   return { text: "暂无数据", tone: "muted" }
 }
 
+/** 与后端 STALE_DAYS_BY_FREQUENCY 一致：日度 14 天、周度 21 天、月度 90 天、季度 215 天。 */
+const STALE_DAYS: Record<string, number> = { Daily: 14, Weekly: 21, Monthly: 90, Quarterly: 215 }
+
 function statusNote(row: ChinaSeries): string {
   if (row.status === "stored") {
     return `已同步 ${row.count} 期，最新 ${row.latestDate || "—"}`
   }
   if (row.status === "stale") {
-    return `已同步 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 60 天（上游更新滞后或同步失败）`
+    return `已同步 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 ${STALE_DAYS[row.frequency] ?? 90} 天（上游更新滞后或同步失败）`
   }
-  return `暂无数据，${IMPORT_HINT}`
+  return row.manualOnly ? `暂无数据，${MANUAL_HINT}` : `暂无数据，${IMPORT_HINT}`
 }
 
 function formatValue(value: string | number, unit: string): string {
@@ -117,16 +152,6 @@ function formatValue(value: string | number, unit: string): string {
     return formatAmount(parsed, "元")
   }
   return parsed.toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 2 })
-}
-
-function tileUnit(row: ChinaSeries): string {
-  if (row.unit === "亿元") {
-    return row.latestValue ? "亿元" : ""
-  }
-  if (!row.latestValue || row.unit === "CNY") {
-    return ""
-  }
-  return unitLabel(row.unit) === "%" ? "%" : ""
 }
 
 const chartOption = computed<EChartsCoreOption | null>(() => {
@@ -190,9 +215,267 @@ function parseSeries(value: unknown): ChinaSeries[] {
         count: asNumber(item.observation_count) ?? 0,
         latestValue: asString(item.latest_value) ?? "",
         latestDate: asString(item.latest_observation_date) ?? "",
+        frequency: asString(item.frequency) ?? "",
+        source: asString(item.source) ?? "",
+        sourceAgency: asString(item.source_agency) ?? "",
+        manualOnly: item.manual_only === true,
       },
     ]
   })
+}
+
+const tileRows = ref<Record<string, Observation[]>>({})
+const tilesBusy = ref(false)
+const tileError = ref("")
+
+const tileViews = computed<TileView[]>(() =>
+  buildChinaTiles(
+    tileRows.value,
+    rows.value.map((row) => ({
+      code: row.code,
+      name: row.name,
+      unit: row.unit,
+      frequency: row.frequency,
+      source: row.source,
+      sourceAgency: row.sourceAgency,
+      manualOnly: row.manualOnly,
+    })),
+  ),
+)
+
+const hasTileData = computed<boolean>(() => Object.values(tileRows.value).some((list) => list.length > 0))
+
+/** 设计变量 → 实际颜色（ECharts 画在 canvas 上，不认 CSS 变量）。 */
+function palette() {
+  return {
+    accent: cssColor("--accent", "#3b82f6"),
+    cyan: cssColor("--cyan", "#22d3ee"),
+    violet: cssColor("--violet", "#a78bfa"),
+    orange: cssColor("--orange", "#fb923c"),
+    warn: cssColor("--warn", "#fbbf24"),
+    ok: cssColor("--ok", "#34d399"),
+    pink: "#f472b6",
+    teal: "#2dd4bf",
+    sky: "#38bdf8",
+    text: cssColor("--text", "#e6edf8"),
+    muted: cssColor("--muted", "#94a4be"),
+    line: cssColor("--line", "rgba(96,140,220,0.16)"),
+    panel: cssColor("--panel", "#0d1729"),
+  }
+}
+
+function toneColor(tone: PlotTone, colors: ReturnType<typeof palette>): string {
+  return colors[tone]
+}
+
+const YEAR_OPTIONS = [1, 2, 3, 5] as const
+
+interface TrendState {
+  codes: string[]
+  years: number
+}
+
+const inflationTrend = ref<TrendState>({ codes: [...INFLATION_DEFAULT], years: 5 })
+const growthTrend = ref<TrendState>({ codes: [...GROWTH_DEFAULT], years: 5 })
+
+const pickerOptions = computed(() => {
+  const colors = palette()
+  return CHINA_PLOT_SPECS.map((spec) => ({
+    code: spec.code,
+    label: spec.label,
+    color: toneColor(spec.tone, colors),
+    disabled: (tileRows.value[spec.code]?.length ?? 0) < 2,
+    hint: `${spec.label} · ${spec.frequency === "Quarterly" ? "季度" : "月度"}`,
+  }))
+})
+
+function percentTip(value: unknown): string {
+  return typeof value === "number" ? `${value.toFixed(2)}%` : "—"
+}
+
+interface TrendPlot {
+  option: EChartsCoreOption | null
+  latest: string[]
+}
+
+function buildTrend(state: TrendState): TrendPlot {
+  const lines = trendLines(tileRows.value, state.codes, state.years)
+  if (!lines.length) {
+    return { option: null, latest: [] }
+  }
+  const colors = palette()
+  const option: EChartsCoreOption = {
+    grid: { left: 8, right: 12, top: 12, bottom: 4, containLabel: true },
+    tooltip: { trigger: "axis" },
+    xAxis: { type: "time", axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", scale: true, axisLabel: { formatter: "{value}%" } },
+    series: lines.map(({ spec, rows: points }) => {
+      const color = toneColor(spec.tone, colors)
+      return {
+        name: spec.label,
+        type: "line",
+        // 季度指标观测点稀疏，保留圆点，避免被误读成连续数据
+        showSymbol: spec.frequency === "Quarterly",
+        connectNulls: true,
+        data: points.map((row) => [row.date, row.value]),
+        tooltip: { valueFormatter: percentTip },
+        lineStyle: { color, width: 1.7 },
+        itemStyle: { color },
+      }
+    }),
+  }
+  return { option, latest: latestSummary(lines) }
+}
+
+const inflationPlot = computed<TrendPlot>(() => buildTrend(inflationTrend.value))
+const growthPlot = computed<TrendPlot>(() => buildTrend(growthTrend.value))
+
+const quadrantModel = computed(() => buildQuadrant(tileRows.value, 3))
+/** 情景推演用全部可得历史（核心 CPI 自 2021 年起）；分界与象限图的 3 年窗口不同，页面上会写明样本区间。 */
+const scenarioModel = computed(() => buildQuadrant(tileRows.value, 30))
+
+const quadrantOption = computed<EChartsCoreOption>(() => {
+  const model = quadrantModel.value
+  const colors = palette()
+  const corner = (code: QuadrantCode, color: string, pos: Record<string, number | string>, align: string) => ({
+    type: "text",
+    ...pos,
+    style: {
+      text: `{t|${QUADRANT_TEXT[code].label}}\n{s|${QUADRANT_TEXT[code].sub}}`,
+      align,
+      rich: {
+        t: { fill: color, fontSize: 13, fontWeight: 600, lineHeight: 20, align },
+        s: { fill: colors.muted, fontSize: 11, lineHeight: 16, align },
+      },
+    },
+  })
+  const axisBase = {
+    type: "value",
+    scale: true,
+    axisLine: { show: false },
+    axisLabel: { color: colors.muted, formatter: "{value}%" },
+    splitLine: { show: false },
+  }
+  const trail = model?.points.map((point) => [point.growth, point.inflation, point.period]) ?? []
+  return {
+    grid: { left: 48, right: 24, top: 36, bottom: 36 },
+    graphic: [
+      corner("stagflation", colors.violet, { left: 56, top: 44 }, "left"),
+      corner("overheat", colors.warn, { right: 32, top: 44 }, "right"),
+      corner("weak", colors.accent, { left: 56, bottom: 44 }, "left"),
+      corner("goldilocks", colors.cyan, { right: 32, bottom: 44 }, "right"),
+    ],
+    tooltip: {
+      trigger: "item",
+      formatter: (params: unknown): string => {
+        const value = asRecord(params)?.value
+        if (!Array.isArray(value) || value.length < 3) {
+          return ""
+        }
+        return `${String(value[2])}<br/>GDP 当季同比 ${Number(value[0]).toFixed(1)}% · 核心 CPI ${Number(value[1]).toFixed(1)}%`
+      },
+    },
+    xAxis: { ...axisBase, name: "实际 GDP 当季同比", nameLocation: "middle", nameGap: 22, nameTextStyle: { color: colors.muted } },
+    yAxis: { ...axisBase, name: "核心 CPI 同比", nameTextStyle: { color: colors.muted } },
+    series: model
+      ? [
+          {
+            type: "line",
+            data: trail,
+            symbolSize: 6,
+            lineStyle: { color: colors.muted, width: 1, type: "dashed" },
+            itemStyle: { color: colors.muted },
+            markLine: {
+              silent: true,
+              symbol: "none",
+              lineStyle: { color: colors.line, type: "dashed" },
+              label: { show: false },
+              data: [{ xAxis: model.growthMid }, { yAxis: model.inflationMid }],
+            },
+          },
+          {
+            type: "scatter",
+            symbolSize: 16,
+            data: [
+              {
+                name: "最新",
+                value: [model.latest.growth, model.latest.inflation, model.latest.period],
+                label: {
+                  show: true,
+                  position: "right",
+                  distance: 10,
+                  backgroundColor: colors.panel,
+                  borderColor: colors.accent,
+                  borderWidth: 1,
+                  borderRadius: 6,
+                  padding: [4, 8],
+                  color: colors.text,
+                  fontSize: 12,
+                  formatter: `最新 ${model.latest.period}`,
+                },
+              },
+            ],
+            itemStyle: { color: colors.accent, borderColor: colors.text, borderWidth: 2, shadowBlur: 16, shadowColor: colors.accent },
+          },
+        ]
+      : [],
+  }
+})
+
+const readout = computed(() => buildReadout(tileRows.value))
+const readoutEmpty = computed<boolean>(() => readout.value.every((item) => item.verdict === "数据不足"))
+
+/** 指标带里没有数据的指标：解读里明确列出，说明它们没有参与判断。 */
+const unavailableTiles = computed<string[]>(() =>
+  tileViews.value.filter((tile) => tile.value === "—").map((tile) => tile.label),
+)
+
+async function fetchBatch(codes: readonly string[]): Promise<Record<string, Observation[]>> {
+  const params = new URLSearchParams({ codes: codes.join(",") })
+  if (appliedAsOf.value) {
+    params.set("as_of", appliedAsOf.value)
+  }
+  const response = await fetch(apiUrl(`/api/v1/macro/observations?${params.toString()}`))
+  const body = await readJson(response)
+  if (!response.ok) {
+    throw errorFrom(body, response.headers.get("X-Request-ID"))
+  }
+  const data = asRecord(asRecord(body)?.data)
+  const next: Record<string, Observation[]> = {}
+  for (const item of listOf(data?.items)) {
+    const code = asString(item.series_code)
+    if (!code) {
+      continue
+    }
+    const list = Array.isArray(item.observations) ? item.observations.flatMap(parseObservation) : []
+    list.sort((left, right) => (left.date < right.date ? -1 : left.date > right.date ? 1 : 0))
+    next[code] = list
+  }
+  return next
+}
+
+/**
+ * 指标带 20 格 ∪ 走势图序列，按批量接口上限 20 分块取回（只请求目录里有的序列）；
+ * 失败只影响这些面板，不拖垮整页。
+ */
+async function loadTiles(): Promise<void> {
+  const known = new Set(rows.value.map((row) => row.code))
+  const codes = chinaObservationCodes().filter((code) => known.has(code))
+  tilesBusy.value = true
+  tileError.value = ""
+  try {
+    if (!codes.length) {
+      tileRows.value = {}
+      return
+    }
+    const parts = await Promise.all(chunkCodes(codes).map((chunk) => fetchBatch(chunk)))
+    tileRows.value = Object.assign({}, ...parts) as Record<string, Observation[]>
+  } catch (caught) {
+    tileRows.value = {}
+    tileError.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
+  } finally {
+    tilesBusy.value = false
+  }
 }
 
 function parseObservation(value: unknown): Observation[] {
@@ -256,7 +539,7 @@ async function load(): Promise<void> {
     rows.value = parseSeries(data?.series)
     selectedCode.value = (availableRows.value[0] ?? rows.value[0])?.code ?? ""
     phase.value = "ready"
-    await loadObservations()
+    await Promise.all([loadObservations(), loadTiles()])
   } catch (caught) {
     failure.value = caught instanceof ApiError ? caught.message : "无法连接服务，请稍后重试"
     phase.value = "error"
@@ -265,7 +548,7 @@ async function load(): Promise<void> {
 
 async function applyAsOf(): Promise<void> {
   appliedAsOf.value = queryAsOf.value || browserToday
-  await loadObservations()
+  await Promise.all([loadObservations(), loadTiles()])
 }
 
 onMounted(() => {
@@ -293,7 +576,7 @@ onMounted(() => {
       </template>
       <template #filters>
         <span class="source-hint" :class="{ off: !anyAvailable }">
-          <i aria-hidden="true" />数据来源：东方财富 / 商务部公开接口（{{ anyAvailable ? `已同步，最新 ${latestDate}` : "尚未同步" }}）
+          <i aria-hidden="true" />数据来源：国家统计局 / 东方财富 / 商务部公开接口（{{ anyAvailable ? `已同步，最新 ${latestDate}` : "尚未同步" }}）
         </span>
       </template>
     </PageHeader>
@@ -311,24 +594,122 @@ onMounted(() => {
             v-if="!anyAvailable"
             state="empty"
             title="中国宏观数据尚未同步"
-            :message="`CPI、PPI、PMI、M2、工业增加值、社融暂无数据：${IMPORT_HINT}。`"
+            :message="`中国宏观指标暂无数据：${IMPORT_HINT}。`"
           />
 
-          <div class="grid-6">
-            <MetricTile
-              v-for="row in rows"
-              :key="row.code"
-              :label="row.name"
-              :value="row.latestValue ? formatValue(row.latestValue, row.unit) : '—'"
-              :unit="tileUnit(row)"
-              :period="row.latestDate ? row.latestDate.slice(0, 7) : '暂无数据'"
-              :info="statusNote(row)"
-              delta-label="状态"
+          <StateBlock v-if="tileError" state="error" :message="tileError" @retry="loadTiles" />
+          <MacroTicker
+            v-else
+            :tiles="tileViews"
+            :loading="tilesBusy && !hasTileData"
+            label="中国宏观指标"
+          />
+
+          <div v-if="!tileError" class="macro-main">
+            <PanelCard
+              title="宏观象限：增长 × 通胀"
+              info="横轴实际 GDP 当季同比，纵轴核心 CPI 同比（取该季最后一个月）；分界线是最近 3 年内两条轴各自的中位数，不是官方目标值"
             >
-              <template #delta>
-                <StatusPill :text="statusPill(row).text" :tone="statusPill(row).tone" />
+              <template #icon><span class="panel-icon">◎</span></template>
+              <template v-if="quadrantModel" #actions>
+                <span class="muted small">数据截至 {{ quadrantModel.latest.period }}</span>
               </template>
-            </MetricTile>
+              <VChart class="chart chart-quadrant" :option="quadrantOption" autoresize />
+              <p v-if="!quadrantModel" class="chart-note">
+                实际 GDP 与核心 CPI 配对的季度不足 4 个，象限暂不定位。
+              </p>
+              <div v-else class="judgement">
+                <h3 class="judgement-title">当前位置</h3>
+                <p class="doc-text">
+                  {{ quadrantModel.latest.period }}：实际 GDP 当季同比 {{ quadrantModel.latest.growth.toFixed(1) }}%，核心 CPI
+                  同比 {{ quadrantModel.latest.inflation.toFixed(1) }}%，落在「<strong>{{
+                    QUADRANT_TEXT[quadrantModel.code].label
+                  }}</strong>」（{{ QUADRANT_TEXT[quadrantModel.code].sub }}）。
+                </p>
+                <p class="muted small">
+                  分界：GDP {{ quadrantModel.growthMid.toFixed(1) }}% · 核心 CPI {{ quadrantModel.inflationMid.toFixed(1) }}%（窗口内中位数，共
+                  {{ quadrantModel.points.length }} 个季度）。虚线为季度轨迹；规则描述，不做预测，不构成投资建议。
+                </p>
+              </div>
+            </PanelCard>
+
+            <div class="stack">
+              <PanelCard
+                title="通胀走势"
+                info="默认 CPI、核心 CPI、PPI 同比（%）；点上方色块可加入或移除任意同比口径指标。数据均为国家统计局公布的同比值，不再二次换算"
+              >
+                <template #icon><span class="panel-icon">▲</span></template>
+                <SeriesPicker
+                  v-model="inflationTrend.codes"
+                  v-model:years="inflationTrend.years"
+                  :options="pickerOptions"
+                  :year-options="YEAR_OPTIONS"
+                />
+                <VChart v-if="inflationPlot.option" class="chart chart-half" :option="inflationPlot.option" autoresize />
+                <StateBlock
+                  v-else
+                  state="empty"
+                  :message="inflationTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
+                />
+                <p v-if="inflationPlot.latest.length" class="chart-note">{{ inflationPlot.latest.join(" · ") }}</p>
+              </PanelCard>
+
+              <PanelCard
+                title="增长与货币走势"
+                info="默认实际 GDP 当季同比、工业增加值、社零同比（%）；季度与月度指标按时间轴对齐，不插值、不补点"
+              >
+                <template #icon><span class="panel-icon">▤</span></template>
+                <SeriesPicker
+                  v-model="growthTrend.codes"
+                  v-model:years="growthTrend.years"
+                  :options="pickerOptions"
+                  :year-options="YEAR_OPTIONS"
+                />
+                <VChart v-if="growthPlot.option" class="chart chart-half" :option="growthPlot.option" autoresize />
+                <StateBlock
+                  v-else
+                  state="empty"
+                  :message="growthTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
+                />
+                <p v-if="growthPlot.latest.length" class="chart-note">{{ growthPlot.latest.join(" · ") }}</p>
+              </PanelCard>
+            </div>
+
+            <PanelCard title="规则解读" info="按最近两期已公布数据的方向自动生成，非模型生成内容" tone="violet">
+              <template #icon><span class="panel-icon">✦</span></template>
+              <p v-if="readoutEmpty" class="doc-text muted">已公布数据不足，暂不解读。</p>
+              <ul v-else class="dimension-list">
+                <li v-for="item in readout" :key="item.key">
+                  <div class="dimension-head">
+                    <span class="dimension-name">{{ item.label }}</span>
+                    <StatusPill :text="item.verdict" :tone="item.tone" />
+                  </div>
+                  <p v-for="entry in item.indicators" :key="entry.code" class="evidence">
+                    {{ entry.label }}：{{ entry.text }}
+                  </p>
+                  <p v-if="item.missing.length" class="evidence">
+                    暂无可比数据，未参与判断：{{ item.missing.join("、") }}
+                  </p>
+                </li>
+              </ul>
+              <p v-if="unavailableTiles.length" class="muted small footnote">
+                指标带中暂无数据：{{ unavailableTiles.join("、") }}。这些指标没有参与上述判断，也不会被估算。
+              </p>
+              <p class="muted small footnote">
+                这是规则计算，不是经济定论：只比较方向，不给概率，不构成投资建议。PMI 以 50 为荣枯线。
+              </p>
+            </PanelCard>
+          </div>
+
+          <div v-if="!tileError" class="macro-extra">
+            <MacroComparePanel
+              :specs="CHINA_COMPARE_SPECS"
+              :rows-by-code="tileRows"
+              :default-codes="COMPARE_DEFAULT"
+              filename="china-macro-compare"
+            />
+            <MacroScenarioPanel :model="scenarioModel" growth-label="实际 GDP 当季同比" inflation-label="核心 CPI 同比" />
+            <MacroAiPanel region="cn" :as-of="appliedAsOf" />
           </div>
 
           <div class="grid-2-1">
@@ -362,7 +743,10 @@ onMounted(() => {
               </template>
             </PanelCard>
 
-            <PanelCard title="指标清单" info="已同步 / 数据陈旧（最新一期距今超过 60 天）/ 暂无数据">
+            <PanelCard
+              title="指标清单"
+              info="已同步 / 数据陈旧（日度 14 天、周度 21 天、月度 90 天、季度 215 天未更新）/ 暂无数据"
+            >
               <template #icon><span class="panel-icon">▤</span></template>
               <el-table :data="rows" @row-click="(row: ChinaSeries) => anyAvailable && selectSeries(row.code)">
                 <el-table-column prop="name" label="指标" min-width="170" />
@@ -371,7 +755,9 @@ onMounted(() => {
                 </el-table-column>
                 <el-table-column label="状态" width="96">
                   <template #default="scope">
-                    <StatusPill :text="statusPill(scope.row).text" :tone="statusPill(scope.row).tone" />
+                    <span :title="statusNote(scope.row)">
+                      <StatusPill :text="statusPill(scope.row).text" :tone="statusPill(scope.row).tone" />
+                    </span>
                   </template>
                 </el-table-column>
                 <el-table-column v-if="anyAvailable" label="最新" width="100">
@@ -387,9 +773,13 @@ onMounted(() => {
 
         <SourceFooter
           :as-of="latestDate || appliedAsOf"
-          :sources="['东方财富数据中心（国家统计局、中国人民银行）', '商务部数据中心（社会融资规模）']"
+          :sources="[
+            '国家统计局数据发布库',
+            '东方财富数据中心（国家统计局、海关总署、中国人民银行）',
+            '商务部数据中心（社会融资规模）',
+          ]"
           :stale="!anyAvailable"
-          :note="anyAvailable ? '公布日按保守上界计算（如 CPI 取次月 15 日），回看只会晚看到、不会提前看到。' : IMPORT_HINT"
+          :note="anyAvailable ? '公布日按保守上界计算（如 CPI 取次月 15 日），回看只会晚看到、不会提前看到。社融存量、企业中长期贷款、政府债券净融资、逆回购利率、DR007 暂无已核实的公开自动来源，显示为暂无数据。' : IMPORT_HINT"
         />
       </template>
     </div>
@@ -435,6 +825,106 @@ onMounted(() => {
 
 .chart-trend {
   height: 300px;
+}
+
+.chart-quadrant {
+  height: 360px;
+}
+
+.chart-half {
+  height: 210px;
+}
+
+.small {
+  font-size: 12px;
+}
+
+p.small {
+  font-size: 13px;
+}
+
+.macro-main,
+.macro-extra {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.macro-extra {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+}
+
+@media (max-width: 1440px) {
+  .macro-main,
+  .macro-extra {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .macro-main > :last-child,
+  .macro-extra > :first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .macro-main,
+  .macro-extra {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.judgement {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.judgement-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.judgement .doc-text {
+  margin-bottom: 4px;
+}
+
+.dimension-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dimension-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.dimension-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dimension-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.evidence {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.footnote {
+  margin: 12px 0 0;
+  line-height: 1.7;
 }
 
 .empty-note {

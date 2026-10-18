@@ -1,4 +1,4 @@
-"""一次取回多条美国宏观序列在某观察日可见的观测。可见性与单序列接口同一套规则。"""
+"""一次取回多条宏观序列（美国 + 中国）在某观察日可见的观测。可见性与单序列接口同一套规则。"""
 
 import math
 from collections.abc import Mapping, Sequence
@@ -10,6 +10,7 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.providers.vintage import VintagePoint, select_visible
 from app.schemas.macro import ObservationBatch, build_observations
+from app.services.china_macro import CHINA_SERIES, series_spec
 
 MAX_BATCH_CODES = 20
 
@@ -38,7 +39,7 @@ def parse_codes(raw: str) -> list[str]:
             message=f"codes 需要 1–{MAX_BATCH_CODES} 个序列代码",
             status_code=422,
         )
-    known = catalog_codes()
+    known = set(catalog_codes()) | {code for code, _name, _unit in CHINA_SERIES}
     unknown = [code for code in codes if code not in known]
     if unknown:
         raise AppError(
@@ -50,12 +51,21 @@ def parse_codes(raw: str) -> list[str]:
     return codes
 
 
+def frequency_of(series_code: str) -> str:
+    """美国序列看 FRED / 东方财富目录，中国序列看中国目录；都没有时返回空串。"""
+
+    seed = seed_for(series_code)
+    if seed is not None:
+        return seed.frequency
+    china = series_spec(series_code)
+    return china.frequency if china is not None else ""
+
+
 def limit_for(series_code: str, settings: Settings | None = None) -> int:
     """按频率取最近 N 条，数值来自 MACRO_BATCH_LIMIT_*，够算同比和画多年走势。"""
 
     active = settings or get_settings()
-    seed = seed_for(series_code)
-    frequency = seed.frequency if seed is not None else ""
+    frequency = frequency_of(series_code)
     if frequency == "Daily":
         return active.macro_batch_limit_daily
     if frequency == "Weekly":
@@ -67,11 +77,8 @@ def read_floor(series_code: str, pit: date, settings: Settings | None = None) ->
     """读库的观察日下界：库里历史存得再长，每次也只读 limit 条所需的那一段。"""
 
     active = settings or get_settings()
-    seed = seed_for(series_code)
-    per_observation = (
-        _DAYS_PER_OBSERVATION.get(seed.frequency, _DEFAULT_DAYS_PER_OBSERVATION)
-        if seed is not None
-        else _DEFAULT_DAYS_PER_OBSERVATION
+    per_observation = _DAYS_PER_OBSERVATION.get(
+        frequency_of(series_code), _DEFAULT_DAYS_PER_OBSERVATION
     )
     days = math.ceil(limit_for(series_code, active) * per_observation) + _LOOKBACK_MARGIN_DAYS
     try:

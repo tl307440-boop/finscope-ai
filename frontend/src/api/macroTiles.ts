@@ -20,6 +20,8 @@ export interface TileCatalogItem {
   adjustment: string
   provider: string
   sourceKey: string
+  /** 给定时直接作为「来源」说明（中国宏观各序列来源不同，不走 FRED / 东方财富 ISM 的固定句式）。 */
+  sourceNote?: string
 }
 
 export type TileTransform = "level" | "yoy" | "diff" | "saar" | "range"
@@ -38,6 +40,8 @@ export interface TileSpec {
   /** 观测值换算到展示单位的倍数，例如初请人数 → 千人 */
   scale?: number
   digits?: number
+  /** 口径补充说明，附在 ? 提示末尾，例如「累计同比」的算法。 */
+  note?: string
 }
 
 export interface TileView {
@@ -200,13 +204,23 @@ function deltaText(delta: number | null, digits: number, suffix: string): string
 }
 
 function sourceText(item: TileCatalogItem): string {
+  if (item.sourceNote) {
+    return item.sourceNote
+  }
   return item.provider === "eastmoney" ? `东方财富指标 ${item.sourceKey}（转载 ISM）` : `FRED 代码 ${item.code}`
 }
 
 function tileInfo(spec: TileSpec, items: readonly (TileCatalogItem | null)[]): string {
   const parts = items.map((item, index) =>
     item
-      ? `${item.nameEn || item.name} · ${sourceText(item)} · 单位 ${unitLabel(item.unit)} · ${adjustmentLabel(item.adjustment)}`
+      ? [
+          item.nameEn || item.name,
+          sourceText(item),
+          `单位 ${unitLabel(item.unit)}`,
+          item.adjustment ? adjustmentLabel(item.adjustment) : "",
+        ]
+          .filter(Boolean)
+          .join(" · ")
       : `暂未接入 ${spec.codes[index] ?? ""}`,
   )
   const formula = FORMULAS[spec.transform]
@@ -215,6 +229,9 @@ function tileInfo(spec: TileSpec, items: readonly (TileCatalogItem | null)[]): s
   }
   if (spec.scale !== undefined) {
     parts.push(`展示值 = 原值 × ${spec.scale}（${spec.unit}）`)
+  }
+  if (spec.note) {
+    parts.push(spec.note)
   }
   if (items.some((item) => item?.provider === "eastmoney")) {
     parts.push(REVISION_NOTE)

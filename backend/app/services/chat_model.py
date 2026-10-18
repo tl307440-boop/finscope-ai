@@ -29,7 +29,7 @@ class _Completion(BaseModel):
     choices: list[_Choice]
 
 
-def complete_chat(settings: Settings, prompt: str) -> str:
+def complete_chat(settings: Settings, prompt: str, system: str = _SYSTEM) -> str:
     base = settings.llm_api_base_url.strip().rstrip("/")
     try:
         response = httpx.post(
@@ -39,7 +39,7 @@ def complete_chat(settings: Settings, prompt: str) -> str:
                 "model": settings.llm_model.strip(),
                 "temperature": 0,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
                 ],
             },
