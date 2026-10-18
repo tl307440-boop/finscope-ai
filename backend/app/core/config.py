@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     allow_registration: bool = True
     # 界面填写的密钥在库里用它加密；留空时用 JWT_SECRET 派生。
     settings_encryption_key: str = ""
+    # 已绑定东方财富的用户，后台按这个间隔把东财自选同步进来（秒）；关掉后只能手动同步。
+    eastmoney_sync_enabled: bool = True
+    eastmoney_sync_interval_seconds: int = 300
     # 首个管理员：库里还没有任何管理员时，api 启动会按这三项创建一次（已有管理员则忽略）。
     admin_username: str = ""
     admin_email: str = ""
