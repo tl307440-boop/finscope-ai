@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 四大宽基期权 PCR。每个宽基下 ETF 期权篮子与中金所股指期权篮子分开展示（不是同一种合约，不混算）。
+ * 宽基（上证50 / 沪深300 / 中证500 / 中证1000）与科创50 的期权 PCR。每个宽基下 ETF 期权篮子与中金所股指期权篮子分开展示（不是同一种合约，不混算）。
  * PCR、均线、分位、信号都是后端算好的；缺数据的篮子写明原因，不画空图。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue"

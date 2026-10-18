@@ -546,7 +546,7 @@ _SERIES_SOURCES: tuple[tuple[str, str, str, str, str, int, str], ...] = (
     ),
     (
         index_close_series(CALENDAR_INDEX),
-        "标的指数收盘（上证50 / 沪深300 / 中证500 / 中证1000）",
+        "标的指数收盘（上证50 / 沪深300 / 中证500 / 中证1000 / 科创50）",
         "中证指数有限公司",
         "https://www.csindex.com.cn/csindex-home/perf/index-perf",
         "日频",

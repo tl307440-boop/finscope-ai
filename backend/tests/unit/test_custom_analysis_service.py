@@ -292,6 +292,50 @@ def test_pcr_csi1000_is_cffex_only_and_documents_why() -> None:
     assert "512100" in view.baskets[0].note
 
 
+def _seed_star50(store: MemoryStore, count: int, *, skip_second_on: date | None = None) -> None:
+    rows: list[tuple[OptionStat, QualityResult]] = []
+    for index, day in enumerate(weekdays(TODAY, count)):
+        rows.append(_option("SSE", "588000", day, 700, 450 + index % 50))
+        if day != skip_second_on:
+            rows.append(_option("SSE", "588080", day, 300, 200))
+    store.upsert_option_stats(rows, NOW)
+    for day in weekdays(TODAY, count):
+        _put(store, sync.index_close_series("000688"), day, "1358.65")
+
+
+def test_pcr_star50_sums_both_sse_etfs_and_has_no_index_option_basket() -> None:
+    store = MemoryStore()
+    _seed_star50(store, 800)
+
+    view = _service(store).pcr("star50")
+
+    assert view is not None
+    assert [basket.kind for basket in view.baskets] == ["etf"]
+    etf = view.baskets[0]
+    assert etf.status == "ok"
+    assert etf.members == ["上交所 588000 华夏", "上交所 588080 易方达"]
+    assert "中金所目前没有科创50股指期权" in etf.note
+    latest = etf.latest
+    assert latest is not None
+    # 最后一天：认购 700 + 300，认沽 (450 + 799 % 50) + 200
+    assert (latest.call_volume, latest.put_volume) == (1000, 450 + 799 % 50 + 200)
+    assert latest.index_close == 1358.65
+    assert latest.volume_pcr_percentile_5y is not None
+
+
+def test_pcr_star50_with_one_etf_missing_a_day_drops_that_day() -> None:
+    store = MemoryStore()
+    skipped = weekdays(TODAY, 5)[0]
+    _seed_star50(store, 30, skip_second_on=skipped)
+
+    view = _service(store).pcr("star50")
+
+    assert view is not None
+    etf = view.baskets[0]
+    assert etf.incomplete_days == 1
+    assert skipped not in {point.trade_date for point in etf.points}
+
+
 def test_pcr_unknown_group_and_empty_store() -> None:
     assert _service(MemoryStore()).pcr("nope") is None
     view = _service(MemoryStore()).pcr("sse50")

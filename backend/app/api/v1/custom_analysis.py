@@ -36,7 +36,9 @@ def _service(request: Request) -> CustomAnalysisService:
 Service = Annotated[CustomAnalysisService, Depends(_service)]
 
 
-@router.get("/pcr/{group}", summary="四大宽基期权 PCR：成交量 / 持仓量、10 日均线、5 年分位与信号")
+@router.get(
+    "/pcr/{group}", summary="宽基与科创50期权 PCR：成交量 / 持仓量、10 日均线、5 年分位与信号"
+)
 async def read_pcr(
     request: Request,
     service: Service,

@@ -220,6 +220,25 @@ OPTION_GROUPS: tuple[OptionGroup, ...] = (
             ),
         ),
     ),
+    OptionGroup(
+        "star50",
+        "科创50",
+        "000688",
+        "上证科创板50成份指数",
+        (
+            OptionBasket(
+                "etf",
+                "科创50ETF期权",
+                (
+                    Member("SSE", "588000", "上交所 588000 华夏"),
+                    Member("SSE", "588080", "上交所 588080 易方达"),
+                ),
+                "科创50ETF 期权只在上交所挂牌，华夏 588000 与易方达 588080 两只的认购 / 认沽量"
+                "先分别加总再相除；2023-06-05 才上市，历史不足 5 年；"
+                "中金所目前没有科创50股指期权（尚在研发），深交所也没有，因此没有股指期权篮子。",
+            ),
+        ),
+    ),
 )
 GROUPS_BY_CODE: dict[str, OptionGroup] = {group.code: group for group in OPTION_GROUPS}
 INDEX_CODES: tuple[str, ...] = tuple(group.index_code for group in OPTION_GROUPS)

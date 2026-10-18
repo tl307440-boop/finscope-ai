@@ -164,6 +164,27 @@ def test_csi1000_has_only_the_cffex_basket() -> None:
     assert group.baskets[0].members[0].code == "MO"
 
 
+def test_star50_basket_sums_both_sse_etf_options_and_drops_days_missing_one() -> None:
+    group = rules.GROUPS_BY_CODE["star50"]
+    assert group.index_code == "000688"
+    assert [basket.kind for basket in group.baskets] == ["etf"]
+    assert [member.code for member in group.baskets[0].members] == ["588000", "588080"]
+
+    day, lonely = date(2026, 10, 16), date(2026, 10, 15)
+    rows = [
+        _row(day, "SSE", "588000", 100, 80),
+        _row(day, "SSE", "588080", 50, 20),
+        _row(day, "SSE", "510050", 999, 999),  # 其他标的不得混入
+        _row(lonely, "SSE", "588000", 100, 80),  # 只有一只，整天丢弃，不拿半个篮子冒充
+    ]
+    days, incomplete = rules.combine_basket(rows, group.baskets[0])
+
+    assert incomplete == 1
+    assert [item.trade_date for item in days] == [day]
+    assert (days[0].call_volume, days[0].put_volume) == (150, 100)
+    assert rules.put_call_ratio(days[0].put_volume, days[0].call_volume) == D("0.666667")
+
+
 def test_moving_average_needs_full_window_without_gaps() -> None:
     values: list[Decimal | None] = [D(i) for i in range(1, 12)]
     averages = rules.moving_average(values, 10)

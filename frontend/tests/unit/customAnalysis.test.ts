@@ -106,6 +106,7 @@ describe("PCR 响应解析", () => {
 
   it("CSV 链接带上篮子类型", () => {
     expect(pcrCsvUrl("csi1000", "index")).toContain("/api/v1/custom-analysis/export/pcr/csi1000.csv?kind=index")
+    expect(pcrCsvUrl("star50", "etf")).toContain("/api/v1/custom-analysis/export/pcr/star50.csv?kind=etf")
   })
 })
 

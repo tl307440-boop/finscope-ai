@@ -15,6 +15,7 @@ export const PCR_GROUPS = [
   { code: "csi300", name: "沪深300" },
   { code: "csi500", name: "中证500" },
   { code: "csi1000", name: "中证1000" },
+  { code: "star50", name: "科创50" },
 ] as const
 
 export type PcrGroupCode = (typeof PCR_GROUPS)[number]["code"]

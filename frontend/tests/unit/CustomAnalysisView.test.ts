@@ -134,6 +134,28 @@ describe("自定义数据分析页", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
+  it("科创50 标签请求 star50，只有 ETF 期权一个篮子", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes("/pcr/star50")) {
+        const body = pcrBody("star50", "科创50")
+        body.data.baskets = body.data.baskets.slice(0, 1)
+        return Promise.resolve(jsonResponse(body))
+      }
+      return Promise.resolve(jsonResponse(pcrBody("csi300", "沪深300")))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    await renderAt("/custom-analysis")
+    await waitFor(() => expect(screen.getByText("沪深300 · ETF 期权")).toBeTruthy())
+
+    await fireEvent.click(screen.getByRole("tab", { name: "科创50" }))
+
+    await waitFor(() => expect(screen.getByText("科创50 · ETF 期权")).toBeTruthy())
+    expect(screen.queryByText("还没有同步中金所数据")).toBeNull()
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain("/custom-analysis/pcr/star50")
+  })
+
   it("接口失败时显示错误并允许重试，不展示任何旧数字", async () => {
     let calls = 0
     vi.stubGlobal(

@@ -276,7 +276,7 @@ def sse_payload(day: date) -> bytes:
             "CP_RATE": "66.67",
             "TOTAL_VOLUME": "1,000",
         }
-        for code in ("510050", "510300", "510500")
+        for code in ("510050", "510300", "510500", "588000", "588080")
     ]
     return ("cb(" + json.dumps({"result": rows}) + ")").encode()
 

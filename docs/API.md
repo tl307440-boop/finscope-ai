@@ -227,8 +227,8 @@
 
 全部公开接口，前缀 `/api/v1/custom-analysis`。数值（PCR、均线、分位、ERP、巴菲特指标、中位数 PB、区间判断）都由后端算好，前端只排版。响应里为空的字段不会出现，缺数据时 `status` 是 `unavailable` 并给 `reason`，不会用估算值补。完整口径见 `docs/superpowers/specs/2026-10-18-custom-analysis-design.md`。
 
-- `GET /pcr/{group}?days=750`：`group` 是 `sse50` / `csi300` / `csi500` / `csi1000`，未知分组返回 404，`days` 取 20–2500。
-  - `baskets` 里 ETF 期权（`kind=etf`）与中金所股指期权（`kind=index`）分开给，不混算；中证1000 只有股指期权（MO）。
+- `GET /pcr/{group}?days=750`：`group` 是 `sse50` / `csi300` / `csi500` / `csi1000` / `star50`，未知分组返回 404，`days` 取 20–2500。
+  - `baskets` 里 ETF 期权（`kind=etf`）与中金所股指期权（`kind=index`）分开给，不混算；中证1000 只有股指期权（MO），科创50 只有 ETF 期权（上交所 588000 + 588080 加总）。
   - 每个篮子带 `status`（`ok` / `stale` / `unavailable`）、`reason`、`first_date`、`last_date`、`history_years`、`incomplete_days`（因成员缺数据未计入的天数）、`latest` 与 `points`。
   - 点上有成交量 / 持仓量 PCR、`volume_pcr_ma10`、`volume_pcr_percentile_5y`、`sentiment_signal`（固定阈值 1.2 / 0.6）、`relative_signal`（5 年分位 ≥ 90 / ≤ 10）、`quality_flag`。窗口内不足 750 个交易日时不给分位与相对信号。
 - `GET /valuation?days=1300`：`indicators` 依次是 `erp`、`buffett`、`median_pb`。
@@ -236,5 +236,5 @@
   - 输入缺失时该指标 `status=unavailable`，不返回数字。最新点过期（距今超过 6 天）时 `status=stale` 并写明最近日期。
   - `median_pb` 的点带 `median_without_st_filter`（不剔除 ST 的对照值）和 `st_basis`（`snapshot_name` 或 `current_name`，后者表示 ST 剔除按当前简称近似）。
 - `GET /sources`：数据源清单（每个来源的状态、区间、行数、`review_rows`、抓取时间；季频的 GDP 超过 200 天才算过期）和最近 20 条被质量闸门标记的问题。
-- `GET /export/pcr/{group}.csv?kind=etf|index&days=2500`：PRD 的 `pcr_monitor` 列。没有数据时只有表头；该宽基没有这一类期权（如中证1000 的 ETF 期权）返回 404。
+- `GET /export/pcr/{group}.csv?kind=etf|index&days=2500`：PRD 的 `pcr_monitor` 列。没有数据时只有表头；该宽基没有这一类期权（如中证1000 的 ETF 期权、科创50 的股指期权）返回 404。
 - `GET /export/valuation.csv?days=2500`：PRD 的 `macro_valuation_summary` 列。

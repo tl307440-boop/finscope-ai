@@ -72,6 +72,25 @@ def test_pcr_endpoint_returns_both_baskets_for_a_group(seeded_client: TestClient
     assert "volume_pcr_percentile_5y" not in etf["latest"]
 
 
+def test_pcr_star50_is_sse_etf_only_and_csv_has_no_index_kind(seeded_client: TestClient) -> None:
+    response = seeded_client.get("/api/v1/custom-analysis/pcr/star50")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["group_name"] == "科创50"
+    assert [basket["kind"] for basket in data["baskets"]] == ["etf"]
+    latest = data["baskets"][0]["latest"]
+    # SSE 588000 + 588080 各认沽 400 / 认购 600 → 800 / 1200
+    assert (latest["put_volume"], latest["call_volume"]) == (800, 1200)
+    assert latest["index_close"] is not None
+    ok = seeded_client.get("/api/v1/custom-analysis/export/pcr/star50.csv", params={"kind": "etf"})
+    assert ok.status_code == 200
+    missing = seeded_client.get(
+        "/api/v1/custom-analysis/export/pcr/star50.csv", params={"kind": "index"}
+    )
+    assert missing.status_code == 404
+
+
 def test_pcr_days_parameter_limits_the_series(seeded_client: TestClient) -> None:
     response = seeded_client.get("/api/v1/custom-analysis/pcr/sse50", params={"days": 20})
 
@@ -129,7 +148,8 @@ def test_sources_endpoint_lists_every_provider_with_latest_dates(seeded_client: 
     sse = next(row for row in data["sources"] if row["key"] == "SSE")
     assert sse["status"] == "ok"
     assert sse["last_date"] == TODAY.isoformat()
-    assert sse["rows"] == len(CALENDAR) * 3  # 510050 / 510300 / 510500 每个交易日一行
+    # 510050 / 510300 / 510500 / 588000 / 588080 每个交易日各一行
+    assert sse["rows"] == len(CALENDAR) * 5
 
 
 def test_stale_data_is_flagged_not_hidden() -> None:
