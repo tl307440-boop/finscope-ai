@@ -29,7 +29,6 @@ import {
   CHINA_COMPARE_SPECS,
   CHINA_PLOT_SPECS,
   COMPARE_DEFAULT,
-  GROWTH_DEFAULT,
   INFLATION_DEFAULT,
   QUADRANT_TEXT,
   buildQuadrant,
@@ -275,8 +274,7 @@ interface TrendState {
   years: number
 }
 
-const inflationTrend = ref<TrendState>({ codes: [...INFLATION_DEFAULT], years: 5 })
-const growthTrend = ref<TrendState>({ codes: [...GROWTH_DEFAULT], years: 5 })
+const overlayTrend = ref<TrendState>({ codes: [...INFLATION_DEFAULT], years: 5 })
 
 const pickerOptions = computed(() => {
   const colors = palette()
@@ -327,8 +325,7 @@ function buildTrend(state: TrendState): TrendPlot {
   return { option, latest: latestSummary(lines) }
 }
 
-const inflationPlot = computed<TrendPlot>(() => buildTrend(inflationTrend.value))
-const growthPlot = computed<TrendPlot>(() => buildTrend(growthTrend.value))
+const overlayPlot = computed<TrendPlot>(() => buildTrend(overlayTrend.value))
 
 const quadrantModel = computed(() => buildQuadrant(tileRows.value, 3))
 /** 情景推演用全部可得历史（核心 CPI 自 2021 年起）；分界与象限图的 3 年窗口不同，页面上会写明样本区间。 */
@@ -605,7 +602,7 @@ onMounted(() => {
             label="中国宏观指标"
           />
 
-          <div v-if="!tileError" class="macro-main">
+          <div v-if="!tileError" class="macro-top">
             <PanelCard
               title="宏观象限：增长 × 通胀"
               info="横轴实际 GDP 当季同比，纵轴核心 CPI 同比（取该季最后一个月）；分界线是最近 3 年内两条轴各自的中位数，不是官方目标值"
@@ -633,48 +630,6 @@ onMounted(() => {
               </div>
             </PanelCard>
 
-            <div class="stack">
-              <PanelCard
-                title="通胀走势"
-                info="默认 CPI、核心 CPI、PPI 同比（%）；点上方色块可加入或移除任意同比口径指标。数据均为国家统计局公布的同比值，不再二次换算"
-              >
-                <template #icon><span class="panel-icon">▲</span></template>
-                <SeriesPicker
-                  v-model="inflationTrend.codes"
-                  v-model:years="inflationTrend.years"
-                  :options="pickerOptions"
-                  :year-options="YEAR_OPTIONS"
-                />
-                <VChart v-if="inflationPlot.option" class="chart chart-half" :option="inflationPlot.option" autoresize />
-                <StateBlock
-                  v-else
-                  state="empty"
-                  :message="inflationTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
-                />
-                <p v-if="inflationPlot.latest.length" class="chart-note">{{ inflationPlot.latest.join(" · ") }}</p>
-              </PanelCard>
-
-              <PanelCard
-                title="增长与货币走势"
-                info="默认实际 GDP 当季同比、工业增加值、社零同比（%）；季度与月度指标按时间轴对齐，不插值、不补点"
-              >
-                <template #icon><span class="panel-icon">▤</span></template>
-                <SeriesPicker
-                  v-model="growthTrend.codes"
-                  v-model:years="growthTrend.years"
-                  :options="pickerOptions"
-                  :year-options="YEAR_OPTIONS"
-                />
-                <VChart v-if="growthPlot.option" class="chart chart-half" :option="growthPlot.option" autoresize />
-                <StateBlock
-                  v-else
-                  state="empty"
-                  :message="growthTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
-                />
-                <p v-if="growthPlot.latest.length" class="chart-note">{{ growthPlot.latest.join(" · ") }}</p>
-              </PanelCard>
-            </div>
-
             <PanelCard title="规则解读" info="按最近两期已公布数据的方向自动生成，非模型生成内容" tone="violet">
               <template #icon><span class="panel-icon">✦</span></template>
               <p v-if="readoutEmpty" class="doc-text muted">已公布数据不足，暂不解读。</p>
@@ -701,6 +656,27 @@ onMounted(() => {
             </PanelCard>
           </div>
 
+          <PanelCard
+            v-if="!tileError"
+            title="多指标走势"
+            info="把多条同比口径指标画在同一张图上。默认 CPI、核心 CPI、PPI；点色块可加入或移除。数据均为公布的同比值，不再二次换算"
+          >
+            <template #icon><span class="panel-icon">▲</span></template>
+            <SeriesPicker
+              v-model="overlayTrend.codes"
+              v-model:years="overlayTrend.years"
+              :options="pickerOptions"
+              :year-options="YEAR_OPTIONS"
+            />
+            <VChart v-if="overlayPlot.option" class="chart chart-wide" :option="overlayPlot.option" autoresize />
+            <StateBlock
+              v-else
+              state="empty"
+              :message="overlayTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
+            />
+            <p v-if="overlayPlot.latest.length" class="chart-note">{{ overlayPlot.latest.join(" · ") }}</p>
+          </PanelCard>
+
           <div v-if="!tileError" class="macro-extra">
             <MacroComparePanel
               :specs="CHINA_COMPARE_SPECS"
@@ -712,7 +688,7 @@ onMounted(() => {
             <MacroAiPanel region="cn" :as-of="appliedAsOf" />
           </div>
 
-          <div class="grid-2-1">
+          <div class="series-board">
             <PanelCard title="指标走势" info="只显示所选观察日已经公布的观测值">
               <template #icon><span class="panel-icon">◠</span></template>
               <template v-if="anyAvailable" #actions>
@@ -748,6 +724,7 @@ onMounted(() => {
               info="已同步 / 数据陈旧（日度 14 天、周度 21 天、月度 90 天、季度 215 天未更新）/ 暂无数据"
             >
               <template #icon><span class="panel-icon">▤</span></template>
+              <div class="series-scroll">
               <el-table :data="rows" @row-click="(row: ChinaSeries) => anyAvailable && selectSeries(row.code)">
                 <el-table-column prop="name" label="指标" min-width="170" />
                 <el-table-column label="单位" width="70">
@@ -766,6 +743,7 @@ onMounted(() => {
                   </template>
                 </el-table-column>
               </el-table>
+              </div>
               <p class="chart-note">已同步 {{ availableRows.length }} / {{ rows.length }} 项。</p>
             </PanelCard>
           </div>
@@ -824,15 +802,20 @@ onMounted(() => {
 }
 
 .chart-trend {
+  height: 320px;
+}
+
+.chart-wide {
   height: 300px;
 }
 
 .chart-quadrant {
-  height: 360px;
+  height: 320px;
 }
 
-.chart-half {
-  height: 210px;
+.series-scroll {
+  max-height: 360px;
+  overflow: auto;
 }
 
 .small {
@@ -843,32 +826,35 @@ p.small {
   font-size: 13px;
 }
 
-.macro-main,
-.macro-extra {
+.macro-top,
+.series-board {
   display: grid;
   gap: var(--gap);
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
   align-items: start;
 }
 
-.macro-extra {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+.macro-top {
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr);
 }
 
-@media (max-width: 1440px) {
-  .macro-main,
-  .macro-extra {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
+.series-board {
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr);
+}
 
-  .macro-main > :last-child,
-  .macro-extra > :first-child {
-    grid-column: 1 / -1;
-  }
+.macro-extra {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.macro-extra > :first-child {
+  grid-row: span 2;
 }
 
 @media (max-width: 1024px) {
-  .macro-main,
+  .macro-top,
+  .series-board,
   .macro-extra {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -951,5 +937,6 @@ p.small {
   --el-table-text-color: var(--text);
   --el-table-header-text-color: var(--muted);
   --el-table-row-hover-bg-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  cursor: pointer;
 }
 </style>

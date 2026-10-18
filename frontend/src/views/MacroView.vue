@@ -23,7 +23,7 @@ import type { EChartsCoreOption } from "echarts/core"
 import { VChart } from "../charts"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { asNumber, asRecord, asString, listOf, scaleAmount } from "../api/json"
-import { cssColor, frequencyLabel, macroSourceLabel, parseEvidence, regimeText } from "../api/macro"
+import { cssColor, frequencyLabel, macroSourceLabel, parseEvidence, regimeText, unitLabel } from "../api/macro"
 import {
   applyTransform,
   buildTile,
@@ -211,11 +211,20 @@ const PLOT_SPECS: readonly PlotSpec[] = [
   { code: "T10Y2Y", label: "10Y−2Y 利差", tone: "cyan", transform: "level", step: false },
 ]
 
-/** 通胀图的 2% 目标线挂在第一条价格指数同比上。 */
+/** 多指标图的 2% 目标线挂在第一条价格指数同比上。 */
 const INFLATION_CODES = new Set<string>(["CPIAUCSL", "PCEPILFE"])
 
-/** 页面一次性取回的序列：指标带 ∪ 走势图（共 16 条，不超过批量接口上限 20）。 */
-const OBSERVATION_CODES: readonly string[] = [...new Set([...tileCodes(), ...PLOT_SPECS.map((spec) => spec.code)])]
+/** 批量接口一次最多 20 条。优先指标带和多指标图，其余目录序列留给指标清单。 */
+const BATCH_LIMIT = 20
+
+function codesToLoad(known: readonly string[]): string[] {
+  const present = new Set(known)
+  const preferred = [...new Set([...tileCodes(), ...PLOT_SPECS.map((spec) => spec.code)])].filter((code) =>
+    present.has(code),
+  )
+  const extra = [...new Set(known.filter((code) => !preferred.includes(code)))]
+  return [...preferred, ...extra].slice(0, BATCH_LIMIT)
+}
 
 const YEAR_OPTIONS = [1, 2, 3, 5] as const
 
@@ -224,9 +233,8 @@ interface TrendState {
   years: number
 }
 
-/** 默认：通胀图看 CPI 与核心 PCE 同比，利率图看政策利率上限与 5、10、20 年期美债；之后可在图例里自由增减任意指标。 */
-const inflationTrend = ref<TrendState>({ codes: ["CPIAUCSL", "PCEPILFE"], years: 5 })
-const ratesTrend = ref<TrendState>({ codes: ["DFEDTARU", "DGS5", "DGS10", "DGS20"], years: 2 })
+/** 默认看 CPI 与核心 PCE 同比；点色块可加入或移除任意百分比口径指标。 */
+const overlayTrend = ref<TrendState>({ codes: ["CPIAUCSL", "PCEPILFE"], years: 5 })
 
 function plotRows(spec: PlotSpec): Observation[] {
   return applyTransform(spec.transform, rowsOf(spec.code))
@@ -332,17 +340,137 @@ function buildTrend(state: TrendState): TrendPlot {
   return { option, latest }
 }
 
-const inflationPlot = computed<TrendPlot>(() => buildTrend(inflationTrend.value))
-const ratesPlot = computed<TrendPlot>(() => buildTrend(ratesTrend.value))
+const overlayPlot = computed<TrendPlot>(() => buildTrend(overlayTrend.value))
 
-const spreadNote = computed<string>(() => {
-  const rows = rowsOf("T10Y2Y")
-  const last = rows[rows.length - 1]
-  if (!last) {
-    return ""
+/** 与中国页同一套陈旧阈值：日度 14 天、周度 21 天、月度 90 天、季度 215 天。 */
+const STALE_DAYS: Record<string, number> = { Daily: 14, Weekly: 21, Monthly: 90, Quarterly: 215, Annual: 450 }
+
+interface InventoryRow {
+  code: string
+  name: string
+  unit: string
+  frequency: string
+  count: number
+  latestDate: string
+  status: "stored" | "stale" | "unavailable"
+}
+
+function ageDays(date: string): number {
+  const observed = Date.parse(`${date.slice(0, 10)}T00:00:00Z`)
+  const today = Date.parse(`${browserToday}T00:00:00Z`)
+  if (!Number.isFinite(observed) || !Number.isFinite(today)) {
+    return 0
   }
-  const shape = last.value >= 0 ? "曲线未倒挂" : "曲线倒挂"
-  return `10Y−2Y 利差 ${last.value.toFixed(2)} pct（${last.date}，${shape}）`
+  return Math.floor((today - observed) / 86_400_000)
+}
+
+const inventory = computed<InventoryRow[]>(() =>
+  catalog.value.map((item) => {
+    const rows = rowsOf(item.code)
+    const last = rows[rows.length - 1]
+    const limit = STALE_DAYS[item.frequency] ?? 90
+    const status: InventoryRow["status"] = !last ? "unavailable" : ageDays(last.date) > limit ? "stale" : "stored"
+    return {
+      code: item.code,
+      name: item.name,
+      unit: item.unit,
+      frequency: item.frequency,
+      count: rows.length,
+      latestDate: last?.date ?? "",
+      status,
+    }
+  }),
+)
+
+const availableInventory = computed(() => inventory.value.filter((row) => row.status !== "unavailable"))
+
+const selectedCode = ref("CPIAUCSL")
+
+watch(inventory, (rows) => {
+  if (rows.some((row) => row.code === selectedCode.value && row.count > 0)) {
+    return
+  }
+  const next =
+    rows.find((row) => row.code === "CPIAUCSL" && row.count >= 2) ??
+    rows.find((row) => row.count >= 2) ??
+    rows[0]
+  selectedCode.value = next?.code ?? ""
+})
+
+function selectSeries(code: string): void {
+  selectedCode.value = code
+}
+
+const selectedInventory = computed(() => inventory.value.find((row) => row.code === selectedCode.value) ?? null)
+
+function inventoryStatus(row: InventoryRow): { text: string; tone: "ok" | "warn" | "muted" } {
+  if (row.status === "stored") {
+    return { text: "已同步", tone: "ok" }
+  }
+  if (row.status === "stale") {
+    return { text: "数据陈旧", tone: "warn" }
+  }
+  return { text: "暂无数据", tone: "muted" }
+}
+
+function inventoryNote(row: InventoryRow): string {
+  if (row.status === "stored") {
+    return `已同步 ${row.count} 期，最新 ${row.latestDate || "—"}`
+  }
+  if (row.status === "stale") {
+    return `已同步 ${row.count} 期，但最新一期 ${row.latestDate || "—"} 距今超过 ${STALE_DAYS[row.frequency] ?? 90} 天`
+  }
+  return "所选观察日还没有已公布的观测值"
+}
+
+function latestLabel(row: InventoryRow): string {
+  if (!row.latestDate) {
+    return "—"
+  }
+  return row.frequency === "Daily" || row.frequency === "Weekly" ? row.latestDate.slice(0, 10) : row.latestDate.slice(0, 7)
+}
+
+const detailOption = computed<EChartsCoreOption | null>(() => {
+  const row = selectedInventory.value
+  if (!row || row.count < 2) {
+    return null
+  }
+  const points = rowsOf(row.code)
+  const accent = cssColor("--accent", "#3b82f6")
+  const zoom = points.length > 80
+  const unit = unitLabel(row.unit)
+  return {
+    grid: { left: 8, right: 16, top: 16, bottom: zoom ? 44 : 4, containLabel: true },
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: (value: unknown): string =>
+        typeof value === "number"
+          ? `${value.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} ${unit}`
+          : "—",
+    },
+    xAxis: { type: "time", axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", scale: true },
+    series: [
+      {
+        name: row.name,
+        type: "line",
+        showSymbol: points.length <= 36,
+        symbolSize: 5,
+        data: points.map((point) => [point.date, point.value]),
+        lineStyle: { color: accent, width: 2 },
+        itemStyle: { color: accent },
+        areaStyle: { color: accent, opacity: 0.1 },
+      },
+    ],
+    ...(zoom
+      ? {
+          dataZoom: [
+            { type: "inside", start: 70, end: 100 },
+            { type: "slider", start: 70, end: 100, height: 18, bottom: 6 },
+          ],
+        }
+      : {}),
+  }
 })
 
 /** 宏观象限：横轴流动性分数、纵轴增长分数，各 0–100，以 50 为界划分四象限。 */
@@ -662,7 +790,7 @@ function parseScore(value: unknown): DimensionScore | null {
 
 async function loadObservations(): Promise<void> {
   observationsBusy.value = true
-  const codes = OBSERVATION_CODES.filter((code) => catalog.value.some((item) => item.code === code))
+  const codes = codesToLoad(catalog.value.map((item) => item.code))
   try {
     if (!codes.length) {
       observationsByCode.value = {}
@@ -810,7 +938,7 @@ onMounted(() => {
 
         <MacroTicker :tiles="tileViews" :loading="observationsBusy && !hasAnyObservation" />
 
-        <div class="macro-main">
+        <div class="macro-top">
           <PanelCard
             title="宏观象限：经济冷热 × 货币松紧"
             :info="`按规则分数定位：横轴流动性、纵轴增长，各 0–100，以 50 为界。判断日 ${assessment?.pitDate || '—'}`"
@@ -840,51 +968,6 @@ onMounted(() => {
               </p>
             </div>
           </PanelCard>
-
-          <div class="stack">
-            <PanelCard
-              title="通胀走势"
-              info="默认 CPI 与核心 PCE 的同比（%）；点上方色块可加入或移除任意百分比口径指标（不限数量）。同比 = 当月 ÷ 12 个月前同月 − 1；实际 GDP 为环比折年率"
-            >
-              <template #icon><span class="panel-icon">▲</span></template>
-              <SeriesPicker
-                v-model="inflationTrend.codes"
-                v-model:years="inflationTrend.years"
-                :options="pickerOptions"
-                :year-options="YEAR_OPTIONS"
-              />
-              <VChart v-if="inflationPlot.option" class="chart chart-half" :option="inflationPlot.option" autoresize />
-              <StateBlock
-                v-else
-                state="empty"
-                :message="
-                  inflationTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'
-                "
-              />
-              <p v-if="inflationPlot.latest.length" class="chart-note latest">{{ inflationPlot.latest.join(" · ") }}</p>
-            </PanelCard>
-
-            <PanelCard
-              title="政策利率与美债收益率"
-              info="默认联邦基金目标区间上限与 5、10、20 年期美债收益率（均为日度）；点上方色块可加入或移除任意指标（不限数量），不同频率按时间轴对齐、不插值"
-            >
-              <template #icon><span class="panel-icon">▤</span></template>
-              <SeriesPicker
-                v-model="ratesTrend.codes"
-                v-model:years="ratesTrend.years"
-                :options="pickerOptions"
-                :year-options="YEAR_OPTIONS"
-              />
-              <VChart v-if="ratesPlot.option" class="chart chart-half" :option="ratesPlot.option" autoresize />
-              <StateBlock
-                v-else
-                state="empty"
-                :message="ratesTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
-              />
-              <p v-if="ratesPlot.latest.length" class="chart-note latest">{{ ratesPlot.latest.join(" · ") }}</p>
-              <p v-if="spreadNote" class="chart-note">{{ spreadNote }}</p>
-            </PanelCard>
-          </div>
 
           <PanelCard title="规则解读" info="由增长、通胀、流动性三条规则自动生成，非模型生成内容" tone="violet">
             <template #icon><span class="panel-icon">✦</span></template>
@@ -926,6 +1009,79 @@ onMounted(() => {
                 <router-link to="/macro/scenarios">宏观综合判断</router-link>。
               </p>
             </template>
+          </PanelCard>
+        </div>
+
+        <PanelCard
+          title="多指标走势"
+          info="把多条百分比口径指标画在同一张图上。默认 CPI 与核心 PCE 同比；点色块可加入或移除任意指标。同比 = 当月 ÷ 12 个月前同月 − 1；实际 GDP 为环比折年率"
+        >
+          <template #icon><span class="panel-icon">▲</span></template>
+          <SeriesPicker
+            v-model="overlayTrend.codes"
+            v-model:years="overlayTrend.years"
+            :options="pickerOptions"
+            :year-options="YEAR_OPTIONS"
+          />
+          <VChart v-if="overlayPlot.option" class="chart chart-wide" :option="overlayPlot.option" autoresize />
+          <StateBlock
+            v-else
+            state="empty"
+            :message="overlayTrend.codes.length ? '所选指标数据不足两期，暂不画走势' : '请在上方至少选择一个指标'"
+          />
+          <p v-if="overlayPlot.latest.length" class="chart-note latest">{{ overlayPlot.latest.join(" · ") }}</p>
+        </PanelCard>
+
+        <div v-if="inventory.length" class="series-board">
+          <PanelCard title="指标走势" info="只显示所选观察日已经公布的原始观测值，不做同比换算">
+            <template #icon><span class="panel-icon">◠</span></template>
+            <template v-if="availableInventory.length" #actions>
+              <el-select v-model="selectedCode" class="filter-select" size="small" @change="selectSeries">
+                <el-option
+                  v-for="item in availableInventory"
+                  :key="item.code"
+                  :value="item.code"
+                  :label="item.name"
+                />
+              </el-select>
+            </template>
+            <p v-if="!availableInventory.length" class="empty-note">同步到数据后在此显示走势</p>
+            <template v-else>
+              <VChart v-if="detailOption" class="chart chart-trend" :option="detailOption" autoresize />
+              <StateBlock v-else state="empty" message="所选观察日已公布的数据不足两期，暂不画走势" />
+              <p v-if="selectedInventory && selectedInventory.count" class="chart-note">
+                {{ selectedInventory.name }}：共 {{ selectedInventory.count }} 期，单位
+                {{ unitLabel(selectedInventory.unit) }}
+              </p>
+            </template>
+          </PanelCard>
+
+          <PanelCard
+            title="指标清单"
+            info="已同步 / 数据陈旧（日度 14 天、周度 21 天、月度 90 天、季度 215 天未更新）/ 暂无数据"
+          >
+            <template #icon><span class="panel-icon">▤</span></template>
+            <div class="series-scroll">
+              <el-table :data="inventory" @row-click="(row: InventoryRow) => selectSeries(row.code)">
+                <el-table-column prop="name" label="指标" min-width="160" />
+                <el-table-column label="单位" width="88">
+                  <template #default="scope">{{ scope?.row ? unitLabel(scope.row.unit) : "" }}</template>
+                </el-table-column>
+                <el-table-column label="状态" width="96">
+                  <template #default="scope">
+                    <span v-if="scope?.row" :title="inventoryNote(scope.row)">
+                      <StatusPill :text="inventoryStatus(scope.row).text" :tone="inventoryStatus(scope.row).tone" />
+                    </span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="最新" width="110">
+                  <template #default="scope">
+                    <span v-if="scope?.row" class="tabular">{{ latestLabel(scope.row) }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+            <p class="chart-note">已同步 {{ availableInventory.length }} / {{ inventory.length }} 项。</p>
           </PanelCard>
         </div>
 
@@ -1008,36 +1164,38 @@ p.small {
   font-size: 13px;
 }
 
-.macro-main {
+.macro-top {
   display: grid;
   gap: var(--gap);
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr);
   align-items: start;
+}
+
+.series-board {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.8fr);
+  align-items: start;
+}
+
+.filter-select {
+  width: 240px;
+}
+
+.series-scroll {
+  max-height: 360px;
+  overflow: auto;
 }
 
 .macro-extra {
   display: grid;
   gap: var(--gap);
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
   align-items: start;
 }
 
-@media (max-width: 1440px) {
-  .macro-extra {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .macro-extra > :first-child {
-    grid-column: 1 / -1;
-  }
-
-  .macro-main {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
-  .macro-main > :last-child {
-    grid-column: 1 / -1;
-  }
+.macro-extra > :first-child {
+  grid-row: span 2;
 }
 
 @media (max-width: 1024px) {
@@ -1045,7 +1203,8 @@ p.small {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .macro-main {
+  .macro-top,
+  .series-board {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -1055,11 +1214,24 @@ p.small {
 }
 
 .chart-quadrant {
-  height: 360px;
+  height: 320px;
 }
 
-.chart-half {
-  height: 210px;
+.chart-wide {
+  height: 300px;
+}
+
+.chart-trend {
+  height: 320px;
+}
+
+.empty-note {
+  display: grid;
+  place-items: center;
+  min-height: 200px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .chart-note {
@@ -1152,5 +1324,16 @@ p.small {
 .footnote {
   margin: 12px 0 0;
   line-height: 1.7;
+}
+
+.el-table {
+  --el-table-border-color: var(--line);
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: color-mix(in srgb, var(--text) 6%, transparent);
+  --el-table-text-color: var(--text);
+  --el-table-header-text-color: var(--muted);
+  --el-table-row-hover-bg-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  cursor: pointer;
 }
 </style>
