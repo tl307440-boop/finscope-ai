@@ -1538,3 +1538,41 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
   - 读取状态失败时仍显示提醒与链接，不假装数据是最新。
 - 测试：`chinaImport.test.ts`（月份推算含跨年与北京时区、缺失与坏格式按缺失）、`ChinaImportPanel.test.ts`（落后提醒与链接、全部最新、读取失败、导入成功并刷新、未选文件 / 空文件 / 接口拒绝）；前端 252 个测试、typecheck、build 通过。
 - 限制：没有在浏览器里目视检查该卡片（本机无 PostgreSQL，起不了后端）；提醒只在管理员打开数据中心时显示，没有邮件或站内通知。
+
+## 2026-10-18 EM-BIND 东方财富扫码绑定与自选自动同步
+
+### 背景
+
+逆向分析（`docs/research/东方财富账号绑定逆向分析.md`）已用真实扫码验证：东财二维码登录会在成功响应的 `Set-Cookie` 里下发 `ct / ut / pi / uidal` 等登录 cookie（约 90 天），带上它即可读取全部自选分组。本轮把这条链路做进系统：在「自选研究」页扫码绑定，之后自选自动与东财保持一致，不再手动导入。
+
+### 方案
+
+- **单向同步：东财 → 本系统。** 不往东财写任何东西。
+- 分组按东财分组 id（`em_gid`）匹配；本系统里已有同名且没绑定的分组会被认领，不重复建；东财里改名后下次同步跟着改名。
+- 条目带来源 `source = manual | eastmoney`。同步只会移除 `eastmoney` 来源且东财里已删掉的条目，**手动加的条目永不被同步删除**。
+- 失败不丢数据：东财登录失效、上游出错、返回空列表都不会删任何条目；登录失效时绑定状态改为 `expired`，页面提示重新扫码。
+- 登录 cookie 用 `SecretBox`（Fernet，主密钥为 `SETTINGS_ENCRYPTION_KEY`，空则由 `JWT_SECRET` 派生）加密后存库；接口与日志里没有 cookie。解除绑定立即删除凭证。东财没有服务端登出接口，已颁发的登录态到期前仍有效（可在东财 App 里退出登录）。
+- 二维码会话放进程内（单进程 uvicorn，有 50 条上限，2 分钟过期，同一用户 3 秒内不重复生成）。后端每 300 秒（`EASTMONEY_SYNC_INTERVAL_SECONDS`）为所有已绑定用户同步一次，页面打开时前端每 60 秒触发一次；同一用户 30 秒内重复请求直接返回上次结果。`EASTMONEY_SYNC_ENABLED=false` 可关闭后台同步。
+- 东财里的板块、指数、美股、ETF、国债收益率等沿用 WATCH-EXT 的外部标的存储（`ext_secid`），不进入 A 股汇总。
+
+### 变更
+
+- 迁移 `20261018_0027_eastmoney_binding.py`：新表 `eastmoney_bindings`（每用户一行，加密凭证、昵称、状态、最近同步信息）、`watchlist_groups.em_gid`（含 `(owner, em_gid)` 部分唯一索引）、`watchlist_items.source`。降级可逆（已验证升级 → 降级 → 再升级）。
+- 后端：`providers/eastmoney_account.py`（二维码、轮询、读取分组）、`repositories/eastmoney_bindings.py`、`services/eastmoney_binding.py`、`api/v1/eastmoney.py`（5 个接口，见 `docs/API.md`）、`repositories/watchlists.py`（`ensure_eastmoney_group`、`group_ext_secids`、`remove_stale_synced`，`add_codes / add_external` 增加 `source`）、`main.py` 生命周期里的后台同步任务、`core/config.py` 两个开关。
+- 前端：`src/api/eastmoneyBinding.ts`；`views/parts/watchlist/EastmoneyBindPanel.vue`（未绑定 → 扫码弹窗，倒计时、过期重生成；已绑定 → 昵称、最近同步、立即同步、重新扫码、解除绑定；登录失效提示）；`WatchlistView.vue` 接入，同步后静默刷新分组（不切回加载态，扫码弹窗不会被卸载）。
+- 测试：`tests/unit/test_eastmoney_account.py`、`tests/integration/test_eastmoney_binding.py`（真实 PostgreSQL：认领同名分组、改名、只删 eastmoney 来源、失败/空列表不删、登录失效、节流）、`tests/integration/test_eastmoney_api.py`（扫码 → 同步 → 解绑整条链路、越权）、前端 `tests/unit/eastmoneyBinding.test.ts`（9 个）。
+
+### 验证
+
+- 后端：`ruff check` / `ruff format --check` 通过；`mypy app` 仅剩 `trading_agents/upstream.py` 的 4 个既有错误（venv 缺 `langchain_core`）；`pytest` 554 个用例，551 通过、1 跳过、2 失败——失败的是 `test_dashboard_metrics.py` 两例，原因是本机测试库里残留的驾驶舱历史数据，与本轮无关（新建干净库不受影响）。
+- 前端：`vue-tsc --noEmit` 无错误；`vitest run` 38 个文件 / 202 个用例通过。
+- 真实上游：用用户本人的东财 App 扫码，完整走通二维码生成 → 轮询 → 登录成功 → 服务端 cookie 读取 7 个分组共 423 个成员（见研究文档第 8 节）。
+
+### 已知局限
+
+- 同步方向只有东财 → 本系统；在本系统里改东财自选不会回写。
+- 在东财里把标的从分组删掉，下次同步时本系统里对应的 `eastmoney` 来源条目才会消失；同步来的条目在本系统手动移出后，下一次同步会再加回来。
+- 二维码会话在进程内，多副本部署或重启会让进行中的扫码作废（重新扫即可）。
+- 登录态到期（约 90 天）或在东财被踢下线时需要重新扫码；没有服务端登出接口。
+- 首次同步会新建「自选股」等分组；生产上已有的手动导入分组「东方财富自选」（352 只 A 股）不会被认领（名称不同），会与新分组内容重叠，需要时手动删除旧分组。
+- 页面关闭后只有后端 300 秒一次的后台同步在跑；东财限流时同步失败只会记录在绑定状态里。

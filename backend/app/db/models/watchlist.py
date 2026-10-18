@@ -10,11 +10,22 @@ from app.db.base import Base
 
 class WatchlistGroup(Base):
     __tablename__ = "watchlist_groups"
-    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_watchlist_groups_owner_name"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_watchlist_groups_owner_name"),
+        Index(
+            "uq_watchlist_groups_owner_em_gid",
+            "user_id",
+            "em_gid",
+            unique=True,
+            postgresql_where=text("em_gid IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     name: Mapped[str] = mapped_column(String(40), nullable=False)
+    # 与东财自选分组对上的分组 id；为空表示本系统自建的分组。
+    em_gid: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -50,4 +61,8 @@ class WatchlistItem(Base):
     # 东财 secid，例如 90.BK0473（板块）、105.NVDA（美股）、171.US10Y（国债收益率）。
     ext_secid: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ext_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # manual 用户自己加的；eastmoney 同步来的（同步只会移除这一类）。
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual", server_default="manual"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

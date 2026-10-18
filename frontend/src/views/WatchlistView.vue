@@ -29,6 +29,7 @@ import { describeHit, routeForHit, searchInstruments, type InstrumentHit } from 
 import { asString, dataOf, listOf } from "../api/json"
 import { importCodes } from "../api/watchlistInsights"
 import { restoreSession, useSessionStore } from "../stores/auth"
+import EastmoneyBindPanel from "./parts/watchlist/EastmoneyBindPanel.vue"
 import WatchlistInsightsPanel from "./parts/watchlist/WatchlistInsightsPanel.vue"
 
 const session = useSessionStore()
@@ -242,19 +243,37 @@ async function load(): Promise<void> {
       failure.value = serverMessage(result.body)
       return
     }
-    groups.value = listOf(dataOf(result.body)?.groups).flatMap(parseGroup)
-    const first = groups.value[0]?.id ?? ""
-    for (const choice of [activeGroup, importGroup, insightGroup]) {
-      if (!groups.value.some((group) => group.id === choice.value)) {
-        choice.value = first
-      }
-    }
-    insightVersion.value += 1
+    applyGroups(result.body)
     phase.value = "ready"
     await loadMoves()
   } catch (caught) {
     failure.value = caught instanceof ApiError ? caught.message : "无法连接接口"
     phase.value = "error"
+  }
+}
+
+function applyGroups(body: unknown): void {
+  groups.value = listOf(dataOf(body)?.groups).flatMap(parseGroup)
+  const first = groups.value[0]?.id ?? ""
+  for (const choice of [activeGroup, importGroup, insightGroup]) {
+    if (!groups.value.some((group) => group.id === choice.value)) {
+      choice.value = first
+    }
+  }
+  insightVersion.value += 1
+}
+
+/** 东财同步后静默刷新分组：不切回加载态，绑定卡片和扫码弹窗不会被卸载。 */
+async function refreshAfterSync(): Promise<void> {
+  try {
+    const result = await authed("/api/v1/watchlists", { method: "GET" })
+    if (!result.ok) {
+      return
+    }
+    applyGroups(result.body)
+    await loadMoves()
+  } catch {
+    // 同步本身已成功；刷新失败时保留现有列表，用户手动刷新页面即可。
   }
 }
 
@@ -673,6 +692,8 @@ onMounted(() => {
           <template #icon><el-icon><Clock /></el-icon></template>
         </StatCard>
       </div>
+
+      <EastmoneyBindPanel @synced="refreshAfterSync" />
 
       <div class="grid-2">
         <PanelCard title="新建分组" info="按主题或行业建分组，例如「白酒」「银行」；名称最长 40 个字">

@@ -9,6 +9,7 @@ from app.api.v1.companies import router as company_router
 from app.api.v1.company_data import router as company_data_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.documents import router as document_router
+from app.api.v1.eastmoney import router as eastmoney_router
 from app.api.v1.filings import router as filing_router
 from app.api.v1.health import router as health_router
 from app.api.v1.industries import router as industry_router
@@ -45,4 +46,5 @@ router.include_router(integrations_router)
 router.include_router(analysis_router)
 router.include_router(assistant_router)
 router.include_router(watchlist_router)
+router.include_router(eastmoney_router)
 router.include_router(job_router)

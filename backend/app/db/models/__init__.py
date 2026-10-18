@@ -7,6 +7,7 @@ from app.db.models.dashboard_metric import DashboardDailyMetric
 from app.db.models.dashboard_snapshot import DashboardSeriesSnapshot
 from app.db.models.document import Document
 from app.db.models.document_chunk import DocumentChunk
+from app.db.models.eastmoney import EastmoneyBinding
 from app.db.models.financial import FinancialMetric
 from app.db.models.industry import (
     Industry,
@@ -51,6 +52,7 @@ __all__ = [
     "DataProvider",
     "Document",
     "DocumentChunk",
+    "EastmoneyBinding",
     "Filing",
     "Industry",
     "IndustryAssessment",

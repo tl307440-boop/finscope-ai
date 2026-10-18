@@ -150,6 +150,18 @@
 
 `GET /api/v1/analysis/reports?q=` 按标题筛选当前用户的研究记录，按创建时间从新到旧排列。`DELETE /api/v1/analysis/reports/{reportId}` 只隐藏自己的记录。`GET/POST /api/v1/watchlists` 管理自选分组，加入和移出证券也只作用于自己的分组。其他用户看到的列表是空的，删除别人的记录或自选会得到 404。自选里除沪深京个股，还能存东财的板块、指数、美股、ETF、国债收益率等（按东财 `市场.代码` 保存，列表条目带 `item_id / secid / kind / kind_label`，这类条目没有 `instrument_id`）：`POST /api/v1/watchlists/{id}/items/batch` 先匹配本系统证券、匹配不上就按东财代码保存，返回 `added / existing / external / unnamed / invalid`；`DELETE /api/v1/watchlists/{id}/items/{item_ref}` 的 `item_ref` 为条目 id（也兼容证券 id）；`GET /api/v1/watchlists/{id}/insights` 的 `others / others_section` 单列这类标的，不进入 A 股汇总。
 
+## 东方财富绑定
+
+扫码绑定东方财富账号后，把东财自选（全部分组）单向同步成本系统的自选分组。全部接口需要登录，只作用于当前用户。登录凭证只加密保存在服务端，任何接口都不返回 cookie 或令牌。
+
+- `GET /api/v1/eastmoney`：绑定状态。`bound=false` 时只有该字段；已绑定时返回 `status`（`active` / `expired`，`expired` 表示东财登录已失效，需要重新扫码）、`alias`、`bound_at`、`last_sync_at`、`message`、`groups`、`items`。
+- `POST /api/v1/eastmoney/qr`：生成扫码二维码，返回 `login_id`、`qr_png_base64`、`expires_in`（秒）。同一用户 3 秒内重复请求返回 429。
+- `GET /api/v1/eastmoney/qr/{login_id}`：查询扫码状态，`state` 为 `waiting` / `expired` / `success`。成功时后端已保存登录态并立即同步一次，返回 `alias` 与 `sync`；首次同步失败时 `sync_error` 给出原因，绑定仍然成立。
+- `POST /api/v1/eastmoney/sync`：立即同步，返回 `groups / items / added / removed / message / synced_at / skipped_groups / cached`。同一用户 30 秒内重复调用直接返回上次结果（`cached=true`）。未绑定返回 404，登录已失效返回 409，东财上游出错返回 502（绑定状态里记录原因，不删任何数据）。
+- `DELETE /api/v1/eastmoney`：解除绑定并立即删除登录凭证，已同步的自选保留；未绑定返回 404。
+
+同步规则：分组按东财分组 id 匹配（同名且未绑定的分组会被认领）；条目带 `source`，同步只移除 `eastmoney` 来源且东财里已删掉的条目，手动添加的永不被同步删除；任何失败或东财返回空列表都不会删除数据。配置项 `EASTMONEY_SYNC_ENABLED`（默认开）与 `EASTMONEY_SYNC_INTERVAL_SECONDS`（默认 300）控制后台定时同步。
+
 ## 行业假设
 
 `GET /api/v1/industries` 返回目录分类。`GET /api/v1/industries/{industryId}/facts?as_of=` 只列出该行业成员在截止日之前已经入库的事实。`POST /api/v1/industries/{industryId}/theses` 保存可证伪假设，必须同时写下支持和反证条件。`POST /api/v1/theses/{thesisId}/evidence` 只能引用这些事实，引用文字由服务端按入库数字生成。同一条事实不能既当支持又当反证。`POST /api/v1/theses/{thesisId}/assessments` 在截止日同时看到支持和反证时，状态是 `contested`，说明这不是已证实的结论。别人看不到自己的假设。早于事实申报日的截止日不会把那条证据算进去。
