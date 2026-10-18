@@ -128,8 +128,13 @@ describe("美国经济页", () => {
     const batch = urls.filter((url) => url.includes("/api/v1/macro/observations"))
     expect(batch).toHaveLength(1)
     const params = new URL(batch[0] ?? "", "http://localhost").searchParams
-    // 只请求目录里有的序列；GDP 已离开指标带与走势图，不再请求
-    expect(params.get("codes")?.split(",").sort()).toEqual(["CPIAUCSL", "DGS10", "UNRATE"])
+    // 目录里的序列都要取回，指标清单才能标出是否已有观测
+    expect(params.get("codes")?.split(",").sort()).toEqual(["CPIAUCSL", "DGS10", "GDP", "UNRATE"])
+    expect(screen.getByText("多指标走势")).toBeTruthy()
+    expect(screen.getByText("指标走势")).toBeTruthy()
+    expect(screen.getByText("指标清单")).toBeTruthy()
+    expect(screen.queryByText("政策利率与美债收益率")).toBeNull()
+    expect(screen.queryByText("通胀走势")).toBeNull()
     expect(params.get("as_of")).toMatch(/^\d{4}-\d{2}-\d{2}$/)
 
     expect(screen.getByText("宏观数据对比分析")).toBeTruthy()
@@ -146,9 +151,9 @@ describe("美国经济页", () => {
   })
 
   it("目录齐全时一次请求指标带 ∪ 走势图的全部序列，且不超过批量上限 20", async () => {
-    const expected = [...new Set([...tileCodes(), ...PLOT_CODES])].sort()
-    // GDP / FEDFUNDS / DGS2 仍在目录里，但不属于指标带与走势图，不应请求
-    const catalog = [...expected, "GDP", "FEDFUNDS", "DGS2"].map((code) => catalogEntry(code, "Monthly"))
+    const expected = [...new Set([...tileCodes(), ...PLOT_CODES, "GDP", "FEDFUNDS", "DGS2"])].sort()
+    // 指标清单要覆盖目录里其余序列，但仍不得超过批量上限 20
+    const catalog = expected.map((code) => catalogEntry(code, "Monthly"))
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes("/api/v1/macro/series")) {

@@ -159,8 +159,9 @@ describe("中国经济页", () => {
     renderPage()
 
     expect(await screen.findByText("宏观象限：增长 × 通胀")).toBeTruthy()
-    expect(screen.getByText("通胀走势")).toBeTruthy()
-    expect(screen.getByText("增长与货币走势")).toBeTruthy()
+    expect(screen.getByText("多指标走势")).toBeTruthy()
+    expect(screen.queryByText("增长与货币走势")).toBeNull()
+    expect(screen.queryByText("通胀走势")).toBeNull()
     expect(screen.getByText("宏观数据对比分析")).toBeTruthy()
     expect(screen.getByText("未来宏观行情推演")).toBeTruthy()
     expect(screen.getByText("AI 宏观解读")).toBeTruthy()
