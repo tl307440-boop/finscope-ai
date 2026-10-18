@@ -112,14 +112,29 @@ describe("自选看板与研究假设解析", () => {
         { instrument_id: "b", display_symbol: "000858.SZ", code: "000858", name: "五粮液", origin: "stored" },
       ],
       industries: [{ name: "白酒Ⅱ", board_code: "BK0896", count: 2, market_cap: "0", weight_pct: null }],
-      unsupported: ["AAPL"],
+      others: [
+        { item_id: "x1", display_symbol: "BK0473", code: "BK0473", secid: "90.BK0473", name: "证券Ⅱ", kind: "board", kind_label: "板块", last: "134562.68", change_pct: "-1.23" },
+        { item_id: "x2", display_symbol: "US10Y", code: "US10Y", name: "美国10年期国债收益率", kind: "bond_yield" },
+        { name: "缺代码" },
+      ],
+      others_section: { status: "stale", reason: "东财没有返回这些标的的行情：LUMN" },
     })
     expect(parsed.summary.averageChangePct).toBe(1.5)
     expect(parsed.summary.weightedChangePct).toBeNull()
     expect(parsed.stocks[1]?.changePct).toBeNull()
     expect(parsed.industries[0]?.weightPct).toBeNull()
     expect(parsed.quoteSection.dataDate).toBe("2026-10-16")
-    expect(parsed.unsupported).toEqual(["AAPL"])
+    expect(parsed.others).toHaveLength(2)
+    expect(parsed.others[0]).toMatchObject({ code: "BK0473", kind: "board", kindLabel: "板块", last: 134562.68, changePct: -1.23, instrumentId: "" })
+    // 缺报价的外部标的保持 null，类别标签缺失时回退为「其他」，不补零。
+    expect(parsed.others[1]).toMatchObject({ last: null, changePct: null, kindLabel: "其他", secid: "" })
+    expect(parsed.othersSection.status).toBe("stale")
+  })
+
+  it("旧版后端没有 others 字段时按空列表处理", () => {
+    const parsed = parseInsights({ group_name: "旧", stocks: [], industries: [] })
+    expect(parsed.others).toEqual([])
+    expect(parsed.othersSection.status).toBe("unavailable")
   })
 
   it("研究假设缺标题的条目被丢弃，依据条数缺失记 0", () => {

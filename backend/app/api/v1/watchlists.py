@@ -10,15 +10,21 @@ from sqlalchemy import Engine
 from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
-from app.repositories.watchlists import WatchGroup, WatchlistRepository
+from app.repositories.watchlists import (
+    ExternalTarget,
+    WatchGroup,
+    WatchItem,
+    WatchlistRepository,
+)
 from app.schemas.watchlist_insights import ImportResult
 from app.services.auth_types import UserRecord
 from app.services.watchlist_insights import (
     MAX_IMPORT,
     WatchlistInsightsService,
     get_insights_service,
-    parse_codes,
+    parse_targets,
 )
+from app.utils.watch_secid import a_share_secid, display_symbol, kind_label, kind_of_secid
 
 router = APIRouter(prefix="/watchlists", tags=["自选"])
 
@@ -32,9 +38,14 @@ class ItemCreate(BaseModel):
 
 
 class ItemData(BaseModel):
-    instrument_id: UUID
+    # item_id 是这一行自选的 id，移出自选用它；外部标的（板块、指数、美股……）没有 instrument_id。
+    item_id: UUID | None = None
+    instrument_id: UUID | None = None
     display_symbol: str
     name_cn: str
+    secid: str | None = None
+    kind: str = "other"
+    kind_label: str = "其他"
 
 
 class GroupData(BaseModel):
@@ -55,14 +66,20 @@ def _group(group: WatchGroup) -> GroupData:
     return GroupData(
         id=group.id,
         name=group.name,
-        items=[
-            ItemData(
-                instrument_id=item.instrument_id,
-                display_symbol=item.display_symbol,
-                name_cn=item.name_cn,
-            )
-            for item in group.items
-        ],
+        items=[_item(item) for item in group.items],
+    )
+
+
+def _item(item: WatchItem) -> ItemData:
+    kind = kind_of_secid(item.secid) if item.secid else "other"
+    return ItemData(
+        item_id=item.item_id,
+        instrument_id=item.instrument_id,
+        display_symbol=item.display_symbol,
+        name_cn=item.name_cn,
+        secid=item.secid,
+        kind=kind,
+        kind_label=kind_label(kind),
     )
 
 
@@ -116,32 +133,58 @@ class BatchImport(BaseModel):
     text: str = Field(min_length=1, max_length=8000)
 
 
-@router.post("/{group_id}/items/batch", summary="粘贴股票代码批量加入自选")
-def import_watch_items(
+@router.post(
+    "/{group_id}/items/batch", summary="粘贴代码批量加入自选（A 股、板块、指数、美股、基金…）"
+)
+async def import_watch_items(
     group_id: UUID,
     body: BatchImport,
     request: Request,
     user: Annotated[UserRecord, Depends(get_current_user)],
+    service: Annotated[WatchlistInsightsService, Depends(get_insights_service)],
 ) -> JSONResponse:
-    codes, invalid = parse_codes(body.text)
-    if not codes:
+    parsed = parse_targets(body.text)
+    total = len(parsed.cn) + len(parsed.external)
+    if not total:
         raise AppError(
             code="VALIDATION_ERROR",
-            message="没有识别到 A 股代码，支持 600519、SH600519、600519.SH 这几种写法",
+            message="没有识别到代码，支持 600519、SH600519、600519.SH，"
+            "以及东财写法 90.BK1630（板块）、105.NVDA（美股）、171.US10Y（国债收益率）",
             status_code=422,
         )
-    if len(codes) > MAX_IMPORT:
+    if total > MAX_IMPORT:
         raise AppError(
             code="VALIDATION_ERROR", message=f"一次最多导入 {MAX_IMPORT} 只", status_code=422
         )
-    outcome = WatchlistRepository(_engine(request)).add_codes(user.id, group_id, codes)
+    repository = WatchlistRepository(_engine(request))
+    outcome = await asyncio.to_thread(repository.add_codes, user.id, group_id, parsed.cn)
     if outcome is None:
         raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
+    # 本系统没有收录的 A 股（如北交所新股、ETF）不丢弃，改按东财代码保存。
+    secids = [
+        *parsed.external,
+        *(a_share_secid(exchange, code) for exchange, code in outcome.missing_keys),
+    ]
+    names = await service.resolve_names(secids)
+    external = await asyncio.to_thread(
+        repository.add_external,
+        user.id,
+        group_id,
+        [ExternalTarget(secid, names.get(secid)) for secid in secids],
+    )
+    if external is None:
+        raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
+    saved = [label for label in external.added if label not in external.linked]
     result = ImportResult(
-        added=list(outcome.added),
-        existing=list(outcome.existing),
-        missing=list(outcome.missing),
-        invalid=invalid[:50],
+        added=[*outcome.added, *external.added],
+        existing=[*outcome.existing, *external.existing],
+        external=saved,
+        unnamed=[
+            label
+            for label in (display_symbol(secid) for secid in secids if secid not in names)
+            if label in saved
+        ],
+        invalid=parsed.invalid[:50],
     )
     return JSONResponse(status_code=200, content=success_response(request, result))
 
@@ -158,17 +201,31 @@ async def read_watch_insights(
     if group is None:
         raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
     insights = await service.build(group, repository.recent_closes)
+    # 导入时东财没返回名称的外部标的，现在取到了就记下来，列表页不再只显示代码。
+    stored = {item.item_id: item for item in group.items if item.instrument_id is None}
+    unnamed = {
+        row.item_id: row.name
+        for row in insights.others
+        if row.item_id is not None
+        and row.item_id in stored
+        and stored[row.item_id].name_cn == stored[row.item_id].symbol
+        and row.name != stored[row.item_id].symbol
+    }
+    if unnamed:
+        await asyncio.to_thread(repository.fill_external_names, user.id, group_id, unnamed)
     return JSONResponse(status_code=200, content=success_response(request, insights))
 
 
-@router.delete("/{group_id}/items/{instrument_id}", summary="移出自选")
+@router.delete("/{group_id}/items/{item_ref}", summary="移出自选")
 def remove_watch_item(
     group_id: UUID,
-    instrument_id: UUID,
+    item_ref: UUID,
     request: Request,
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> JSONResponse:
-    removed = WatchlistRepository(_engine(request)).remove_item(user.id, group_id, instrument_id)
+    """item_ref 为自选条目 id（列表里的 item_id）或本系统证券 id（兼容旧调用）。"""
+
+    removed = WatchlistRepository(_engine(request)).remove_item(user.id, group_id, item_ref)
     if removed is None:
         raise AppError(code="NOT_FOUND", message="找不到这个分组", status_code=404)
     return JSONResponse(
