@@ -1661,12 +1661,12 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 用真实上游逐个实测（只读、不写库）：M1、PMI 新订单、PMI 新出口订单、工业企业利润、民间 / 制造业投资、商品房销售、财政支出、GDP、出口全部取得到最新数据（2026-09 / 2026-08），抓取逻辑没有问题。原因是两个：
 
 1. 定时任务每天 01:20 才登记一次，部署完当天新增序列没有数据。
-2. 人民银行三项是人工导入序列，已核对的种子 ackend/seed_data/china_pboc_monthly.csv 没有进后端镜像，线上容器里没有这个文件，没法用脚本导入。
+2. 人民银行三项是人工导入序列，已核对的种子 backend/seed_data/china_pboc_monthly.csv 没有进后端镜像，线上容器里没有这个文件，没法用脚本导入。
 
 ### 变更
 
 - services/scheduler.py：china_macro_missing_series（纯函数：自动序列里一条都没有的，人工序列不算）与 catch_up_china_macro；workers/scheduler.py 启动时调用，失败只记日志不拦调度器。登记键按天幂等，同一天重启多次只有一条。
-- ackend/Dockerfile：COPY seed_data ./seed_data。
+- backend/Dockerfile：COPY seed_data ./seed_data。
 - docs/使用说明.md 6.2：补「刚部署完怎么没数据」与人民银行三项的导入命令。
 
 ### 没有做的事
@@ -1677,3 +1677,26 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 新增 5 个单测：缺序列时登记一次、全部有数据不登记、只缺人工序列不登记、开关关闭不登记、缺失清单只含自动序列。
 - 本机临时库端到端：补登记 1 次（同一天再调 0 次）→ sync_china_macro 写入 1863 条 → 导入种子 60 条，自动序列无空缺。M1 同比 3.2%、社融存量同比 7.1%（2026-09）与人民银行 10 月 14 日公布值一致。
+## 2026-10-18 ASSISTANT-DESIGN AI 投研助手改造设计稿与案头核实（仅文档）
+
+### 做了什么
+
+新增 `finscopeAI_deploy/`，放本次助手改造的设计与部署相关文件。当前只有设计稿 `AI助手改造设计.md` 和目录说明，没有改任何代码、配置或现有 `deploy/`。
+
+设计稿覆盖：工具调用式编排器、A 线数据查询工具、B 线动态语料库（来源登记 / 流水线 / 混合检索）、向量化（local / cloud / hashing）、联网搜索、多轮、数据模型变更、分期（5 期）。
+
+### 核实结论（只查官方文档、模型主页与站点条款原文，未写原型、未上服务器）
+
+- 服务器 2 核 / 3.6 GB：`bge-m3`（权重 2.27 GB）放不下；本地向量默认改为 `multilingual-e5-small`（384 维，约 449 MB）。向量列固定 `vector(1024)`，短向量零填充（余弦不变）；pgvector 的 HNSW 上限 2000 维。
+- 联网搜索：Google / Bing 网页引擎的条款不允许自动化抓取，DuckDuckGo 条款原文未读到，**SearXNG 这几个引擎不能直接启用**。`web_search` 改为可替换的 `SearchProvider`（`searxng` 引擎白名单默认空，或 `brave_api`），第 4 期前需你决定。
+- DeepSeek 官方文档确认支持 OpenAI 格式的工具调用；文档推荐的模型名与运维指南里的 `deepseek-chat` 不一致，需看服务器实际配置并探测。
+- 语料授权：美联储内容公有领域（注明来源、第三方材料例外）；国家统计局允许非商业、注明来源的合理转载；SEC 限速 10 次/秒且必须声明 UA。
+- 发现：`config.py` 里 `sec_user_agent` 默认是占位邮箱 `research-admin@example.com`，上线前须在服务器 `.env` 换成真实联系方式。
+
+### 没有验证的
+
+服务器内存余量、线上模型名与工具调用、DuckDuckGo 条款原文、证监会 / 政府网站 / IMF / BIS / ECB 的条款与 robots 路径、`multilingual-e5-small` 的中文检索效果。这些在设计稿「待确认」里列了。
+
+### 验证
+
+纯文档变更，无代码测试；已核对设计稿里引用的代码位置与配置项（`config.py` 的 `sec_user_agent` 默认值）。
