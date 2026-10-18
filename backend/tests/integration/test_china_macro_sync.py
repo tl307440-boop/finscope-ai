@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from app.core.config import get_settings
 from app.db.session import create_db_engine
-from app.providers import china_macro_sources
+from app.providers import china_macro_sources, nbs_macro
 from app.providers.errors import ProviderError
 from app.services.china_macro import CsvObservation
 from app.services.data_sync import sync_china_macro
@@ -73,23 +73,43 @@ def test_sync_is_idempotent_and_keeps_good_series_when_one_source_fails(
     async def fake_social(client: object):
         return (_row("SOCIAL_FINANCING", "1234"),)
 
+    async def fake_nbs(client: object, request: nbs_macro.NbsRequest, today: date):
+        if request.frequency == "quarterly":
+            raise ProviderError(code="UPSTREAM_ERROR", message="被限流", status_code=302)
+        return tuple(_row(item.series_code, "1.5") for item in request.indicators)
+
     monkeypatch.setattr(china_macro_sources, "fetch_eastmoney", fake_eastmoney)
     monkeypatch.setattr(china_macro_sources, "fetch_social_financing", fake_social)
+    monkeypatch.setattr(nbs_macro, "fetch_nbs", fake_nbs)
+
+    eastmoney_ok = {spec.series_code for spec in china_macro_sources.EASTMONEY_SPECS} - {"PPI_CN"}
+    nbs_ok = {
+        item.series_code
+        for request in nbs_macro.NBS_REQUESTS
+        if request.frequency != "quarterly"
+        for item in request.indicators
+    }
+    first_pass = len(eastmoney_ok) + 1 + len(nbs_ok)  # + 社融；核心 CPI 两段只算一个序列
 
     with pytest.raises(ProviderError) as info:
-        asyncio.run(sync_china_macro(engine))
+        asyncio.run(sync_china_macro(engine, today=OBSERVED))
     assert info.value.code == "UPSTREAM_PARTIAL"
     assert "PPI_CN" in info.value.message
-    assert _count(engine) == 5  # 其余 4 个东方财富序列 + 社融已经写入
+    assert "GDP_CN" in info.value.message
+    assert _count(engine) == first_pass  # 失败的两个源不影响其余序列入库
 
-    async def healthy(client: object, spec: china_macro_sources.EastmoneySpec):
+    async def healthy_eastmoney(client: object, spec: china_macro_sources.EastmoneySpec):
         return (_row(spec.series_code, "1.5"),)
 
-    monkeypatch.setattr(china_macro_sources, "fetch_eastmoney", healthy)
-    assert asyncio.run(sync_china_macro(engine)) == 1  # 只补上失败的那一个
-    assert _count(engine) == 6
-    assert asyncio.run(sync_china_macro(engine)) == 0  # 重放不重复写
-    assert _count(engine) == 6
+    async def healthy_nbs(client: object, request: nbs_macro.NbsRequest, today: date):
+        return tuple(_row(item.series_code, "1.5") for item in request.indicators)
+
+    monkeypatch.setattr(china_macro_sources, "fetch_eastmoney", healthy_eastmoney)
+    monkeypatch.setattr(nbs_macro, "fetch_nbs", healthy_nbs)
+    assert asyncio.run(sync_china_macro(engine, today=OBSERVED)) == 2  # 只补上 PPI 与 GDP
+    assert _count(engine) == first_pass + 2
+    assert asyncio.run(sync_china_macro(engine, today=OBSERVED)) == 0  # 重放不重复写
+    assert _count(engine) == first_pass + 2
 
 
 def test_published_at_never_precedes_observation(engine: Engine) -> None:

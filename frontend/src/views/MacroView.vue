@@ -37,6 +37,11 @@ import {
 import PageHeader from "../components/ui/PageHeader.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import MacroTicker from "./parts/macro/MacroTicker.vue"
+import MacroAiPanel from "./parts/macro/MacroAiPanel.vue"
+import MacroComparePanel from "./parts/macro/MacroComparePanel.vue"
+import MacroScenarioPanel from "./parts/macro/MacroScenarioPanel.vue"
+import { US_COMPARE_DEFAULT, US_COMPARE_SPECS } from "../api/usPanels"
+import { buildQuadrantModel } from "../api/macroStats"
 import StatusPill from "../components/ui/StatusPill.vue"
 import SectionTabs from "../components/ui/SectionTabs.vue"
 import SeriesPicker from "../components/ui/SeriesPicker.vue"
@@ -113,6 +118,15 @@ function formatPlain(value: number, digits = 2): string {
 
 const tileViews = computed<TileView[]>(() =>
   TILE_SPECS.map((spec) => buildTile(spec, observationsByCode.value, catalog.value)),
+)
+
+/** 情景推演：增长 = 实际 GDP 环比折年率，通胀 = CPI 同比（取该季最后一个月），用全部可得历史。 */
+const scenarioModel = computed(() =>
+  buildQuadrantModel(
+    applyTransform("saar", rowsOf("GDPC1")),
+    applyTransform("yoy", rowsOf("CPIAUCSL")),
+    30,
+  ),
 )
 
 const hasAnyObservation = computed<boolean>(() => Object.values(observationsByCode.value).some((rows) => rows.length))
@@ -915,6 +929,18 @@ onMounted(() => {
           </PanelCard>
         </div>
 
+        <div v-if="hasAnyObservation" class="macro-extra">
+          <MacroComparePanel
+            :specs="US_COMPARE_SPECS"
+            :rows-by-code="observationsByCode"
+            :default-codes="US_COMPARE_DEFAULT"
+            default-mode="index"
+            filename="us-macro-compare"
+          />
+          <MacroScenarioPanel :model="scenarioModel" growth-label="实际 GDP 环比折年率" inflation-label="CPI 同比" />
+          <MacroAiPanel region="us" :as-of="appliedAsOf" />
+        </div>
+
         <SourceFooter
           :as-of="latestObservationDate || appliedAsOf"
           :sources="[sourceLabel, '东方财富数据中心（ISM PMI）']"
@@ -989,7 +1015,22 @@ p.small {
   align-items: start;
 }
 
+.macro-extra {
+  display: grid;
+  gap: var(--gap);
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
 @media (max-width: 1440px) {
+  .macro-extra {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .macro-extra > :first-child {
+    grid-column: 1 / -1;
+  }
+
   .macro-main {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
@@ -1000,6 +1041,10 @@ p.small {
 }
 
 @media (max-width: 1024px) {
+  .macro-extra {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .macro-main {
     grid-template-columns: minmax(0, 1fr);
   }

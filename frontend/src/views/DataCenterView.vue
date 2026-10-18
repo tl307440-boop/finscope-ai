@@ -45,6 +45,7 @@ import {
   type SyncRangePreset,
 } from "../api/syncRange"
 import { restoreSession, useSessionStore } from "../stores/auth"
+import ChinaImportPanel from "./parts/data/ChinaImportPanel.vue"
 
 const session = useSessionStore()
 const router = useRouter()
@@ -1139,6 +1140,8 @@ onMounted(() => {
           <p class="card-note">只做演练，不会改动已入库的数据。</p>
         </PanelCard>
       </div>
+
+      <ChinaImportPanel />
     </div>
   </main>
 </template>

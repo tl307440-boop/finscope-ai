@@ -15,7 +15,7 @@ from app.repositories.macro_china import MacroChinaRepository
 from app.repositories.news_events import NewsEventRecord, NewsEventRepository
 from app.repositories.reports import ReportRepository
 from app.services.auth_types import UserRecord
-from app.services.china_macro import CHINA_SERIES, public_status
+from app.services.china_macro import CHINA_SERIES, public_status, series_spec
 from app.services.daily_digest import build_digest
 from app.services.disclosure_events import (
     EXTERNAL_FEED_NAMES,
@@ -31,8 +31,11 @@ from app.utils.time import utc_now
 router = APIRouter(tags=["研究板"])
 
 CHINA_CSV_NOTICE = (
-    "还没有导入正式 CSV：占位序列全部按 unavailable 返回，不填任何编造的数字。"
-    "管理员可以用 POST /api/v1/macro/china/observations 导入国家统计局（或同源口径）的 CSV。"
+    "没有观测值的序列按 unavailable 返回，不填任何编造的数字。"
+    "manual_only 的序列（社融存量同比、企业中长期贷款增量、政府债券净融资）来自中国人民银行"
+    "调查统计司统计表，对方 robots.txt 不允许抓取，所以不做自动同步；管理员按月用 "
+    "POST /api/v1/macro/china/observations 或 python -m app.scripts.import_china_csv 导入 CSV；"
+    "其余序列由后台任务每天自动同步。"
 )
 
 # 页面默认看两周的公告窗口。
@@ -70,6 +73,11 @@ class ChinaSeriesItem(BaseModel):
     latest_observation_date: date | None = None
     source: str | None = None
     published_at: datetime | None = None
+    # 频率与来源口径：指标带据此换算「较上期」、写 ? 提示。
+    frequency: str = ""
+    source_agency: str = ""
+    # True：没有已核实的公开自动来源，只能管理员导入 CSV。
+    manual_only: bool = False
 
 
 class ChinaSeriesList(BaseModel):
@@ -283,11 +291,15 @@ def read_china_macro(request: Request) -> JSONResponse:
         summary = summaries.get(code)
         stored = summary.observation_count if summary is not None else 0
         latest = summary.latest if summary is not None else None
+        spec = series_spec(code)
         items.append(
             ChinaSeriesItem(
                 code=code,
                 name=name,
                 unit=unit,
+                frequency="" if spec is None else spec.frequency,
+                source_agency="" if spec is None else spec.source_agency,
+                manual_only=False if spec is None else spec.manual_only,
                 status=public_status(
                     code,
                     observation_count=stored,

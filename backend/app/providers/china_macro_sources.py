@@ -1,8 +1,10 @@
-"""中国宏观六序列的公开数据源。
+"""中国宏观序列的公开数据源。
 
-* CPI / PPI / PMI / M2 / 规模以上工业增加值：东方财富数据中心 ``RPT_ECONOMY_*``
-  （转载国家统计局、中国人民银行的月度公布值）。
+* CPI / PPI / PMI / M1 / M2 / 规模以上工业增加值 / 社零 / 出口：东方财富数据中心 ``RPT_ECONOMY_*``
+  （转载国家统计局、中国人民银行、海关总署的月度公布值）。
 * 社会融资规模增量：商务部数据中心公开接口（转载中国人民银行口径，单位亿元）。
+* 核心 CPI、PMI 新订单 / 新出口订单、工业企业利润、固定资产投资、商品房销售额、财政支出、GDP：
+  国家统计局数据发布库，见 ``providers/nbs_macro.py``（发布日规则同在这里的 ``PUBLISH_RULES``）。
 
 这些接口只给「观察月」，不给公布日。时点回看要求 ``published_at <= as_of``，所以这里为每个序列
 定一个**保守上界**：官方实际公布日一定不晚于它，这样回看时只会晚看到、不会提前看到未公布的数据。
@@ -24,9 +26,14 @@ EASTMONEY_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 MOFCOM_URL = "https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery"
 PAGE_SIZE = 120  # 约 10 年月度数据；重复写入由去重键保证幂等
 
-PublishRule = Literal["next_month_15", "next_month_1", "next_month_20"]
-# 官方公布日（大致）：CPI/PPI 次月 9-15 日；PMI 当月最后一天；M2、工业增加值次月 10-17 日；
-# 社融次月 10-15 日。上界取更晚的整日，宁晚勿早。
+PublishRule = Literal[
+    "next_month_15", "next_month_1", "next_month_20", "next_month_28", "quarter_next_month_20"
+]
+# 官方公布日（大致）：CPI/PPI 次月 9-15 日；PMI 当月最后一天；M2、M1、工业增加值次月 10-17 日；
+# 社融次月 10-15 日；海关进出口次月 7-14 日；
+# 社零 / 固定资产投资 / 房地产与工业增加值同日（次月 15-17 日）；
+# 规模以上工业企业利润次月 27 日；财政收支次月中旬至下旬（经国家统计局转载更晚）；
+# GDP 季后次月 15-17 日（观测日取季首日）。上界取更晚的整日，宁晚勿早。
 PUBLISH_RULES: dict[str, PublishRule] = {
     "CPI_CN": "next_month_15",
     "PPI_CN": "next_month_15",
@@ -34,6 +41,18 @@ PUBLISH_RULES: dict[str, PublishRule] = {
     "M2_CN": "next_month_20",
     "INDUS_CN": "next_month_20",
     "SOCIAL_FINANCING": "next_month_20",
+    "CORE_CPI_CN": "next_month_15",
+    "PMI_NEW_ORDERS_CN": "next_month_1",
+    "PMI_NEW_EXPORT_ORDERS_CN": "next_month_1",
+    "INDUS_PROFIT_CN": "next_month_28",
+    "M1_CN": "next_month_20",
+    "RETAIL_CN": "next_month_20",
+    "HOUSE_SALES_CN": "next_month_20",
+    "PRIVATE_INVEST_CN": "next_month_20",
+    "MFG_INVEST_CN": "next_month_20",
+    "FISCAL_SPEND_CN": "next_month_28",
+    "GDP_CN": "quarter_next_month_20",
+    "EXPORT_CN": "next_month_15",
 }
 
 
@@ -70,6 +89,28 @@ EASTMONEY_SPECS: tuple[EastmoneySpec, ...] = (
         "Percent",
         "东方财富数据中心（国家统计局）",
     ),
+    # 以下三条 2026-10 实测可取：M1 同比、社零当月同比、海关出口当月同比。
+    EastmoneySpec(
+        "M1_CN",
+        "RPT_ECONOMY_CURRENCY_SUPPLY",
+        "CURRENCY_SAME",
+        "Percent",
+        "东方财富数据中心（中国人民银行）",
+    ),
+    EastmoneySpec(
+        "RETAIL_CN",
+        "RPT_ECONOMY_TOTAL_RETAIL",
+        "RETAIL_TOTAL_SAME",
+        "Percent",
+        "东方财富数据中心（国家统计局）",
+    ),
+    EastmoneySpec(
+        "EXPORT_CN",
+        "RPT_ECONOMY_CUSTOMS",
+        "EXIT_BASE_SAME",
+        "Percent",
+        "东方财富数据中心（海关总署）",
+    ),
 )
 SOCIAL_FINANCING_SOURCE = "商务部数据中心（中国人民银行口径）"
 SOCIAL_FINANCING_UNIT = "亿元"
@@ -78,8 +119,17 @@ SOCIAL_FINANCING_UNIT = "亿元"
 def published_upper_bound(series_code: str, observation_date: date) -> date:
     rule = PUBLISH_RULES[series_code]
     year, month = observation_date.year, observation_date.month
-    next_year, next_month = (year + 1, 1) if month == 12 else (year, month + 1)
-    day = {"next_month_15": 15, "next_month_1": 1, "next_month_20": 20}[rule]
+    if rule == "quarter_next_month_20":
+        # 观测日是季首日：季末月 = 首月 + 2，公布在再下一个月。
+        month += 2
+    next_year, next_month = (year + 1, month - 11) if month >= 12 else (year, month + 1)
+    day = {
+        "next_month_15": 15,
+        "next_month_1": 1,
+        "next_month_20": 20,
+        "next_month_28": 28,
+        "quarter_next_month_20": 20,
+    }[rule]
     return date(next_year, next_month, day)
 
 
