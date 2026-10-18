@@ -18,6 +18,7 @@ import {
   DArrowRight,
   DataAnalysis,
   DataBoard,
+  DataLine,
   Document,
   Histogram,
   HomeFilled,
@@ -61,7 +62,7 @@ const collapsed = ref(false)
 const snapshot = ref<SystemSnapshot | null>(null)
 const statusError = ref("")
 
-/** 11 个一级导航。规格书未列但已实现的能力挂在对应分组下，不删除。 */
+/** 规格书的 11 个一级导航 + 自定义数据分析（用户自加，紧跟 AI 投研助手）。 */
 const groups = computed<NavGroup[]>(() => {
   const items: NavGroup[] = [
     {
@@ -125,6 +126,13 @@ const groups = computed<NavGroup[]>(() => {
       label: "AI投研助手",
       icon: MagicStick,
       primary: "/assistant",
+      children: [],
+    },
+    {
+      key: "custom-analysis",
+      label: "自定义数据分析",
+      icon: DataLine,
+      primary: "/custom-analysis",
       children: [],
     },
     {

@@ -10,6 +10,7 @@ import BoardView from "../views/BoardView.vue"
 import CompanyAnalysisView from "../views/CompanyAnalysisView.vue"
 import CompanyFilingsView from "../views/CompanyFilingsView.vue"
 import CompanyView from "../views/CompanyView.vue"
+import CustomAnalysisView from "../views/CustomAnalysisView.vue"
 import DashboardView from "../views/DashboardView.vue"
 import DataCenterView from "../views/DataCenterView.vue"
 import IndustryBoardView from "../views/IndustryBoardView.vue"
@@ -109,6 +110,9 @@ export const routes = [
 
   // AI 问答（P1）
   { path: "/assistant", name: "assistant", component: AssistantView, meta: { requiresAuth: true } },
+
+  // 自定义数据分析（规格书未列，用户自加；数据全部来自公开页面，无需登录）
+  { path: "/custom-analysis", name: "custom-analysis", component: CustomAnalysisView },
 
   // 报告管理（P1）
   { path: "/reports", name: "reports", component: LibraryView, meta: { requiresAuth: true } },

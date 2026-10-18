@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     scheduler_enable_board_market: bool = True
     scheduler_board_market_hour: int = 15
     scheduler_board_market_minute: int = 45
+    # 自定义数据分析：期权 PCR、股债收益差、巴菲特指标、中位数 PB。
+    # 交易所与中证指数在收盘后一两个小时内陆续发布，18:30 取数；首次回填 5 年用
+    # `python -m app.scripts.backfill_custom_analysis`，调度只做增量。
+    scheduler_enable_custom_analysis: bool = True
+    scheduler_custom_analysis_hour: int = 18
+    scheduler_custom_analysis_minute: int = 30
     # 美股收盘（美东 16:00）折合北京时间约凌晨 4~5 点，所以 6:30 之后取日线，周二到周六触发。
     scheduler_us_bars_hour: int = 6
     scheduler_us_bars_minute: int = 30
