@@ -25,6 +25,7 @@ from app.repositories.worker_heartbeat import WorkerHeartbeatRepository
 from app.services.scheduler import (
     RegisteredJob,
     build_scheduler,
+    catch_up_china_macro,
     catch_up_universe,
     register_jobs,
 )
@@ -104,6 +105,13 @@ def _catch_up(engine: Engine, settings: Settings) -> None:
     except Exception:
         # 补登记失败不能拦住调度器本身；周日的定时触发仍会补上。
         logger.warning("scheduler universe catch-up failed error_type=unexpected")
+    try:
+        queued = catch_up_china_macro(engine, settings)
+        if queued:
+            logger.info("scheduler queued china macro catch-up jobs=%s", queued)
+    except Exception:
+        # 同理：失败不拦调度器，次日 01:20 的定时触发仍会抓。
+        logger.warning("scheduler china macro catch-up failed error_type=unexpected")
 
 
 def _beat(

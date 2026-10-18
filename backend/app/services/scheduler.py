@@ -54,9 +54,11 @@ from app.db.models.provider import DataProvider
 from app.providers.akshare_bars import DAILY_TARGETS, AdjustmentCode, target_for
 from app.repositories.instruments import InstrumentRepository
 from app.repositories.macro import MacroRepository
+from app.repositories.macro_china import MacroChinaRepository, SeriesStoredSummary
 from app.repositories.market_bars import MarketBarRepository
 from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
 from app.repositories.universe import UniverseRepository
+from app.services.china_macro import china_series_catalog
 from app.services.data_sync import bars_window
 from app.services.pdf_upload import default_parser_version, parse_document_identity
 from app.services.runtime_settings import effective_settings
@@ -400,6 +402,47 @@ def catch_up_universe(engine: Engine, settings: Settings) -> int:
     if UniverseRepository(engine).count("US") >= UNIVERSE_MIN_US:
         return 0
     return enqueue_built(engine, settings, build_universe_tasks, "sync_universe")
+
+
+def china_macro_missing_series(summaries: Sequence[SeriesStoredSummary]) -> list[str]:
+    """自动同步的序列里一条观测值都没有的。人工导入的序列（人民银行三项）不算：
+    它们本来就不会被定时任务抓取，补登记也补不上。"""
+
+    manual = {spec.series_code for spec in china_series_catalog() if spec.manual_only}
+    return [
+        item.series_code
+        for item in summaries
+        if item.observation_count == 0 and item.series_code not in manual
+    ]
+
+
+def catch_up_china_macro(
+    engine: Engine,
+    settings: Settings,
+    *,
+    summaries: Sequence[SeriesStoredSummary] | None = None,
+    builder: Callable[[Engine, Settings, datetime], Sequence[ScheduledTask]] | None = None,
+    enqueuer: Enqueuer | None = None,
+) -> int:
+    """启动时发现有自动序列一条数据都没有（比如新增了序列、刚部署完），就补登记一次抓取，
+    不用等到次日 01:20。登记键按天幂等，同一天重启多次也只会有一条。"""
+
+    if not settings.scheduler_enable_china_macro:
+        return 0
+    stored = (
+        summaries if summaries is not None else MacroChinaRepository(engine).list_series_summary()
+    )
+    missing = china_macro_missing_series(stored)
+    if not missing:
+        return 0
+    logger.info("scheduler china macro catch-up missing=%s", ",".join(missing))
+    return enqueue_built(
+        engine,
+        settings,
+        builder if builder is not None else build_china_macro_tasks,
+        "sync_china_macro",
+        enqueuer=enqueuer,
+    )
 
 
 def enqueue_tasks(

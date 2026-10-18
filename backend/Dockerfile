@@ -17,6 +17,8 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock alembic.ini ./
 COPY app ./app
 COPY alembic ./alembic
+# 人民银行三项人工导入序列的已核对种子：容器里 `python -m app.scripts.import_china_csv seed_data/china_pboc_monthly.csv`
+COPY seed_data ./seed_data
 
 RUN uv sync --frozen --no-dev
 
