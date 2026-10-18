@@ -9,7 +9,10 @@ import MacroTickerTile from "./MacroTickerTile.vue"
 import { atLeftEdge, atRightEdge, wheelScrollPx } from "./tickerWheel"
 import type { TileView } from "../../../api/macroTiles"
 
-const props = withDefaults(defineProps<{ tiles: readonly TileView[]; loading?: boolean }>(), { loading: false })
+const props = withDefaults(
+  defineProps<{ tiles: readonly TileView[]; loading?: boolean; label?: string }>(),
+  { loading: false, label: "美国宏观指标" },
+)
 
 /** 单格宽 172 + 间距 10 */
 const STEP = 182
@@ -112,7 +115,7 @@ watch(
       class="track"
       role="list"
       tabindex="0"
-      aria-label="美国宏观指标"
+      :aria-label="label"
       :aria-busy="loading"
       @wheel="onWheel"
       @scroll.passive="refresh"

@@ -1,12 +1,12 @@
 from datetime import date, datetime
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import Engine
 
-from app.api.deps import require_admin
+from app.api.deps import get_current_user, require_admin
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.providers.vintage import pit_date, select_visible
@@ -16,14 +16,22 @@ from app.repositories.macro_regime import MacroRegimeRepository
 from app.schemas.auth import fred_availability
 from app.schemas.macro import build_assessment, build_catalog, build_observations
 from app.services.auth_types import UserRecord
+from app.services.chat_model import complete_chat
 from app.services.china_macro import CHINA_SERIES, parse_macro_csv, public_status
+from app.services.llm_gateway import release, try_acquire
 from app.services.macro_batch import build_observation_batch, parse_codes
+from app.services.macro_interpretation import interpret
 from app.services.macro_regime import assess_as_of
 from app.services.macro_rules import RULE_NOTICE
 from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
 
 router = APIRouter(prefix="/macro", tags=["宏观"])
+
+
+class InterpretationRequest(BaseModel):
+    region: Literal["us", "cn"]
+    as_of: str | None = None
 
 
 class ChinaObservationImport(BaseModel):
@@ -99,6 +107,30 @@ def read_macro_assessment(
 ) -> JSONResponse:
     pit = _parse_as_of(as_of)
     payload = build_assessment(assess_as_of(_repository(request), pit), pit)
+    return JSONResponse(status_code=200, content=success_response(request, payload))
+
+
+@router.post("/interpretation", summary="AI 宏观解读：只转述已入库数据，数字逐个核对")
+def create_macro_interpretation(
+    body: InterpretationRequest,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    pit = _parse_as_of(body.as_of)
+    engine = cast(Engine, request.app.state.engine)
+    settings = effective_settings(engine)
+    if not try_acquire(user.id):
+        raise AppError(code="RATE_LIMITED", message="同时进行的模型任务已达上限", status_code=429)
+    try:
+        payload = interpret(
+            MacroRepository(engine),
+            body.region,
+            pit,
+            settings,
+            lambda prompt, system: complete_chat(settings, prompt, system),
+        )
+    finally:
+        release(user.id)
     return JSONResponse(status_code=200, content=success_response(request, payload))
 
 

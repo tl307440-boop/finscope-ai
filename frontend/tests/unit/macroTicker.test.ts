@@ -105,6 +105,11 @@ describe("美国宏观指标带", () => {
     expect(container.querySelector('[aria-label="向右滚动指标"]')).not.toBeNull()
   })
 
+  it("可通过 label 指定容器名称（中国页复用同一组件）", () => {
+    const { container } = render(MacroTicker, { props: { tiles: [tile("a", "up")], label: "中国宏观指标" } })
+    expect(track(container).getAttribute("aria-label")).toBe("中国宏观指标")
+  })
+
   it("方向键按一格横移", async () => {
     const { container } = render(MacroTicker, { props: { tiles: [tile("a", "up"), tile("b", "down")] } })
     const element = track(container)

@@ -132,6 +132,12 @@ describe("美国经济页", () => {
     expect(params.get("codes")?.split(",").sort()).toEqual(["CPIAUCSL", "DGS10", "UNRATE"])
     expect(params.get("as_of")).toMatch(/^\d{4}-\d{2}-\d{2}$/)
 
+    expect(screen.getByText("宏观数据对比分析")).toBeTruthy()
+    expect(screen.getByText("未来宏观行情推演")).toBeTruthy()
+    expect(screen.getByText("AI 宏观解读")).toBeTruthy()
+    // 美国页默认指数化视图：CPI 等水平值可以指数化
+    expect((screen.getByText("指数化") as HTMLButtonElement).disabled).toBe(false)
+
     const tiles = [...document.querySelectorAll(".ticker-tile")]
     const unrate = tiles.find((node) => node.textContent?.includes("失业率"))
     expect(unrate?.textContent).toContain("4.30")

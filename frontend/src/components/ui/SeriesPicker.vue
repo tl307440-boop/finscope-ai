@@ -73,7 +73,7 @@ function clearAll(): void {
     <div class="tools">
       <button type="button" class="link" @click="selectAll">全选</button>
       <button type="button" class="link" @click="clearAll">清空</button>
-      <span class="sep" aria-hidden="true" />
+      <span v-if="yearOptions.length" class="sep" aria-hidden="true" />
       <button
         v-for="year in yearOptions"
         :key="year"
@@ -83,7 +83,7 @@ function clearAll(): void {
         :aria-pressed="year === years"
         @click="emit('update:years', year)"
       >
-        {{ year }}年
+        {{ year > 0 ? `${year}年` : "全部" }}
       </button>
     </div>
   </div>

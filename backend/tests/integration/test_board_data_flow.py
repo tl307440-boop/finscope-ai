@@ -11,6 +11,7 @@ from app.main import create_app
 from app.repositories.accounts import AccountRepository
 from app.repositories.macro_china import MacroChinaRepository
 from app.repositories.news_events import NewsEventRepository
+from app.services.china_macro import CHINA_SERIES
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -297,7 +298,7 @@ def test_macro_china_reports_real_stored_counts(client: TestClient) -> None:
     response = client.get("/api/v1/macro/china")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert len(data["series"]) == 6
+    assert [item["code"] for item in data["series"]] == [code for code, _n, _u in CHINA_SERIES]
     engine = create_db_engine(get_settings().database_url)
     try:
         summaries = {
@@ -317,4 +318,5 @@ def test_macro_china_reports_real_stored_counts(client: TestClient) -> None:
         else:
             assert item["status"] in {"stored", "stale"}
             assert item["latest_value"] is not None
-    assert "还没有导入正式 CSV" in data["notice"]
+    assert "不填任何编造的数字" in data["notice"]
+    assert "robots.txt" in data["notice"]
