@@ -9,10 +9,12 @@ from app.providers.akshare_bars import UNSUPPORTED_SYMBOL_MESSAGE, AdjustmentCod
 from app.providers.errors import ProviderError
 from app.providers.fred import FredVintage
 from app.repositories.board_market import BoardMarketRepository
+from app.repositories.custom_analysis import CustomAnalysisRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_bars, fetch_bars
 from app.services.board_market_sync import sync_board_market
+from app.services.custom_analysis_sync import sync_custom_analysis
 from app.services.data_sync import (
     sync_china_macro,
     sync_cn_statements,
@@ -75,6 +77,8 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return asyncio.run(
             sync_board_market(BoardMarketRepository(engine), PacedGateway(), utc_now())
         )
+    if job.job_type == "custom_analysis":
+        return _custom_analysis(engine)
     if job.job_type == "financial_metrics":
         return snapshot_company_metrics(
             engine, _text(job.scope, "instrument_id"), _day(job.scope, "as_of")
@@ -93,6 +97,19 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
             )
         )
     raise ProviderError(code="VALIDATION_ERROR", message="不认识的任务类型", status_code=422)
+
+
+def _custom_analysis(engine: Engine) -> int:
+    report = asyncio.run(
+        sync_custom_analysis(CustomAnalysisRepository(engine), PacedGateway(), utc_now())
+    )
+    if report.failures:
+        raise ProviderError(
+            code="PARTIAL_SYNC",
+            message=f"{'；'.join(report.failures)[:300]}（已写入 {report.total} 行）",
+            status_code=503,
+        )
+    return report.total
 
 
 def _akshare(engine: Engine, scope: dict[str, object]) -> int:

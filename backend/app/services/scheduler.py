@@ -290,6 +290,21 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="非交易日不写快照；连续 3 次上游失败即停，最多重试 3 次",
             )
         )
+    if settings.scheduler_enable_custom_analysis:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_custom_analysis",
+                task_name="sync_custom_analysis",
+                trigger=CronTrigger(
+                    day_of_week="mon-fri",
+                    hour=settings.scheduler_custom_analysis_hour,
+                    minute=settings.scheduler_custom_analysis_minute,
+                    timezone=zone,
+                ),
+                builder=build_custom_analysis_tasks,
+                failure_policy="官方源逐日增量；连续 3 次上游失败即停，已写入的保留，最多重试 3 次",
+            )
+        )
     if settings.scheduler_enable_universe:
         triggers.append(
             TriggerRegistration(
@@ -688,6 +703,34 @@ def build_board_market_tasks(
             scope={"display_symbol": "eastmoney-boards", "observation_end": day},
             provider_id=provider_id,
             failure_policy="非交易日不写快照；连续 3 次上游失败即停",
+            max_attempts=3,
+        )
+    ]
+
+
+def build_custom_analysis_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """自定义数据分析：一天一条增量任务，执行器按已入库的日期只补缺口。"""
+
+    day = now.date().isoformat()
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="custom_analysis",
+        name="自定义数据分析（交易所 / 中证指数 / 东方财富公开接口）",
+        enabled=True,
+        config_public={
+            "upstream": "上交所、深交所、中金所、中证指数、东方财富数据中心",
+            "credential": "none",
+        },
+    )
+    return [
+        ScheduledTask(
+            task_name="sync_custom_analysis",
+            job_type="custom_analysis",
+            dedupe_key=f"custom_analysis:{day}",
+            scope={"display_symbol": "custom-analysis", "observation_end": day},
+            provider_id=provider_id,
+            failure_policy="连续 3 次上游失败即停，已写入的保留",
             max_attempts=3,
         )
     ]

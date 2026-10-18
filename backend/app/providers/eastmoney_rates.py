@@ -60,7 +60,7 @@ def shibor_url(tenor: ShiborTenor, page_size: int = 120) -> str:
     )
 
 
-def treasury_url(page_size: int = 120) -> str:
+def treasury_url(page_size: int = 120, page_number: int = 1) -> str:
     return _url(
         {
             "reportName": "RPTA_WEB_TREASURYYIELD",
@@ -68,7 +68,7 @@ def treasury_url(page_size: int = 120) -> str:
             "sortColumns": "SOLAR_DATE",
             "sortTypes": "-1",
             "pageSize": str(page_size),
-            "pageNumber": "1",
+            "pageNumber": str(page_number),
         }
     )
 

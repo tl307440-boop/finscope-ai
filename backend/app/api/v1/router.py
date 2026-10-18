@@ -7,6 +7,7 @@ from app.api.v1.auth import me_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.companies import router as company_router
 from app.api.v1.company_data import router as company_data_router
+from app.api.v1.custom_analysis import router as custom_analysis_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.documents import router as document_router
 from app.api.v1.eastmoney import router as eastmoney_router
@@ -30,6 +31,7 @@ router.include_router(dashboard_router)
 router.include_router(instrument_router)
 router.include_router(industry_router)
 router.include_router(industry_market_router)
+router.include_router(custom_analysis_router)
 router.include_router(macro_router)
 router.include_router(market_router)
 router.include_router(research_board_router)

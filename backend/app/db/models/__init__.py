@@ -3,6 +3,7 @@ from app.db.models.analysis import AnalysisRun, Report
 from app.db.models.app_setting import AppSetting
 from app.db.models.board_market import BoardDailyBar, BoardDailySnapshot
 from app.db.models.chat import ChatMessage, ChatSession
+from app.db.models.custom_analysis import CustomSeriesPoint, OptionDailyStat
 from app.db.models.dashboard_metric import DashboardDailyMetric
 from app.db.models.dashboard_snapshot import DashboardSeriesSnapshot
 from app.db.models.document import Document
@@ -47,6 +48,7 @@ __all__ = [
     "BoardDailySnapshot",
     "ChatMessage",
     "ChatSession",
+    "CustomSeriesPoint",
     "DashboardDailyMetric",
     "DashboardSeriesSnapshot",
     "DataProvider",
@@ -66,6 +68,7 @@ __all__ = [
     "MacroSeries",
     "MarketBar",
     "NewsEvent",
+    "OptionDailyStat",
     "RefreshSession",
     "Report",
     "ThesisEvidence",
