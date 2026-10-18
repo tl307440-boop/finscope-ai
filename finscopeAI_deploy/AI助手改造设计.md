@@ -81,7 +81,7 @@ flowchart LR
 | `done` | `{as_of, model, grounded, steps}` |
 | `error` | `{code, message}`，不带密钥与内部细节 |
 
-**叙述的流式取舍**：grounding 校验要看完整文本，所以叙述是"模型生成完 → 校验通过 → 再推送"，不把没校验过的数字先显示出来。等模型的这段时间前端靠 `step` 和 `block` 保持有内容在动。校验不通过时叙述不展示，只保留工具产出的卡片 / 表格，并提示「没能生成可核对的文字回答」。
+**叙述的流式取舍**：**按句校验、按句推送**——模型每写完一句就校验这一句，通过才推给浏览器，所以没校验过的数字不会先显示出来，第一句话又能尽早出现。某句不通过时给模型一次改写机会；还不通过就停在那里，已显示的保留，后文隐藏并提示。一句都没通过时只保留工具产出的卡片 / 表格，并提示「没能生成可核对的文字回答」。等模型的这段时间前端靠 `step`、`block` 和心跳保持连接（细节见规格 §4、§6）。
 
 ### 渲染块
 
@@ -162,10 +162,13 @@ ToolResult { rows, columns, as_of, source, status: ok|stale|unavailable, reason 
 
 - `corpus_sources`：见上。
 - `corpus_documents`：`id`、`source_id`、`url`（规范化）、`title`、`publisher`、`doc_type`、`language`、`published_at`、`retrieved_at`、`content_hash`、`has_full_text`、`status`、`license_note`。唯一键 `(source_id, canonical_url)`；同 URL 内容变化记新版本，不覆盖旧版本。
-- `corpus_chunks`：`document_id`、`chunk_index`、`content`、`section_title`、`char_start/end`、`embedding vector(1024)`、`embedding_model`、`tsv`。`hnsw` 余弦索引，同现有 `document_chunks`。
+- `corpus_chunks`：`document_id`、`chunk_index`、`content`、`section_title`、`char_start/end`、`tsv`（英文按 `english` 配置做词形还原，中文按二字词）。
+- `corpus_embeddings`（只在需要向量时建）：`chunk_id`、`embedding_model`、`embedding halfvec`；每个模型一个部分表达式 HNSW 索引。
 - `corpus_fetch_runs`：每次抓取的来源、起止时间、条数、失败原因，供「数据新鲜度」页展示。
 
-> 向量列固定 1024 维，短向量零填充（见「向量化」）；与现有 `document_chunks` 的 1536（哈希向量）分开，互不影响。pgvector 的 HNSW 索引对 `vector` 类型最多支持 2000 维，1024 在范围内（官方 README 与源码 `HNSW_MAX_DIM`）。
+> **先只用全文检索**：语料库第一步不建向量，跑评测集看召回够不够；不够才加向量（规格 3b 期）。向量与现有 `document_chunks` 的 1536（哈希向量）分开，互不影响。pgvector 的 HNSW 索引对 `vector` 最多 2000 维、`halfvec` 最多 4000 维（官方 README）。
+>
+> **跨语言是全文检索的硬伤**：美联储语料是英文，用户用中文问。所以 `corpus_search` 的检索词由模型按语料语言给出（查英文来源时给英文关键词），评测集里一半以上是"中文问英文语料"的题。
 
 ### 抓取与入库流水线（scheduler 登记 → worker 执行）
 
@@ -188,7 +191,7 @@ ToolResult { rows, columns, as_of, source, status: ok|stale|unavailable, reason 
 - **多样性**：同一文档最多取 N 个片段，避免一篇文章占满证据。
 - **引用**：每个片段带 `[n]` 编号，对应发布方、标题、发布日、链接；叙述里引用必须落在这些编号上。
 
-## 向量化：本地与云接口两套都做
+## 向量化：本地与云接口两套都做（3b 期，3a 评测不达标才做）
 
 统一成一个 **OpenAI 兼容的 `/embeddings` 客户端**，下面可换：
 
@@ -208,8 +211,8 @@ ToolResult { rows, columns, as_of, source, status: ok|stale|unavailable, reason 
   | `BAAI/bge-small-zh-v1.5` | 512 | 24M，约 96 MB | **仅中文** | 美联储英文文本检索会差，不用 |
 
   - `multilingual-e5-small` 必须给查询加 `query: `、给文档加 `passage: ` 前缀，不加会掉效果（官方 FAQ）；最长 512 token，长文靠切块；官方提示低资源语言可能退化。它比 `bge-m3` 弱，**效果以评测集实测为准，不预先承诺**。
-  - 维度不同怎么存：`corpus_chunks.embedding` 固定 `vector(1024)`，短向量**零填充**到 1024（零填充不改变余弦与内积结果）；超过 1024 维的模型拒绝接入。代价是每块约 4 KB 而不是 1.5 KB，按几万块估算在百兆量级，可接受。
-- **云接口要求**：返回维度必须 ≤ 1024，且支持指定输出维度（例如请求里带 `dimensions`）；否则配置保存时直接拒绝，不静默截断。
+  - 维度不同怎么存：向量放独立表、列类型用不定维度的 `halfvec`（半精度，省一半存储），每个模型建一个"按该模型维度转换类型 + `WHERE embedding_model = …`"的部分索引。不补零，384 维约 0.8 KB / 块；换模型时新旧向量各走各的索引，召回互不影响。
+- **云接口要求**：支持指定输出维度（例如请求里带 `dimensions`），返回维度与配置不符就报错，不静默截断；维度建议 ≤ 1024 以控制存储。
 - **混用禁止**：每个块记 `embedding_model`；查询只在同模型的块里搜。**换模型 = 后台重新向量化**（`reembed` 任务，可中断），完成前旧块继续服务旧模型的查询。
 - **资源**：服务器为 2 核 / 3.6 GB（运维指南），已经"偏紧"。`embedder` 作为独立容器（内存上限 1 GB），API 与 worker 都经 HTTP 调它，API 进程不加载模型。**上线前要在服务器上实测现有容器的内存占用**（`docker stats`），余量不足就走 `cloud`。
 - **推理方式**：`multilingual-e5-small` 官方仓库带 ONNX 权重，用 `onnxruntime` + `tokenizers` 即可，不必装完整 `torch`；这两个依赖都要在 PR 里列出并锁版本。备选 `sentence-transformers`（镜像更大）。
@@ -296,11 +299,13 @@ SearXNG 自己的限流（`limiter`）只防别人刷你的实例，**不解决"
 
 | 期 | 内容 | 不依赖 |
 | --- | --- | --- |
-| 1 | 后端：编排器 + 数据工具 + `calc` + grounding + 事件协议 + 多轮 + 限流 + 消息表迁移 | 不抓任何新数据 |
-| 2 | 前端：新对话界面、Markdown、卡片 / 表格 / 图 / 来源、过程折叠 | 依赖 1 |
-| 3 | 语料库：表 + 流水线 + 美联储与已有公告来源 + `embedder` 服务（local 默认 `multilingual-e5-small` / cloud）+ 检索 + 评测集 | 需先在服务器实测内存余量；SEC 的 UA 联系方式要换成真实的 |
+| 1a | 只换底座、不改回答：回合两段式（模型调用移出事务）+ 新事件协议 + 心跳 + nginx 助手段 + 限流 + 消息表迁移 | 不抓任何新数据；用户看到的回答不变 |
+| 1b | 编排器 + 数据工具 + `calc` + 按句 grounding（失败改写一次）+ 常见问题直取数据 + 工具结果缓存 + 多轮 | 依赖 1a |
+| 2 | 前端：新对话界面、Markdown、卡片 / 表格 / 图 / 来源、过程折叠 | 依赖 1b |
+| 3a | 语料库：表 + 流水线 + 美联储来源 + **纯全文检索** + 评测集 | SEC 的 UA 联系方式要换成真实的 |
+| 3b | 仅当 3a 评测不达标：`embedder`（local 默认 `multilingual-e5-small` / cloud）+ 向量表 + 混合检索 | 需先在服务器实测内存余量与模型下载源 |
 | 4 | 联网搜索：`SearchProvider` 接口 + `web_search` 工具 + 缓存 / 限额 + 前端开关；实现为 `searxng`（引擎白名单默认空）或 `brave_api` | **需你先决定用哪种**（见「待确认」）；白名单为空且未配 API 时工具不开放 |
-| 5 | 第二批来源（统计局解读、证监会栏目、IMF / BIS / ECB）、`reembed`、运维手册 | 依赖 3 |
+| 5 | 第二批来源（统计局解读、证监会栏目、IMF / BIS / ECB）、`reembed`（有向量时）、运维手册 | 依赖 3a |
 
 每期按 DoD：至少 1 个正常 + 1 个异常测试，跑 lint / 类型检查 / 测试，实际运行页面，更新 `docs/IMPLEMENTATION_LOG.md`。
 
@@ -314,7 +319,7 @@ SearXNG 自己的限流（`limiter`）只防别人刷你的实例，**不解决"
 
 ## 待确认
 
-1. **服务器内存（已部分核实）**：服务器 2 核 / 3.6 GB，`bge-m3` 放不下，本地默认已改为 `multilingual-e5-small`；**还差一步**：在服务器上 `docker stats` / `free -m` 看现有容器占用，确认能腾出约 1 GB，否则走 `cloud`。
+1. **服务器内存（已部分核实）**：服务器 2 核 / 3.6 GB，`bge-m3` 放不下，本地默认已改为 `multilingual-e5-small`；**还差一步**：在服务器上 `docker stats` / `free -m` 看现有容器占用，确认能腾出约 1 GB，否则走 `cloud`。语料库先只用全文检索（3a），这一步推迟到确定要做 3b 时再查。
 2. **联网搜索走哪条路（需你决定）**：
    - A. `brave_api`：官方 API，合规，有每月免费额度，需信用卡、超额计费（可设上限）；
    - B. `searxng`：引擎白名单默认空，逐个核对原始条款后才加，可能最终只剩百科类引擎；
@@ -324,4 +329,4 @@ SearXNG 自己的限流（`limiter`）只防别人刷你的实例，**不解决"
 4. **语料授权（部分核实）**：美联储（公有领域，注明来源，第三方材料例外）与国家统计局（非商业、注明来源、不歪曲）已读到条款；SEC 的访问规则已读到。**证监会、国务院 / 政府网站、IMF / BIS / ECB 的条款与 robots 路径尚未核实**，接入第二批来源前逐个读原文；不确定的只存标题 + 摘要 + 链接。
 5. **人民银行文本**：只能由你上传 PDF，要不要做一个专门的上传入口并入语料库（带 `doc_type=pboc`）。
 6. **SEC 联系方式**：「集成设置」页里 `SEC_USER_AGENT` 的生效值是否已是真实邮箱（默认是占位邮箱）。
-7. **服务器上要查的三件事**（规格 §19）：pgvector 版本是否 ≥ 0.8（换模型过渡期的召回依赖它）；服务器能否访问模型权重的下载源（国内机房访问 Hugging Face 可能不通）；`www.federalreserve.gov` 能否访问。
+7. **服务器上要查的三件事**（规格 §19）：`www.federalreserve.gov` 能否访问（3a 前）；pgvector 版本是否 ≥ 0.7（`halfvec`，3b 前）；服务器能否访问模型权重的下载源（国内机房访问 Hugging Face 可能不通，3b 前）。
