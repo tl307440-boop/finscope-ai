@@ -27,6 +27,7 @@ from app.db.session import create_db_engine
 from app.repositories.accounts import AccountRepository
 from app.services.accounts import bootstrap_admin
 from app.services.cockpit import keep_macro_warm
+from app.services.eastmoney_binding import build_service as build_eastmoney_service
 from app.services.login_limiter import LoginRateLimiter
 
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
@@ -73,10 +74,19 @@ def create_app() -> FastAPI:
         warmer = (
             asyncio.create_task(keep_macro_warm(engine)) if settings.app_env != "test" else None
         )
+        # 已绑定东方财富的用户：后台定时把东财自选同步进来。
+        eastmoney = build_eastmoney_service(engine, settings)
+        app.state.eastmoney_service = eastmoney
+        syncer = (
+            asyncio.create_task(eastmoney.run_forever(settings.eastmoney_sync_interval_seconds))
+            if settings.app_env != "test" and settings.eastmoney_sync_enabled
+            else None
+        )
         yield
-        if warmer is not None:
-            warmer.cancel()
-            await asyncio.gather(warmer, return_exceptions=True)
+        for task in (warmer, syncer):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         engine.dispose()
 
     app = FastAPI(

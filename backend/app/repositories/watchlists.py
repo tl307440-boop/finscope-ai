@@ -135,7 +135,12 @@ class WatchlistRepository:
             return True
 
     def add_codes(
-        self, user_id: UUID, group_id: UUID, codes: Sequence[tuple[str, str]]
+        self,
+        user_id: UUID,
+        group_id: UUID,
+        codes: Sequence[tuple[str, str]],
+        *,
+        source: str = "manual",
     ) -> ImportOutcome | None:
         """按 (交易所, 代码) 批量加入；库里没有的证券原样列进 missing，不臆造。"""
 
@@ -177,6 +182,7 @@ class WatchlistRepository:
                         id=uuid.uuid4(),
                         group_id=group_id,
                         instrument_id=row.id,
+                        source=source,
                         created_at=utc_now(),
                     )
                 )
@@ -185,7 +191,12 @@ class WatchlistRepository:
             return ImportOutcome(tuple(added), tuple(existing), tuple(missing), tuple(missing_keys))
 
     def add_external(
-        self, user_id: UUID, group_id: UUID, targets: Sequence[ExternalTarget]
+        self,
+        user_id: UUID,
+        group_id: UUID,
+        targets: Sequence[ExternalTarget],
+        *,
+        source: str = "manual",
     ) -> ExternalOutcome | None:
         """保存本系统没有收录的标的（板块、指数、美股、基金、国债收益率……），按东财 secid 去重。
 
@@ -249,6 +260,7 @@ class WatchlistRepository:
                             id=uuid.uuid4(),
                             group_id=group_id,
                             instrument_id=row.id,
+                            source=source,
                             created_at=utc_now(),
                         )
                     )
@@ -267,6 +279,7 @@ class WatchlistRepository:
                         instrument_id=None,
                         ext_secid=secid,
                         ext_name=(target.name or "")[:128] or None,
+                        source=source,
                         created_at=utc_now(),
                     )
                 )
@@ -294,6 +307,104 @@ class WatchlistRepository:
             for row in rows:
                 row.ext_name = names[row.id][:128]
             return len(rows)
+
+    def ensure_eastmoney_group(self, user_id: UUID, em_gid: str, name: str) -> tuple[UUID, bool]:
+        """找到与东财分组对应的本系统分组，没有就建一个。返回 (分组 id, 是否新建)。
+
+        先按东财分组 id 对；其次认领同名且还没绑定东财的分组（比如之前手动建过同名分组）；
+        同名但已绑定别的东财分组时，名称后面加东财分组 id 末 4 位区分。
+        """
+
+        cleaned = name.strip()[:40] or em_gid[:40]
+        with Session(self.engine) as session, session.begin():
+            row = session.scalars(
+                select(WatchlistGroup).where(
+                    WatchlistGroup.user_id == user_id, WatchlistGroup.em_gid == em_gid
+                )
+            ).one_or_none()
+            if row is not None:
+                return row.id, False
+            same = session.scalars(
+                select(WatchlistGroup).where(
+                    WatchlistGroup.user_id == user_id, WatchlistGroup.name == cleaned
+                )
+            ).one_or_none()
+            if same is not None and same.em_gid is None:
+                same.em_gid = em_gid
+                return same.id, False
+            if same is not None:
+                cleaned = f"{cleaned[:35]}·{em_gid[-4:]}"
+            created = WatchlistGroup(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                name=cleaned,
+                em_gid=em_gid,
+                created_at=utc_now(),
+            )
+            session.add(created)
+            session.flush()
+            return created.id, True
+
+    def group_ext_secids(self, user_id: UUID, group_id: UUID) -> set[str]:
+        """分组里已按东财 secid 保存的外部标的，同步时用来判断哪些名称还没取过。"""
+
+        with Session(self.engine) as session:
+            group = session.get(WatchlistGroup, group_id)
+            if group is None or group.user_id != user_id:
+                return set()
+            return {
+                secid
+                for secid in session.scalars(
+                    select(WatchlistItem.ext_secid).where(
+                        WatchlistItem.group_id == group_id, WatchlistItem.ext_secid.is_not(None)
+                    )
+                ).all()
+                if secid
+            }
+
+    def remove_stale_synced(self, user_id: UUID, group_id: UUID, keep: set[str]) -> int:
+        """移除「同步来的、但东财分组里已经没有」的条目；用户手动加的永远不动。"""
+
+        keep_us = {
+            parsed[1]
+            for parsed in map(parse_secid, keep)
+            if parsed is not None and parsed[0] in _US_MARKETS
+        }
+        with Session(self.engine) as session, session.begin():
+            group = session.get(WatchlistGroup, group_id)
+            if group is None or group.user_id != user_id:
+                return 0
+            rows = session.scalars(
+                select(WatchlistItem).where(
+                    WatchlistItem.group_id == group_id, WatchlistItem.source == "eastmoney"
+                )
+            ).all()
+            ids = [row.instrument_id for row in rows if row.instrument_id is not None]
+            instruments = (
+                {
+                    row.id: row
+                    for row in session.scalars(
+                        select(Instrument).where(Instrument.id.in_(ids))
+                    ).all()
+                }
+                if ids
+                else {}
+            )
+            removed = 0
+            for row in rows:
+                if row.instrument_id is None:
+                    stale = (row.ext_secid or "") not in keep
+                else:
+                    instrument = instruments.get(row.instrument_id)
+                    if instrument is None:
+                        continue
+                    stale = _instrument_secid(instrument) not in keep and not (
+                        instrument.market == "US" and instrument.symbol in keep_us
+                    )
+                if stale:
+                    session.delete(row)
+                    removed += 1
+            return removed
 
     def get_group(self, user_id: UUID, group_id: UUID) -> WatchGroup | None:
         with Session(self.engine) as session:
