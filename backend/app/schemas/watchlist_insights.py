@@ -39,6 +39,28 @@ class WatchStock(BaseModel):
     em_hot_rank: int | None = None
 
 
+class WatchOther(BaseModel):
+    """非沪深京 A 股个股的自选标的（板块、指数、美股、基金、国债收益率……）。
+
+    只有价格与涨跌：没有市值、行业、资金与涨停信号，也不进入 A 股汇总。
+    """
+
+    item_id: UUID | None = None
+    instrument_id: UUID | None = None
+    display_symbol: str
+    secid: str | None = None
+    code: str
+    name: str
+    kind: str
+    kind_label: str
+    last: Decimal | None = None
+    change_pct: Decimal | None = None
+    change_5d_pct: Decimal | None = None
+    change_60d_pct: Decimal | None = None
+    change_ytd_pct: Decimal | None = None
+    amount: Decimal | None = None
+
+
 class ExposureItem(BaseModel):
     name: str
     board_code: str | None = None
@@ -70,7 +92,8 @@ class WatchlistInsights(BaseModel):
     summary: WatchSummary
     stocks: list[WatchStock]
     industries: list[ExposureItem]
-    unsupported: list[str]
+    others: list[WatchOther] = []
+    others_section: Section = Section(status="ok")
     rules: list[str]
     sources: list[SourceRef]
 
@@ -78,5 +101,8 @@ class WatchlistInsights(BaseModel):
 class ImportResult(BaseModel):
     added: list[str]
     existing: list[str]
-    missing: list[str]
+    # added 里本系统没有收录、按东财代码单独保存的那部分（板块、指数、美股、基金……）。
+    external: list[str] = []
+    # 已保存，但东财没有返回名称与行情的标的（可能已退市或代码有误）。
+    unnamed: list[str] = []
     invalid: list[str]

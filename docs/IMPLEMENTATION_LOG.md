@@ -1362,3 +1362,45 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - 批量接口的 `truncated` 在下界截掉更早历史时不会置真；页面不使用该字段。
 - 数据管理页的「同步」是同步请求，区间很长时可能被反向代理超时；长区间回补请用 `bootstrap_data`。
 - 数据管理一次仍只能提交一个序列代码。
+
+## 2026-10-18 WATCH-EXT 自选支持非 A 股标的（板块、指数、美股、基金、国债收益率……）
+
+### 背景
+
+从东财导入自选时，分组里除沪深个股还有行业板块、全球指数、美股、国债收益率、期货、外汇、ETF。原来只能存本系统 `instruments` 里的 A 股，其余全部被丢弃或报「未收录」。
+
+### 方案
+
+- **按东财 secid（市场编号.代码）保存**，不往 `instruments` 里塞假证券：`instruments.market` 枚举只有 CN / US、`type` 只有 STOCK / INDEX / ETF，塞进去会污染证券检索、行情入库和统计。外部标的的行情、名称一律由东财现查。
+- 本系统已收录的（A 股个股、已收录的美股）仍然挂到 `instruments`，公司页照常可点；匹配不上才落成外部标的。
+- 外部标的**不进入 A 股汇总**：涨跌家数、等权 / 市值加权涨跌、行业暴露、涨停 / 调研 / 热榜信号都只算本系统收录的沪深京个股，避免把国债收益率、美股、板块的涨跌混进去。它们在看板里单独列成「其他标的」。
+
+### 变更
+
+- 迁移 `20261018_0026`：`watchlist_items.instrument_id` 改可空，新增 `ext_secid`、`ext_name`；`CHECK (num_nonnulls(instrument_id, ext_secid) = 1)`；`(group_id, ext_secid)` 部分唯一索引。降级会删除外部标的行。
+- `app/utils/watch_secid.py`（新）：secid 解析、类别（A股 / 基金 / 债券 / 板块 / 指数 / 外汇 / 期货 / 国债收益率 / 美股 / 港股 / 其他）、展示名。未列入的市场编号归「其他」，不猜。
+- `providers/eastmoney_boards.py`：`parse_secid_quotes` 按 `市场.代码` 建键（A 股 000660 与韩股 000660 同码不同市场）。
+- `repositories/watchlists.py`：`add_external`（去重、已收录美股改挂 `instruments`）；`remove_item` 同时接受条目 id 与证券 id；`_group` 批量取证券，不再逐行查询；`ImportOutcome.missing_keys` 保留交易所。
+- `services/watchlist_insights.py`：`parse_targets` 取代 `parse_codes`（`1.` / `0.` 前缀按沪 / 深京处理，所以 `1.000001` 是上证指数而不是深市平安银行；无前缀的 5xxxxx / 15xxxx / 16xxxx 基金按号段推断）；`_others` 现查外部标的行情；`resolve_names` 导入时取名称，东财不可用则照存、之后看板里现查。
+- API：`POST /watchlists/{id}/items/batch` 改为先匹配本系统、匹配不上再按东财代码保存，返回 `added / existing / external / unnamed / invalid`（去掉 `missing`）；`GET /watchlists` 的条目新增 `item_id / secid / kind / kind_label`，`instrument_id` 可为空；`DELETE /watchlists/{id}/items/{item_ref}` 的 `item_ref` 为条目 id（兼容证券 id）；看板返回 `others / others_section`（去掉 `unsupported`）。
+- 前端：自选列表给外部标的打类别标签、不请求日线、板块可跳行业板块页；看板新增「其他标的」卡片（按类别筛选、涨跌条形图、明细表）；批量导入提示说明哪些是单独保存的。
+
+### 验证
+
+- 后端：新增 `test_watch_secid.py`（类别 / 展示名 / 同码不同市场）、`test_watchlist_insights.py`（解析、其他标的单列且不进汇总、东财失败时降级、名称解析）、`test_watchlist_import.py`（外部标的保存 / 去重 / 越权 / 按条目 id 移出、美股挂靠已收录证券）。自选相关测试在本机 pgvector 容器上全部通过；迁移在真库上升级 → 降级 → 再升级通过。
+- 前端：`marketPulse.test.ts` 更新并新增旧后端兼容用例；216 个测试通过，`vue-tsc` 通过。
+- 全量后端测试里仍有 1 个失败：`test_board_data_flow.py::test_macro_china_reports_real_stored_counts`，来自工作区里尚未提交的中国宏观改动（序列数量变化），与自选无关。
+
+### 已知局限
+
+- 外部标的没有入库日线，只有东财实时 / 最近一个交易日行情；东财不可用时这部分显示「行情不可用」，不用别的来源补。
+- 国债收益率的「涨跌」是收益率自身的变化幅度，不是价格涨跌；已在界面说明。
+- 东财查不到的代码（退市或写错）照存、名称显示为代码，并在导入结果的 `unnamed` 里列出。
+- 总驾驶舱的「我的重点关注」仍只展示 A 股，外部标的不出现在那里。
+- 不会自动同步东财自选，需要时重新导入。
+
+### 追加：名称补全
+
+- 本机导入 423 个标的时发现，东财对同一批请求偶尔少回几行，导致一部分外部标的没取到名称。`resolve_names` 对缺失的代码补查一次；看板成功取到名称后，`WatchlistRepository.fill_external_names` 把名称回填到库里（只补空名称，不覆盖已有，限本人分组），列表页不再一直显示代码。
+- 用与后端相同的参数在浏览器里复现过：423 个里随机取 100 / 60 / 30 个，东财都全量返回，所以少回行是偶发，不是请求参数问题。本机直连 `push2.eastmoney.com` 此时被对端断开（`上游连接中断`），生产服务器不受影响。
+- 逆向分析另见 `docs/research/东方财富账号绑定逆向分析.md`（只读分析，无代码改动）。

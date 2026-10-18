@@ -259,6 +259,22 @@ def parse_watch_quotes(payload: bytes) -> dict[str, MemberQuote]:
     return quotes
 
 
+def parse_secid_quotes(payload: bytes) -> dict[str, MemberQuote]:
+    """按东财 secid（市场.代码）索引的行情。
+
+    板块、指数、美股、债券收益率与 A 股共用同一个接口，但代码会撞（A 股 000660 与韩股
+    000660），所以不能像 parse_watch_quotes 那样只用代码做键。
+    """
+
+    quotes: dict[str, MemberQuote] = {}
+    for row in _diff_rows(payload, "标的行情"):
+        quote = _member(row)
+        market = _int(row.get("f13"))
+        if quote is not None and market is not None:
+            quotes[f"{market}.{quote.code}"] = quote
+    return quotes
+
+
 def members_url(code: str, page: int) -> str:
     query = urlencode(
         {

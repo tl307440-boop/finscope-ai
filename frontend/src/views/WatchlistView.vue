@@ -7,7 +7,7 @@
  *  - POST   /api/v1/watchlists/{group_id}/items                   加入自选（ItemCreate）
  *  - POST   /api/v1/watchlists/{group_id}/items/batch             粘贴代码批量导入
  *  - GET    /api/v1/watchlists/{group_id}/insights                自选看板（公开行情 + 行业 + 信号）
- *  - DELETE /api/v1/watchlists/{group_id}/items/{instrument_id}   移出自选
+ *  - DELETE /api/v1/watchlists/{group_id}/items/{item_id}         移出自选（item_id 为自选条目 id）
  *  - GET    /api/v1/instruments/search                             选证券
  *  - GET    /api/v1/market/bars/{instrument_id}?limit=                指标变化（收盘价 + simple_return）
  *
@@ -34,9 +34,15 @@ import WatchlistInsightsPanel from "./parts/watchlist/WatchlistInsightsPanel.vue
 const session = useSessionStore()
 
 interface WatchItem {
+  /** 自选条目 id；移出自选用它。旧接口没有 item_id 时退回证券 id。 */
+  itemId: string
+  /** 本系统收录的证券才有；板块、指数、美股、基金等外部标的为空。 */
   instrumentId: string
   displaySymbol: string
   nameCn: string
+  secid: string
+  kind: string
+  kindLabel: string
 }
 
 interface WatchGroup {
@@ -93,8 +99,22 @@ const itemCount = computed<number>(() =>
   groups.value.reduce((total, group) => total + group.items.length, 0),
 )
 
+/** 有本系统证券记录、能取入库日线的标的；外部标的（板块、指数、美股……）不在其中。 */
 const trackedIds = computed<string[]>(() =>
-  Array.from(new Set(groups.value.flatMap((group) => group.items.map((item) => item.instrumentId)))),
+  Array.from(
+    new Set(groups.value.flatMap((group) => group.items.flatMap((item) => (item.instrumentId ? [item.instrumentId] : [])))),
+  ),
+)
+
+/** 全部标的去重（本系统证券按证券 id，外部标的按东财代码）。 */
+const uniqueCount = computed<number>(
+  () => new Set(groups.value.flatMap((group) => group.items.map((item) => item.instrumentId || item.secid || item.itemId))).size,
+)
+
+const externalCount = computed<number>(() =>
+  new Set(
+    groups.value.flatMap((group) => group.items.filter((item) => !item.instrumentId).map((item) => item.secid || item.itemId)),
+  ).size,
 )
 
 const quotedCount = computed<number>(() =>
@@ -120,7 +140,7 @@ const overviewCaption = computed<string>(() => {
   if (!groups.value.length) {
     return "还没有分组，先新建一个"
   }
-  if (!trackedIds.value.length) {
+  if (!uniqueCount.value) {
     return "分组里还没有标的"
   }
   return groups.value.map((group) => group.name).join("、")
@@ -128,9 +148,13 @@ const overviewCaption = computed<string>(() => {
 
 const missingCaption = computed<string>(() => {
   if (!trackedIds.value.length) {
-    return "加入自选后显示"
+    return externalCount.value ? "都是板块 / 指数 / 美股等外部标的，行情见看板" : "加入自选后显示"
   }
-  return missingCount.value ? `${missingCount.value} 只暂无日线` : "全部都有已入库日线"
+  const parts = [missingCount.value ? `${missingCount.value} 只暂无日线` : "全部都有已入库日线"]
+  if (externalCount.value) {
+    parts.push(`另有 ${externalCount.value} 个外部标的不含日线`)
+  }
+  return parts.join("，")
 })
 
 const SOURCE_TEXT: Record<string, string> = {
@@ -161,9 +185,11 @@ const uniqueCaption = computed<string>(() => {
   if (!itemCount.value) {
     return "还没有加入任何标的"
   }
-  return itemCount.value === trackedIds.value.length
-    ? "各分组合计"
-    : `去重后 ${trackedIds.value.length} 只`
+  const parts = [itemCount.value === uniqueCount.value ? "各分组合计" : `去重后 ${uniqueCount.value} 只`]
+  if (externalCount.value) {
+    parts.push(`含 ${externalCount.value} 个外部标的`)
+  }
+  return parts.join("，")
 })
 
 async function refreshToken(): Promise<string | null> {
@@ -234,7 +260,7 @@ async function load(): Promise<void> {
 
 /** 逐档取最近两根日线，用后端给的 simple_return 展示当日变化；失败即标注不可用。 */
 async function loadMoves(): Promise<void> {
-  const symbols = Array.from(new Set(groups.value.flatMap((group) => group.items.map((item) => item.instrumentId))))
+  const symbols = trackedIds.value
   const results = await Promise.all(
     symbols.map(async (instrumentId) => {
       try {
@@ -429,11 +455,14 @@ async function importBatch(): Promise<void> {
   try {
     const result = await importCodes(importGroup.value, importText.value, session.accessToken, refreshToken)
     const parts = [`新加入 ${result.added.length} 只`]
+    if (result.external.length) {
+      parts.push(`其中 ${result.external.length} 只本系统未收录，按东财代码单独保存（行情见看板「其他标的」）`)
+    }
     if (result.existing.length) {
       parts.push(`已在分组 ${result.existing.length} 只`)
     }
-    if (result.missing.length) {
-      parts.push(`本系统未收录：${result.missing.join("、")}`)
+    if (result.unnamed.length) {
+      parts.push(`东财暂无名称与行情：${result.unnamed.join("、")}`)
     }
     if (result.invalid.length) {
       parts.push(`无法识别：${result.invalid.join("、")}`)
@@ -457,7 +486,7 @@ async function removeItem(group: WatchGroup, item: WatchItem): Promise<void> {
   busy.value = true
   try {
     const result = await authed(
-      `/api/v1/watchlists/${encodeURIComponent(group.id)}/items/${encodeURIComponent(item.instrumentId)}`,
+      `/api/v1/watchlists/${encodeURIComponent(group.id)}/items/${encodeURIComponent(item.itemId)}`,
       { method: "DELETE" },
     )
     if (!result.ok) {
@@ -490,21 +519,37 @@ function parseGroup(value: unknown): WatchGroup[] {
 
 function parseItem(value: unknown): WatchItem[] {
   const row = asRecord(value)
-  const instrumentId = asString(row?.instrument_id)
-  if (!instrumentId) {
+  const instrumentId = asString(row?.instrument_id) ?? ""
+  const itemId = asString(row?.item_id) ?? instrumentId
+  if (!itemId) {
     return []
   }
   return [
     {
+      itemId,
       instrumentId,
-      displaySymbol: asString(row?.display_symbol) ?? instrumentId,
+      displaySymbol: asString(row?.display_symbol) ?? itemId,
       nameCn: asString(row?.name_cn) ?? "",
+      secid: asString(row?.secid) ?? "",
+      kind: asString(row?.kind) ?? "other",
+      kindLabel: asString(row?.kind_label) ?? "其他",
     },
   ]
 }
 
+/** 只有本系统收录的个股有公司页；板块可跳到行业板块页；其他外部标的不给链接，避免点进 404。 */
+function linkOf(item: WatchItem): string | null {
+  if (item.instrumentId) {
+    return `/company/${encodeURIComponent(item.displaySymbol)}`
+  }
+  if (item.kind === "board" && item.displaySymbol) {
+    return `/industry/board/${encodeURIComponent(item.displaySymbol)}`
+  }
+  return null
+}
+
 function moveOf(instrumentId: string): MoveState | null {
-  return moves.value[instrumentId] ?? null
+  return instrumentId ? (moves.value[instrumentId] ?? null) : null
 }
 
 /** 只保留两位小数：后端 simple_return 是长浮点，直接渲染会带出 17 位尾数。 */
@@ -516,8 +561,11 @@ function changePercentOf(instrumentId: string): number | null {
   return Math.round(raw * 100) / 100
 }
 
-function statusText(instrumentId: string): string {
-  const move = moveOf(instrumentId)
+function statusText(item: WatchItem): string {
+  if (!item.instrumentId) {
+    return `${item.kindLabel} · 行情见看板`
+  }
+  const move = moveOf(item.instrumentId)
   if (!move) {
     return "未加载"
   }
@@ -527,8 +575,11 @@ function statusText(instrumentId: string): string {
   return "行情已入库"
 }
 
-function statusTone(instrumentId: string): "ok" | "warn" | "muted" {
-  const move = moveOf(instrumentId)
+function statusTone(item: WatchItem): "ok" | "warn" | "muted" {
+  if (!item.instrumentId) {
+    return "muted"
+  }
+  const move = moveOf(item.instrumentId)
   if (!move) {
     return "muted"
   }
@@ -679,7 +730,7 @@ onMounted(() => {
       <PanelCard
         v-if="groups.length"
         title="批量导入"
-        info="可直接粘贴东财 / 同花顺自选导出的代码列表，支持 600519、SH600519、600519.SH、1.600519 等写法，逗号、空格或换行分隔，一次最多 300 个"
+        info="可直接粘贴东财 / 同花顺自选导出的代码列表，逗号、空格或换行分隔，一次最多 300 个。A 股支持 600519、SH600519、600519.SH、1.600519；板块、指数、美股、基金、国债收益率等用东财写法 90.BK1630、105.NVDA、171.US10Y、1.513120，本系统没收录的会单独保存"
       >
         <template #icon><el-icon><Plus /></el-icon></template>
         <div class="import-row">
@@ -731,16 +782,17 @@ onMounted(() => {
         <el-table v-else :data="group.items" size="small" style="width: 100%">
           <el-table-column label="代码" width="140">
             <template #default="scope">
-              <router-link
-                class="cell-link"
-                :to="`/company/${encodeURIComponent(scope.row.displaySymbol)}`"
-              >
+              <router-link v-if="linkOf(scope.row)" class="cell-link" :to="linkOf(scope.row) ?? ''">
                 {{ scope.row.displaySymbol }}
               </router-link>
+              <span v-else>{{ scope.row.displaySymbol }}</span>
             </template>
           </el-table-column>
           <el-table-column label="名称" min-width="120">
-            <template #default="scope">{{ scope.row.nameCn || "—" }}</template>
+            <template #default="scope">
+              {{ scope.row.nameCn || "—" }}
+              <el-tag v-if="!scope.row.instrumentId" size="small" type="info" class="kind-tag">{{ scope.row.kindLabel }}</el-tag>
+            </template>
           </el-table-column>
           <el-table-column label="最近收盘" width="120" align="right">
             <template #default="scope">
@@ -769,11 +821,7 @@ onMounted(() => {
           </el-table-column>
           <el-table-column label="行情状态" min-width="160">
             <template #default="scope">
-              <StatusPill
-                :text="statusText(scope.row.instrumentId)"
-                :tone="statusTone(scope.row.instrumentId)"
-                dot
-              />
+              <StatusPill :text="statusText(scope.row)" :tone="statusTone(scope.row)" dot />
             </template>
           </el-table-column>
           <el-table-column label="操作" width="96" fixed="right">
@@ -865,6 +913,10 @@ onMounted(() => {
 
 .cell-link {
   color: var(--accent);
+}
+
+.kind-tag {
+  margin-left: 6px;
 }
 
 .inline-note {

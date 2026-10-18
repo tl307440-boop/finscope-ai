@@ -5,7 +5,7 @@
  */
 import { computed, ref, watch } from "vue"
 import { FetchFailure, sectionBadge } from "../../../api/industryMarket"
-import { fetchInsights, type WatchStock, type WatchlistInsights } from "../../../api/watchlistInsights"
+import { fetchInsights, type WatchOther, type WatchStock, type WatchlistInsights } from "../../../api/watchlistInsights"
 import DeltaValue from "../../../components/ui/DeltaValue.vue"
 import PanelCard from "../../../components/ui/PanelCard.vue"
 import StatCard from "../../../components/ui/StatCard.vue"
@@ -119,6 +119,78 @@ const scatterOption = computed(() => {
   }
 })
 
+/* ---- 其他标的：板块、指数、美股、基金、国债收益率……不进入 A 股汇总，单独展示价格与涨跌 ---- */
+const otherKind = ref("all")
+
+const kindOptions = computed(() => {
+  const counts = new Map<string, { label: string; count: number }>()
+  for (const row of view.value?.others ?? []) {
+    const entry = counts.get(row.kind) ?? { label: row.kindLabel, count: 0 }
+    entry.count += 1
+    counts.set(row.kind, entry)
+  }
+  return Array.from(counts, ([kind, entry]) => ({ kind, ...entry })).sort((a, b) => b.count - a.count)
+})
+
+const othersShown = computed<WatchOther[]>(() =>
+  (view.value?.others ?? [])
+    .filter((row) => otherKind.value === "all" || row.kind === otherKind.value)
+    .sort((a, b) => (b.changePct ?? -Infinity) - (a.changePct ?? -Infinity)),
+)
+
+const BAR_LIMIT = 40
+const barRows = computed<WatchOther[]>(() => othersShown.value.filter((row) => row.changePct !== null).slice(0, BAR_LIMIT))
+const barHeight = computed<string>(() => `${Math.max(160, barRows.value.length * 22 + 40)}px`)
+
+const othersBarOption = computed(() => ({
+  grid: { left: 120, right: 56, top: 8, bottom: 24 },
+  tooltip: {
+    trigger: "axis",
+    axisPointer: { type: "shadow" },
+    formatter: (params: { dataIndex: number }[]) => {
+      const row = barRows.value[params[0]?.dataIndex ?? -1]
+      return row ? `<b>${row.name}</b> ${row.displaySymbol}<br/>${row.kindLabel} · 最新 ${lastText(row)}<br/>今日 ${pctText(row.changePct)}` : ""
+    },
+  },
+  xAxis: { type: "value", axisLabel: { formatter: "{value}%" }, splitLine: { show: false } },
+  yAxis: {
+    type: "category",
+    inverse: true,
+    data: barRows.value.map((row) => row.name),
+    axisLabel: { width: 108, overflow: "truncate", color: cssVar("--muted", "#8a9bb8") },
+  },
+  series: [
+    {
+      type: "bar",
+      barMaxWidth: 14,
+      data: barRows.value.map((row) => ({ value: row.changePct, itemStyle: { color: heatColor(row.changePct, 4) } })),
+      label: { show: true, position: "right", fontSize: 11, formatter: (info: { value?: number }) => pctText(info.value ?? null) },
+    },
+  ],
+}))
+
+/** 价格量级差异很大（ETF 0.6、美股 250、板块指数 13 万、韩股 127 万）：小于 10 的多给一位小数。 */
+function lastText(row: WatchOther): string {
+  if (row.last === null) {
+    return "—"
+  }
+  return Math.abs(row.last) < 10 ? row.last.toFixed(3) : row.last.toFixed(2)
+}
+
+/** 板块有行业板块页；其余外部标的没有站内详情页，不给链接。 */
+function otherPath(row: WatchOther): string | null {
+  if (row.instrumentId) {
+    return `/company/${encodeURIComponent(row.displaySymbol)}`
+  }
+  return row.kind === "board" ? `/industry/board/${encodeURIComponent(row.code)}` : null
+}
+
+watch(kindOptions, (options) => {
+  if (otherKind.value !== "all" && !options.some((option) => option.kind === otherKind.value)) {
+    otherKind.value = "all"
+  }
+})
+
 function companyPath(stock: WatchStock): string {
   return `/company/${encodeURIComponent(stock.displaySymbol)}`
 }
@@ -187,7 +259,14 @@ watch(() => [props.groupId, props.version], () => void load(), { immediate: true
       </template>
       <StateBlock v-if="loading && !view" state="loading" :rows="3" />
       <StateBlock v-else-if="failure && !view" state="error" :message="failure" @retry="load" />
-      <StateBlock v-else-if="view && !view.stocks.length" state="empty" message="这个分组还没有 A 股标的，可在上方「批量导入」粘贴代码" />
+      <StateBlock
+        v-else-if="view && !view.stocks.length && !view.others.length"
+        state="empty"
+        message="这个分组还没有标的，可在上方「批量导入」粘贴代码"
+      />
+      <p v-else-if="view && !view.stocks.length" class="notice">
+        这个分组里没有本系统收录的沪深京个股，涨跌家数、加权涨跌、行业暴露等 A 股汇总不适用；板块、指数、美股等见下方「其他标的」。
+      </p>
       <template v-else-if="view && summary">
         <p v-if="failure" class="notice danger">{{ failure }}（下方为上次成功加载的数据）</p>
         <p v-if="view.quoteSection.status !== 'ok' && view.quoteSection.reason" class="notice">{{ view.quoteSection.reason }}</p>
@@ -303,14 +382,75 @@ watch(() => [props.groupId, props.version], () => void load(), { immediate: true
             </template>
           </el-table-column>
         </el-table>
-        <p v-if="view.unsupported.length" class="muted fine pad">
-          {{ view.unsupported.join("、") }} 不是沪深京 A 股，看板暂不统计。
+        <p v-if="view.others.length" class="muted fine pad">
+          另有 {{ view.others.length }} 个非沪深京个股的标的（板块、指数、美股等），未计入以上汇总，见下方「其他标的」。
         </p>
         <ul class="rules muted">
           <li v-for="rule in view.rules" :key="rule">{{ rule }}</li>
         </ul>
       </PanelCard>
     </template>
+
+    <PanelCard
+      v-if="view && view.others.length"
+      title="其他标的"
+      info="板块、指数、美股、基金、国债收益率、期货、外汇等：本系统没有这些标的的财务与信号数据，只显示东财的最新价与涨跌，不参与 A 股汇总。国债收益率的「涨跌」是收益率自身的变化幅度"
+      flush
+    >
+      <template #actions>
+        <StatusPill
+          v-if="view.othersSection.status !== 'ok'"
+          :text="view.othersSection.status === 'unavailable' ? '行情不可用' : '部分无行情'"
+          :tone="view.othersSection.status === 'unavailable' ? 'danger' : 'warn'"
+          dot
+        />
+        <span v-if="view.othersSection.fetchedAt" class="muted fine">取数 {{ shortTime(view.othersSection.fetchedAt) }}</span>
+      </template>
+      <p v-if="view.othersSection.reason" class="notice pad">{{ view.othersSection.reason }}</p>
+      <div class="kinds pad">
+        <el-radio-group v-model="otherKind" size="small">
+          <el-radio-button value="all">全部 {{ view.others.length }}</el-radio-button>
+          <el-radio-button v-for="option in kindOptions" :key="option.kind" :value="option.kind">
+            {{ option.label }} {{ option.count }}
+          </el-radio-button>
+        </el-radio-group>
+      </div>
+      <VChart v-if="barRows.length" class="others-chart" :style="{ height: barHeight }" :option="othersBarOption" autoresize />
+      <p v-if="othersShown.length > BAR_LIMIT" class="muted fine pad">图中只画涨跌幅最靠前的 {{ BAR_LIMIT }} 个，完整列表见下表。</p>
+      <el-table :data="othersShown" size="small" max-height="520" style="width: 100%">
+        <el-table-column label="名称" min-width="150" fixed>
+          <template #default="{ row }">
+            <RouterLink v-if="otherPath(row)" :to="otherPath(row) ?? ''">{{ row.name }}</RouterLink>
+            <span v-else>{{ row.name }}</span>
+            <small class="muted tabular code">{{ row.displaySymbol }}</small>
+          </template>
+        </el-table-column>
+        <el-table-column label="类别" width="104">
+          <template #default="{ row }"><el-tag size="small" type="info">{{ row.kindLabel }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="最新" width="104" align="right">
+          <template #default="{ row }"><span class="tabular">{{ lastText(row) }}</span></template>
+        </el-table-column>
+        <el-table-column label="今日" width="84" align="right">
+          <template #default="{ row }"><DeltaValue :value="row.changePct" suffix="%" size="sm" signed /></template>
+        </el-table-column>
+        <el-table-column label="5日" width="84" align="right">
+          <template #default="{ row }"><DeltaValue :value="row.change5dPct" suffix="%" size="sm" signed /></template>
+        </el-table-column>
+        <el-table-column label="60日" width="84" align="right">
+          <template #default="{ row }"><DeltaValue :value="row.change60dPct" suffix="%" size="sm" signed /></template>
+        </el-table-column>
+        <el-table-column label="年初至今" width="90" align="right">
+          <template #default="{ row }"><DeltaValue :value="row.changeYtdPct" suffix="%" size="sm" signed /></template>
+        </el-table-column>
+        <el-table-column label="成交额" width="96" align="right">
+          <template #default="{ row }"><span class="tabular">{{ yuan(row.amount) }}</span></template>
+        </el-table-column>
+        <el-table-column label="状态" width="76">
+          <template #default="{ row }"><span class="muted">{{ row.last === null ? "无数据" : "实时" }}</span></template>
+        </el-table-column>
+      </el-table>
+    </PanelCard>
   </div>
 </template>
 
@@ -334,6 +474,14 @@ watch(() => [props.groupId, props.version], () => void load(), { immediate: true
 .chart {
   width: 100%;
   height: 340px;
+}
+
+.others-chart {
+  width: 100%;
+}
+
+.kinds {
+  padding-bottom: 6px;
 }
 
 .code {

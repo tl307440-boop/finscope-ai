@@ -35,6 +35,24 @@ export interface WatchStock {
   emHotRank: number | null
 }
 
+/** 非沪深京 A 股个股的自选标的：板块、指数、美股、基金、国债收益率……只有价格与涨跌。 */
+export interface WatchOther {
+  itemId: string
+  instrumentId: string
+  displaySymbol: string
+  secid: string
+  code: string
+  name: string
+  kind: string
+  kindLabel: string
+  last: number | null
+  changePct: number | null
+  change5dPct: number | null
+  change60dPct: number | null
+  changeYtdPct: number | null
+  amount: number | null
+}
+
 export interface Exposure {
   name: string
   boardCode: string
@@ -65,7 +83,8 @@ export interface WatchlistInsights {
   summary: WatchSummary
   stocks: WatchStock[]
   industries: Exposure[]
-  unsupported: string[]
+  others: WatchOther[]
+  othersSection: Section
   rules: string[]
   sources: SourceRef[]
 }
@@ -73,7 +92,10 @@ export interface WatchlistInsights {
 export interface ImportResult {
   added: string[]
   existing: string[]
-  missing: string[]
+  /** added 里本系统没收录、按东财代码单独保存的那部分（板块、指数、美股、基金……）。 */
+  external: string[]
+  /** 已保存，但东财没返回名称与行情的标的。 */
+  unnamed: string[]
   invalid: string[]
 }
 
@@ -109,7 +131,8 @@ export async function importCodes(
   return {
     added: strings(data.added),
     existing: strings(data.existing),
-    missing: strings(data.missing),
+    external: strings(data.external),
+    unnamed: strings(data.unnamed),
     invalid: strings(data.invalid),
   }
 }
@@ -149,7 +172,8 @@ export function parseInsights(data: Record<string, unknown>): WatchlistInsights 
           ]
         : []
     }),
-    unsupported: strings(data.unsupported),
+    others: listOf(data.others).flatMap(parseOther),
+    othersSection: parseSection(data.others_section),
     rules: strings(data.rules),
     sources: listOf(data.sources).flatMap((row) => {
       const name = asString(row.name)
@@ -192,6 +216,32 @@ function parseStock(row: Record<string, unknown>): WatchStock[] {
       surveyedInstitutions: asNumber(row.surveyed_institutions) ?? 0,
       thsHotRank: asNumber(row.ths_hot_rank),
       emHotRank: asNumber(row.em_hot_rank),
+    },
+  ]
+}
+
+function parseOther(row: Record<string, unknown>): WatchOther[] {
+  const code = asString(row.code)
+  const displaySymbol = asString(row.display_symbol) ?? code
+  if (!code || !displaySymbol) {
+    return []
+  }
+  return [
+    {
+      itemId: asString(row.item_id) ?? asString(row.instrument_id) ?? displaySymbol,
+      instrumentId: asString(row.instrument_id) ?? "",
+      displaySymbol,
+      secid: asString(row.secid) ?? "",
+      code,
+      name: asString(row.name) ?? code,
+      kind: asString(row.kind) ?? "other",
+      kindLabel: asString(row.kind_label) ?? "其他",
+      last: asNumber(row.last),
+      changePct: asNumber(row.change_pct),
+      change5dPct: asNumber(row.change_5d_pct),
+      change60dPct: asNumber(row.change_60d_pct),
+      changeYtdPct: asNumber(row.change_ytd_pct),
+      amount: asNumber(row.amount),
     },
   ]
 }

@@ -146,7 +146,7 @@
 
 ## 资料库
 
-`GET /api/v1/analysis/reports?q=` 按标题筛选当前用户的研究记录，按创建时间从新到旧排列。`DELETE /api/v1/analysis/reports/{reportId}` 只隐藏自己的记录。`GET/POST /api/v1/watchlists` 管理自选分组，加入和移出证券也只作用于自己的分组。其他用户看到的列表是空的，删除别人的记录或自选会得到 404。
+`GET /api/v1/analysis/reports?q=` 按标题筛选当前用户的研究记录，按创建时间从新到旧排列。`DELETE /api/v1/analysis/reports/{reportId}` 只隐藏自己的记录。`GET/POST /api/v1/watchlists` 管理自选分组，加入和移出证券也只作用于自己的分组。其他用户看到的列表是空的，删除别人的记录或自选会得到 404。自选里除沪深京个股，还能存东财的板块、指数、美股、ETF、国债收益率等（按东财 `市场.代码` 保存，列表条目带 `item_id / secid / kind / kind_label`，这类条目没有 `instrument_id`）：`POST /api/v1/watchlists/{id}/items/batch` 先匹配本系统证券、匹配不上就按东财代码保存，返回 `added / existing / external / unnamed / invalid`；`DELETE /api/v1/watchlists/{id}/items/{item_ref}` 的 `item_ref` 为条目 id（也兼容证券 id）；`GET /api/v1/watchlists/{id}/insights` 的 `others / others_section` 单列这类标的，不进入 A 股汇总。
 
 ## 行业假设
 

@@ -20,10 +20,11 @@ from app.providers import eastmoney_boards as em
 from app.providers import tencent_market as tx
 from app.providers.errors import ProviderError
 from app.repositories.watchlists import RecentClose, WatchGroup, WatchItem
-from app.schemas.industry_market import Section, SourceRef
+from app.schemas.industry_market import Section, SectionStatus, SourceRef
 from app.schemas.watchlist_insights import (
     ExposureItem,
     WatchlistInsights,
+    WatchOther,
     WatchStock,
     WatchSummary,
 )
@@ -32,6 +33,13 @@ from app.services.market_cache import TtlCache, shared_gateway
 from app.services.market_sentiment import MarketSentimentService, get_sentiment_service
 from app.utils.market_time import SHANGHAI
 from app.utils.time import utc_now
+from app.utils.watch_secid import (
+    fund_market,
+    kind_label,
+    kind_of_secid,
+    make_secid,
+    parse_secid,
+)
 
 MAX_IMPORT = 300
 _TTL_QUOTES = 60
@@ -42,7 +50,7 @@ _STORED_SOURCE = ("本系统入库日线", "https://quote.eastmoney.com/")
 _TWO = Decimal("0.01")
 _HUNDRED = Decimal(100)
 _EXCHANGES = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}
-_TOKEN = re.compile(r"(?i)^(?:(sh|sz|bj)|[01]\.)?(\d{6})(?:\.(sh|sz|bj))?$")
+_TOKEN = re.compile(r"(?i)^(?:(sh|sz|bj)|([01])\.)?(\d{6})(?:\.(sh|sz|bj))?$")
 _SPLIT = re.compile(r"[\s,，;；、|/]+")
 
 RULES = [
@@ -52,29 +60,64 @@ RULES = [
     "实时不可用时改用本系统入库日线按交易日数计算。",
     "市值加权涨跌 = Σ(总市值 × 当日涨跌幅) / Σ总市值，只统计有市值和涨跌幅的股票。",
     "机构调研为近 30 天公告披露的接待次数与机构家数；热榜为同花顺 / 东财人气榜前 100 内的名次。",
+    "板块、指数、美股、基金、国债收益率等不是本系统收录的沪深京个股，单独列在「其他标的」，"
+    "只显示东财的价格与涨跌，不进入涨跌家数、等权 / 市值加权涨跌、行业暴露和信号统计。",
 ]
 
 
-def parse_codes(text: str) -> tuple[list[tuple[str, str]], list[str]]:
-    """把粘贴的文本拆成 (交易所, 6 位代码)；支持 600519、SH600519、600519.SH、1.600519。"""
+@dataclass(frozen=True)
+class ParsedTargets:
+    """cn：A 股候选 (交易所, 6 位代码)；external：东财 secid；invalid：认不出的写法。"""
 
-    codes: list[tuple[str, str]] = []
+    cn: list[tuple[str, str]]
+    external: list[str]
+    invalid: list[str]
+
+
+def parse_targets(text: str) -> ParsedTargets:
+    """把粘贴的文本拆成 A 股候选与外部标的。
+
+    A 股个股：600519、SH600519、600519.SH、1.600519（1. 沪、0. 深京）。
+    其他标的：东财 secid，如 90.BK1630（板块）、105.NVDA（美股）、171.US10Y（国债收益率）；
+    6 位基金 / 债券代码没写前缀时按号段推断沪深（513120 -> 1.513120）。
+    """
+
+    cn: list[tuple[str, str]] = []
+    external: list[str] = []
     invalid: list[str] = []
     for token in _SPLIT.split(text.strip()):
         if not token:
             continue
         match = _TOKEN.match(token)
         if match is None:
-            invalid.append(token)
+            parsed = parse_secid(token)
+            if parsed is None:
+                invalid.append(token)
+            else:
+                external.append(make_secid(*parsed))
             continue
-        prefix, code, suffix = match.groups()
+        prefix, digit, code, suffix = match.groups()
         marker = (prefix or suffix or "").upper()
-        exchange = _EXCHANGES.get(marker) or infer_exchange(code)
-        if exchange is None:
-            invalid.append(token)
+        exchange: str | None
+        if marker:
+            exchange = _EXCHANGES[marker]
+        elif digit == "1":
+            exchange = "SSE"
+        elif digit == "0":
+            exchange = "BSE" if code.startswith(("4", "8", "92")) else "SZSE"
+        else:
+            exchange = infer_exchange(code)
+        if exchange is not None:
+            cn.append((exchange, code))
             continue
-        codes.append((exchange, code))
-    return list(dict.fromkeys(codes)), invalid
+        market = fund_market(code)
+        if market is None:
+            invalid.append(token)
+        else:
+            external.append(make_secid(market, code))
+    return ParsedTargets(
+        cn=list(dict.fromkeys(cn)), external=list(dict.fromkeys(external)), invalid=invalid
+    )
 
 
 def infer_exchange(code: str) -> str | None:
@@ -118,9 +161,11 @@ class WatchlistInsightsService:
         recent: Callable[[Sequence[UUID], date], dict[UUID, list[RecentClose]]],
     ) -> WatchlistInsights:
         supported = [item for item in group.items if _supported(item)]
-        unsupported = [item.display_symbol for item in group.items if not _supported(item)]
         today = self.now().astimezone(SHANGHAI).date()
         stocks, quote_section, quote_source = await self._quotes(supported, recent, today)
+        others, others_section = await self._others(
+            [item for item in group.items if not _supported(item)]
+        )
         names, signals, signal_section = await self._signals()
         for index, stock in enumerate(stocks):
             stocks[index] = stock.model_copy(
@@ -137,7 +182,8 @@ class WatchlistInsightsService:
             summary=summarise(stocks),
             stocks=stocks,
             industries=exposure(stocks),
-            unsupported=unsupported,
+            others=others,
+            others_section=others_section,
             rules=RULES,
             sources=[
                 SourceRef(
@@ -167,7 +213,7 @@ class WatchlistInsightsService:
             )
         except ProviderError as error:
             since = min(today - timedelta(days=130), date(today.year - 1, 12, 15))
-            closes = await asyncio.to_thread(recent, [item.instrument_id for item in items], since)
+            closes = await asyncio.to_thread(recent, [_iid(item) for item in items], since)
             symbols = sorted(tx.a_share_symbol(item.symbol) for item in items)
             try:
                 tencent = await self.cache.get(
@@ -182,7 +228,7 @@ class WatchlistInsightsService:
                     _tencent_stock(
                         item,
                         tencent.value.get(tx.a_share_symbol(item.symbol)),
-                        closes.get(item.instrument_id, []),
+                        closes.get(_iid(item), []),
                         today,
                     )
                     for item in items
@@ -197,9 +243,7 @@ class WatchlistInsightsService:
                     ),
                     _TENCENT_SOURCE,
                 )
-            stocks = [
-                _stored_stock(item, closes.get(item.instrument_id, []), today) for item in items
-            ]
+            stocks = [_stored_stock(item, closes.get(_iid(item), []), today) for item in items]
             dates = [row.trade_date for rows in closes.values() for row in rows[-1:]]
             section = Section(
                 status="stale" if dates else "unavailable",
@@ -220,6 +264,65 @@ class WatchlistInsightsService:
             fetched_at=cached.fetched_at,
         )
         return stocks, section, _EM_SOURCE
+
+    async def _others(self, items: list[WatchItem]) -> tuple[list[WatchOther], Section]:
+        """板块、指数、美股、基金等：只取价格与涨跌，不进入 A 股汇总。"""
+
+        if not items:
+            return [], Section(status="ok")
+        secids = sorted({item.secid for item in items if item.secid})
+        quotes: dict[str, em.MemberQuote] = {}
+        fetched_at: datetime | None = None
+        stale_reason: str | None = None
+        status: SectionStatus = "ok"
+        if secids:
+            try:
+                cached = await self.cache.get(
+                    "watch-other:" + ",".join(secids),
+                    _TTL_QUOTES,
+                    lambda: self._load_secid_quotes(secids),
+                )
+            except ProviderError as error:
+                status, stale_reason = "unavailable", f"东财行情暂不可用（{error.message}）"
+            else:
+                quotes, fetched_at = cached.value, cached.fetched_at
+                if cached.stale:
+                    status, stale_reason = "stale", cached.stale_reason
+        rows = [_other(item, quotes.get(item.secid or "")) for item in items]
+        silent = [row.display_symbol for row in rows if row.last is None]
+        if status == "ok" and silent:
+            status = "stale"
+            stale_reason = "东财没有返回这些标的的行情：" + "、".join(silent[:12])
+            if len(silent) > 12:
+                stale_reason += f" 等 {len(silent)} 个"
+        return rows, Section(status=status, reason=stale_reason, fetched_at=fetched_at)
+
+    async def resolve_names(self, secids: Sequence[str]) -> dict[str, str]:
+        """导入时顺带取标的名称；东财不可用就返回空，标的照样保存，名称之后看板里现查。"""
+
+        unique = sorted(set(secids))
+        names: dict[str, str] = {}
+        pending = unique
+        # 东财偶尔会少回几行；缺的补查一次（真不存在的代码也只多一次小请求）。
+        for _ in range(2):
+            if not pending:
+                break
+            try:
+                quotes = await self._load_secid_quotes(pending)
+            except ProviderError:
+                break
+            names.update({secid: quote.name for secid, quote in quotes.items() if quote.name})
+            pending = [secid for secid in unique if secid not in names]
+        return names
+
+    async def _load_secid_quotes(self, secids: list[str]) -> dict[str, em.MemberQuote]:
+        quotes: dict[str, em.MemberQuote] = {}
+        for start in range(0, len(secids), em.PAGE_SIZE):
+            payload = await self.gateway.get(
+                em.watch_quote_url(secids[start : start + em.PAGE_SIZE]), em.EASTMONEY_HEADERS
+            )
+            quotes.update(em.parse_secid_quotes(payload))
+        return quotes
 
     async def _load_tencent(self, symbols: list[str]) -> dict[str, tx.Quote]:
         quotes: dict[str, tx.Quote] = {}
@@ -349,7 +452,41 @@ def exposure(stocks: list[WatchStock]) -> list[ExposureItem]:
 
 
 def _supported(item: WatchItem) -> bool:
-    return item.market == "CN" and item.exchange in ("SSE", "SZSE", "BSE") and len(item.symbol) == 6
+    """能进入 A 股汇总（涨跌家数、行业暴露、各类信号）的只有本系统收录的沪深京个股。"""
+
+    return (
+        item.instrument_id is not None
+        and item.market == "CN"
+        and item.exchange in ("SSE", "SZSE", "BSE")
+        and len(item.symbol) == 6
+    )
+
+
+def _other(item: WatchItem, quote: em.MemberQuote | None) -> WatchOther:
+    kind = kind_of_secid(item.secid) if item.secid else "other"
+    base = WatchOther(
+        item_id=item.item_id,
+        instrument_id=item.instrument_id,
+        display_symbol=item.display_symbol,
+        secid=item.secid,
+        code=item.symbol,
+        name=item.name_cn,
+        kind=kind,
+        kind_label=kind_label(kind),
+    )
+    if quote is None:
+        return base
+    return base.model_copy(
+        update={
+            "name": quote.name or item.name_cn,
+            "last": quote.last,
+            "change_pct": quote.change_pct,
+            "change_5d_pct": quote.change_5d_pct,
+            "change_60d_pct": quote.change_60d_pct,
+            "change_ytd_pct": quote.change_ytd_pct,
+            "amount": quote.amount,
+        }
+    )
 
 
 def _live_stock(item: WatchItem, quote: em.MemberQuote | None) -> WatchStock:
@@ -418,9 +555,15 @@ def _stored_stock(item: WatchItem, closes: list[RecentClose], today: date) -> Wa
     )
 
 
+def _iid(item: WatchItem) -> UUID:
+    if item.instrument_id is None:
+        raise ValueError("只有本系统收录的个股才能进入 A 股看板")
+    return item.instrument_id
+
+
 def _base(item: WatchItem, origin: str) -> WatchStock:
     return WatchStock(
-        instrument_id=item.instrument_id,
+        instrument_id=_iid(item),
         display_symbol=item.display_symbol,
         code=item.symbol,
         name=item.name_cn,
