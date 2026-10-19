@@ -19,9 +19,9 @@ class PasswordService:
         if app_env == "test":
             self.hasher = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
         else:
-            # 库默认是 64MiB、并行 4。注册一次会新建好几个 PasswordService，每个初始化都要先算一遍
-            # 假哈希，小内存机器上会把进程打满，浏览器表现为注册请求被掐断。
-            # 这里用 OWASP 的交互式参数：19MiB、2 次迭代、单线程。已有密码的校验仍按哈希串里记下的参数走。
+            # 库默认是 64MiB、并行 4。注册一次会新建好几个 PasswordService，
+            # 初始化就要先算假哈希，小机器会被打满，注册请求直接断开。
+            # 新密码改为 19MiB、2 次迭代、单线程。已有密码仍按哈希串里的参数校验。
             self.hasher = PasswordHasher(time_cost=2, memory_cost=19_456, parallelism=1)
         self._dummy_hash: str | None = None
 
