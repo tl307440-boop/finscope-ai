@@ -1,6 +1,8 @@
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import date
+from typing import Any
 from uuid import UUID
 
 from app.services.assistant.sse import replay_events
@@ -36,6 +38,12 @@ class StoredTurn:
     answer: str
     status: str
     created: bool
+    # 带数据工具的回合才有，重放时还原（旧回合为 None）。
+    blocks: list[dict[str, Any]] | None = None
+    steps: list[dict[str, Any]] | None = None
+    as_of: date | None = None
+    model: str | None = None
+    grounding: str | None = None
 
 
 def accept_question(
@@ -72,13 +80,7 @@ def cancel_turn(existing: StoredTurn | None) -> StoredTurn | None:
 
     if existing is None or existing.status in _FINAL_STATUSES:
         return existing
-    return StoredTurn(
-        client_message_id=existing.client_message_id,
-        question=existing.question,
-        answer=existing.answer,
-        status="cancelled",
-        created=False,
-    )
+    return replace(existing, status="cancelled", created=False)
 
 
 def rules_reply(question: str) -> str:

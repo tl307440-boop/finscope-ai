@@ -1777,3 +1777,62 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 ### 下一步建议
 
 1b：编排器与 A 线工具（数据直取、`calc`、按句 grounding），先用 `ASSISTANT_ENABLED` 开关灰度。
+
+## 2026-10-19 ASSISTANT-1B 编排器、数据直取、calc 工具、按句核对（灰度开关后）
+
+分支 `feat/assistant-1b-orchestrator`（接在 1a 提交 `d20aa7e` 之后），未提交。**`ASSISTANT_ENABLED` 默认关闭；关闭时（或没有可用模型时）走 1a 的旧回答，行为与 1a 完全相同**——1a 的 14 个集成用例原样通过，没有改动。
+
+### 做了什么
+
+- **灰度开关**：`ASSISTANT_ENABLED` 既是环境变量，也是「集成设置」里的受管配置项（`runtime_settings.MANAGED`），保存后最多 5 秒生效，不用重启；开关关闭、或模型未配置，都回落到旧回答。
+- **编排器 `agent.py`**：工具调用循环（默认最多 4 步，每步最多并行 3 个调用，整回合 150 秒预算）；每步开始前和每次模型返回后检查回合是否已被取消；模型调用失败时，如果已经取到数据，就只展示数据（证据卡片 + 固定说明），没取到数据才算失败。
+- **数据直取（fast path）**：对「美国 CPI」「贵州茅台最近一年」「沪深300 PCR」这类明确的问法，服务端不等模型决定，直接取数；结果作为合成的工具调用和工具结果放在用户问题**之后**注入对话，模型第一步就能直接写答案。对不上或有歧义（如「PCR 现在多少」没说哪个指数、同时问两个指数）就不猜，交给模型。可用 `ASSISTANT_FAST_PATH=false` 关掉。
+- **9 个只读工具**（`tools/`）：`instrument_search`、`price_bars`、`financial_metrics`、`board_strength`、`macro_series`、`macro_compare`、`custom_indicator`、`watchlist`、`calc`。所有工具都按**当天可见的数据**取数（美股和美国宏观序列按纽约日历日，A 股和中国宏观按上海日历日，发布当天不可见；`custom_indicator` 只回答“现在”）。结果统一成「证据」，编号 `E1…`，**取不到的结果也登记编号**，模型可以引用并如实说“没有数据”。
+- **`calc`**：只接受对证据单元格的引用和运算（`E1.c3 / E2.c3 - 1`），`Decimal` 计算、保留 4 位小数；不接受自由数字和函数调用，被零除、缺失单元格返回明确错误。
+- **按句核对（grounding）**：回答按句拆开，每句里的数字、日期都要能在本回合证据（含 `calc` 结果）里找到；`sources` 为空，所以任何 `[n]` 引用都视为无效。遇到第一句过不了核对就停，把已推出的前文和对不上的内容交给模型，让它接着写一次；再不行就只保留已经通过核对的前文，并追加一个 `NOT_GROUNDED` 警告块（有前文时是“后续内容没能通过核对，已隐藏。”，一句都没通过时是“没能生成可核对的文字回答，上面是查到的数据。”），`grounding` 记为 `partial` / `none`（全部通过为 `full`）。核对通过之前不向浏览器推送该句。
+- **服务端渲染块**：`line_chart` / `metric_cards` / `table` / `notice` 由服务端根据证据生成（图表和数字不经过模型）；块先写入数据库再推给浏览器，回合中途掉线也不会丢；重放时顺序固定为步骤、块、文字、`done`。
+- **不支持工具调用的模型**：首次使用时探测一次，只有接口明确拒绝（400/404/422）或模型不调用探测工具才缓存为“不支持”，此时改走规划器模式（模型输出 JSON 计划，服务端执行，再让模型叙述）；限流、超时、鉴权失败不缓存，下一回合重新探测。
+- **工具结果缓存**：LRU 256 项、5 分钟；不缓存 `watchlist`、`calc` 和“不可用”结果。
+- **连续追问**：把最近 3 个已完成回合（最多 6 条消息，回答截断到 1200 字，空回答回合跳过）作为历史；另从已存的 `tool_trace` 里取最多 8 个实体（只取代码、名称、市场，不取内部 id）作为“上文提到的证券”，让“它呢”这类追问能接上。
+- **落库**：回合结束的比较并设置里一并写入 `blocks / steps / as_of / model / grounding / tool_trace`（`tool_trace` 为对象，不存结果行；字段见规格 §1 末尾）；接口 `MessageItem` 增加这些可选字段。
+- **资料文本消毒**：资料里的文字单元格（证券名、分组名等）会把换行、`<`、`>`、`|`、双引号替换成无害字符并限制 120 字，防止伪造 `</资料>` 跳出数据块（该问题在自查时发现并修复，并用变异检查确认测试能拦住）。
+- **提示词** `app/prompts/assistant_v1.txt`（`PROMPT_VERSION=assistant_v1`）：只能用资料里的数据；不写 `[n]`；不给买卖建议；工具定义按名字排序、前缀稳定，便于模型侧缓存。
+
+### 变更文件
+
+- 新增（`backend/app/`）：`services/assistant/{agent,responder,results,evidence,calc,sentences,grounding,blocks,tool_cache,fast_path,llm_tools}.py`、`services/assistant/tools/{__init__,base,macro,market,analysis}.py`、`prompts/assistant_v1.txt`。
+- 修改：`api/v1/assistant.py`（用 `AssistantResponder`，响应字段）、`core/config.py`（4 个配置 + 校验）、`db/models/chat.py`（`tool_trace` 类型标注，无迁移）、`main.py`、`repositories/chat.py`（`append_block`、`turn_status`、`recent_turns`、`finish_turn` 带 extras）、`services/assistant/{orchestrator,sse,turns}.py`、`services/chat_reply.py`、`services/runtime_settings.py`。
+- 文档与配置：`docs/API.md`（“数据工具”小节，并更正 1a 写错的并发第二问错误码）、`.env.example`、`finscopeAI_deploy/AI助手技术规格.md`（状态行与 1b 差异）。
+- 测试：`tests/assistant_fakes.py`（共用的假模型/假数据）；新增单元 `test_assistant_{calc,grounding,sentences,evidence_blocks,fast_path,tools_macro,llm_tools,agent,config}.py`；新增集成 `test_assistant_tools.py`（10）、`test_assistant_agent_turns.py`（14）；`test_assistant_{runner,sse}.py` 补用例。
+
+**没有数据库迁移**：1a 已经建好所有列。
+
+### 新增配置
+
+`ASSISTANT_ENABLED=false`、`ASSISTANT_MAX_STEPS=4`（1–8）、`ASSISTANT_FAST_PATH=true`、`ASSISTANT_TURN_SECONDS=150`（>0）。启动时额外校验 `ASSISTANT_STALE_SECONDS ≥ ASSISTANT_TURN_SECONDS + 30`，否则正常运行的长回合会被读成“已失败”。
+
+### 与规格的差异
+
+见 `finscopeAI_deploy/AI助手技术规格.md` §1 末尾“1b 实现与本规格的差异”，要点：`tool_trace` 是对象不是数组；接口缺省而不是 `null`；1b 没有来源，不发 `sources` 事件、不写 `[n]`；能力探测在首次使用时做且只缓存明确拒绝；规划器模式用 JSON 计划；资料文本消毒；取消检查的位置。
+
+### 验证
+
+- `backend` 目录，`DATABASE_URL` 指向 54329 的 `finscope-ai-db-1` 上的**全新临时库**（`alembic upgrade head` 后）：全量 `pytest` 通过 **929 个用例，1 个跳过**（1a 时为 733）。跳过的是 `tests/integration/test_simulation_run.py:126`，库里没有 600519.SH 日线时跳过，与助手无关。
+- `ruff check app tests`、`ruff format --check app tests`（372 个文件）、`mypy app`（254 个源文件）均通过。
+- **变异检查**（改坏后确认测试会失败，已还原并扫描无残留）：① 去掉 `evidence` 的文本消毒，3 个用例失败；② 关掉 `_push` 里的按句核对，7 个用例失败（6 个单元、1 个端到端：编造数字不能到达浏览器）。
+- 长期使用的开发库上跑 `test_simulation_run.py`：`test_mock_simulation_persists_rating_without_an_order` 失败，是 1a 日志已记录的“开发库里中国宏观观测值是上次测试残留”问题，与本次无关；依赖 600519.SH 日线的 `rules_engine` 用例在开发库上没有被跳过，也没有失败输出。
+- 前端没有改动，所以没有重跑前端检查。
+
+### 没有做的（以及已知的限度）
+
+- **没有用真实模型跑过**。所有涉及模型的测试用的是脚本化的假模型（工具调用循环、规划器模式、重写、失败、取消、追问都覆盖了），验收里“配置模型后能回答三个问题”目前只验证了：这三类问法会被数据直取识别（单元测试），工具对测试库里的数据能取到并渲染（集成测试），整条回合的流式、落库、重放（假模型）。真实模型对提示词的遵守程度、第一问的耗时要灰度时看。
+- 前端**还没有**渲染 `steps` / `blocks`（接口已经返回，流里也有）；用户在前端看到的仍是文字回答。步骤展示和卡片/图表渲染是第 2 期。
+- 没有来源和 `[n]` 引用（3a 的语料检索之后做）。
+- 没有在部署环境验证 nginx 新配置（1a 遗留）。
+- `ASSISTANT_ENABLED` 的灰度只有全局开关，没有按用户放量。
+
+### 下一步建议
+
+1. 在测试环境配好模型、打开 `ASSISTANT_ENABLED`，用“美国 CPI 最近怎么走”“贵州茅台最近一年涨跌”“沪深 300 PCR 现在多少”各问几次，看 `tool_trace`（`mode`、`calls`、`failure`、`repaired`）和耗时，再决定要不要调 `ASSISTANT_MAX_STEPS` 或提示词。
+2. 第 2 期：前端渲染步骤和块（块已经由服务端生成）。
+3. 3a：语料检索与 `[n]` 引用。

@@ -1,9 +1,11 @@
+import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Engine, func, select, update
+from sqlalchemy import Engine, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -36,6 +38,33 @@ class MessageRecord:
     client_message_id: UUID
     completion_status: str
     created_at: datetime
+    # 只有带数据工具的回答才有；旧消息为 None，前端按纯文本显示。
+    blocks: list[dict[str, Any]] | None = None
+    sources: list[dict[str, Any]] | None = None
+    steps: list[dict[str, Any]] | None = None
+    as_of: date | None = None
+    grounding: str | None = None
+
+
+@dataclass(frozen=True)
+class TurnExtras:
+    """回合定稿时随正文一起写入的内容（规格 §3 第 3 步）。"""
+
+    blocks: list[dict[str, Any]] | None = None
+    steps: list[dict[str, Any]] | None = None
+    as_of: date | None = None
+    model: str | None = None
+    grounding: str | None = None
+    tool_trace: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class HistoryTurn:
+    """同一会话里一个已完成的旧回合：给模型的历史与「上文提到的实体」用。"""
+
+    question: str
+    answer: str
+    trace: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -162,6 +191,7 @@ class ChatRepository:
         *,
         status: str,
         content: str,
+        extras: TurnExtras | None = None,
     ) -> str:
         """第二段：回答定稿。只有仍是 streaming 的回合才会被写入。
 
@@ -169,6 +199,20 @@ class ChatRepository:
         调用方据此决定给浏览器推什么。
         """
 
+        values: dict[str, Any] = {
+            "content": content,
+            "completion_status": status,
+            "finished_at": utc_now(),
+        }
+        if extras is not None:
+            values.update(
+                blocks=extras.blocks,
+                steps=extras.steps,
+                as_of=extras.as_of,
+                model=extras.model,
+                grounding=extras.grounding,
+                tool_trace=extras.tool_trace,
+            )
         with Session(self.engine) as session, session.begin():
             written = session.execute(
                 update(ChatMessage)
@@ -178,7 +222,7 @@ class ChatRepository:
                     ChatMessage.role == "assistant",
                     ChatMessage.completion_status == "streaming",
                 )
-                .values(content=content, completion_status=status, finished_at=utc_now())
+                .values(**values)
                 .returning(ChatMessage.id)
             ).first()
             if written is not None:
@@ -191,6 +235,76 @@ class ChatRepository:
                 )
             ).first()
             return current or "failed"
+
+    def append_block(
+        self, session_id: UUID, client_message_id: UUID, block: dict[str, Any]
+    ) -> bool:
+        """推送前先把块追加到回答行（一个短事务），中途断开也能从库里还原已有的块。
+
+        只写仍是 streaming 的回合；已取消的回合保留取消前追加的块，之后的丢弃。
+        """
+
+        with Session(self.engine) as session, session.begin():
+            written = session.execute(
+                text(
+                    "UPDATE chat_messages "
+                    "SET blocks = COALESCE(blocks, '[]'::jsonb) || CAST(:block AS jsonb) "
+                    "WHERE session_id = :session_id AND client_message_id = :client_message_id "
+                    "AND role = 'assistant' AND completion_status = 'streaming' "
+                    "RETURNING id"
+                ),
+                {
+                    "block": json.dumps([block], ensure_ascii=False),
+                    "session_id": session_id,
+                    "client_message_id": client_message_id,
+                },
+            ).first()
+        return written is not None
+
+    def turn_status(self, session_id: UUID, client_message_id: UUID) -> str | None:
+        """回答行当前的状态；编排器据此发现用户取消了。不存在返回 None。"""
+
+        with Session(self.engine) as session:
+            return session.scalars(
+                select(ChatMessage.completion_status).where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.client_message_id == client_message_id,
+                    ChatMessage.role == "assistant",
+                )
+            ).first()
+
+    def recent_turns(self, session_id: UUID, exclude: UUID, limit: int = 3) -> list[HistoryTurn]:
+        """同一会话最近 `limit` 个已完成的回合，由旧到新。调用方已确认会话归属。"""
+
+        with Session(self.engine) as session:
+            answers = session.scalars(
+                select(ChatMessage)
+                .where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.role == "assistant",
+                    ChatMessage.completion_status == "completed",
+                    ChatMessage.client_message_id != exclude,
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .limit(limit)
+            ).all()
+            if not answers:
+                return []
+            questions = {
+                row.client_message_id: row.content
+                for row in session.scalars(
+                    select(ChatMessage).where(
+                        ChatMessage.session_id == session_id,
+                        ChatMessage.role == "user",
+                        ChatMessage.client_message_id.in_([a.client_message_id for a in answers]),
+                    )
+                )
+            }
+            return [
+                HistoryTurn(questions[row.client_message_id], row.content, row.tool_trace)
+                for row in reversed(answers)
+                if row.client_message_id in questions
+            ]
 
     def cancel(
         self,
@@ -273,6 +387,11 @@ def _turn(session: Session, session_id: UUID, client_message_id: UUID) -> Stored
         answer=answer.content,
         status=answer.completion_status,
         created=False,
+        blocks=answer.blocks,
+        steps=answer.steps,
+        as_of=answer.as_of,
+        model=answer.model,
+        grounding=answer.grounding,
     )
 
 
@@ -287,4 +406,9 @@ def _message(row: ChatMessage, stale_cutoff: datetime) -> MessageRecord:
         client_message_id=row.client_message_id,
         completion_status=status,
         created_at=row.created_at,
+        blocks=row.blocks,
+        sources=row.sources,
+        steps=row.steps,
+        as_of=row.as_of,
+        grounding=row.grounding,
     )

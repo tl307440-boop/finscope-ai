@@ -4,20 +4,23 @@
 期间一直占着连接和事务。现在拆成两段：
 
 1. 受理：校验会话归属、重放、限流，通过后一个短事务写入「提问 + streaming 的空回答」，提交；
-2. 执行：事务外在后台线程里跑 `compose`，结束时再用一个短事务定稿。
+2. 执行：事务外在后台线程里跑应答器（`Responder`），结束时再用一个短事务定稿。
+   应答器边跑边通过 `emit` 推步骤、数据块和正文；数据块推送前先追加写库，
+   这样中途断开或被取消也能从库里还原已有的块。
 
-同一个 `client_message_id` 重复提交：已定稿的原样重放，还在生成的返回 409。
+同一个 `client_message_id` 重复提交：已定稿的原样重放（含步骤和数据块），还在生成的返回 409。
 """
 
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
-from app.repositories.chat import ChatRepository, TurnExists
+from app.repositories.chat import ChatRepository, TurnExists, TurnExtras
 from app.services.assistant.limits import AssistantLimiter, daily_denial, shanghai_day_start
-from app.services.assistant.orchestrator import TurnOutcome, TurnRunner
+from app.services.assistant.orchestrator import Emit, TurnOutcome, TurnRunner
 from app.services.assistant.sse import replay_events
 from app.services.chat_reply import StoredTurn
 from app.utils.time import utc_now
@@ -45,6 +48,34 @@ class AssistantConfig:
 
     daily_limit: int
     stale_seconds: int
+    # 以下三项只影响带数据工具的回答（`ASSISTANT_ENABLED` 打开时）。
+    max_steps: int = 4
+    turn_seconds: float = 150.0
+    fast_path: bool = True
+
+
+@dataclass(frozen=True)
+class TurnInput:
+    """一个已受理的回合：应答器只需要知道这些。会话归属在受理时已确认。"""
+
+    user_id: UUID
+    session_id: UUID
+    client_message_id: UUID
+    question: str
+
+
+@dataclass(frozen=True)
+class Reply:
+    """应答器的结果。`streamed=True` 表示步骤、块、正文已经通过 `emit` 推出去了。"""
+
+    status: str  # completed / cancelled / failed
+    text: str
+    streamed: bool = False
+    extras: TurnExtras | None = None
+
+
+# 应答器：（回合, 事件推送, 是否已被取消）→ 结果。在后台线程里调用，可以放心做慢操作。
+Responder = Callable[[TurnInput, Emit, Callable[[], bool]], Reply]
 
 
 class TurnService:
@@ -69,7 +100,7 @@ class TurnService:
         session_id: UUID,
         client_message_id: UUID,
         question: str,
-        compose: Callable[[str], str],
+        respond: Responder,
     ) -> Iterator[str]:
         """受理一问并返回事件迭代器。
 
@@ -101,8 +132,10 @@ class TurnService:
             self._limiter.finish(user_id)
             raise SessionNotFound
 
-        def job() -> TurnOutcome:
-            return self._run(session_id, client_message_id, text, compose)
+        turn = TurnInput(user_id, session_id, client_message_id, text)
+
+        def job(emit: Emit) -> TurnOutcome:
+            return self._run(turn, respond, emit)
 
         try:
             return self._runner.stream(job, release=lambda: self._limiter.finish(user_id))
@@ -131,25 +164,71 @@ class TurnService:
     def _replay(turn: StoredTurn) -> Iterator[str]:
         if turn.status == "streaming":
             raise TurnInProgress
-        return iter(replay_events(turn.answer, turn.status))
+        return iter(
+            replay_events(
+                turn.answer,
+                turn.status,
+                steps=turn.steps,
+                blocks=turn.blocks,
+                as_of=turn.as_of,
+                model=turn.model,
+                grounding=turn.grounding,
+            )
+        )
 
-    def _run(
-        self,
-        session_id: UUID,
-        client_message_id: UUID,
-        question: str,
-        compose: Callable[[str], str],
-    ) -> TurnOutcome:
+    def _run(self, turn: TurnInput, respond: Responder, emit: Emit) -> TurnOutcome:
+        session_id, client_message_id = turn.session_id, turn.client_message_id
         try:
-            answer = compose(question)
+            reply = respond(turn, self._saving_blocks(turn, emit), self._cancel_probe(turn))
         except Exception as exc:
             # 只记异常类型：模型与上游的异常文本可能带地址，不进日志。
-            logger.warning("assistant compose failed: %s", type(exc).__name__)
+            logger.warning("assistant turn failed: %s", type(exc).__name__)
             failed = self._repository.finish_turn(
                 session_id, client_message_id, status="failed", content=""
             )
-            return TurnOutcome(status=failed, text="")
+            # 可能已经推出过事件，收尾只补 error / done，不重放。
+            return TurnOutcome(status=failed, text="", streamed=True)
         status = self._repository.finish_turn(
-            session_id, client_message_id, status="completed", content=answer
+            session_id,
+            client_message_id,
+            status=reply.status,
+            content=reply.text,
+            extras=reply.extras,
         )
-        return TurnOutcome(status=status, text=answer if status == "completed" else "")
+        extras = reply.extras or TurnExtras()
+        return TurnOutcome(
+            status=status,
+            text=reply.text if status == "completed" else "",
+            streamed=reply.streamed,
+            as_of=extras.as_of,
+            model=extras.model,
+            grounding=extras.grounding,
+        )
+
+    def _saving_blocks(self, turn: TurnInput, emit: Emit) -> Emit:
+        """数据块先写库再推给浏览器；写库失败只记日志，不影响这一回合。"""
+
+        def push(payload: dict[str, Any]) -> None:
+            if payload.get("type") == "block":
+                try:
+                    self._repository.append_block(
+                        turn.session_id, turn.client_message_id, payload["block"]
+                    )
+                except Exception as exc:
+                    logger.warning("assistant block save failed: %s", type(exc).__name__)
+            emit(payload)
+
+        return push
+
+    def _cancel_probe(self, turn: TurnInput) -> Callable[[], bool]:
+        """回答行不再是 streaming（用户取消了，或残留被判失败）就算被取消。"""
+
+        def cancelled() -> bool:
+            try:
+                status = self._repository.turn_status(turn.session_id, turn.client_message_id)
+            except Exception as exc:
+                logger.warning("assistant cancel check failed: %s", type(exc).__name__)
+                return False
+            return status is not None and status != "streaming"
+
+        return cancelled

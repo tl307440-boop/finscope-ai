@@ -1,6 +1,6 @@
 # AI 投研助手改造：技术规格
 
-日期：2026-10-18 · 状态：**规格稿；1a 已实现（2026-10-19，见 `docs/IMPLEMENTATION_LOG.md` ASSISTANT-1A），其余未实现** · 上游：[`AI助手改造设计.md`](AI助手改造设计.md)
+日期：2026-10-18 · 状态：**规格稿；1a、1b 已实现（2026-10-19，见 `docs/IMPLEMENTATION_LOG.md` ASSISTANT-1A / ASSISTANT-1B；1b 与规格的差异见 §1 末尾），其余未实现** · 上游：[`AI助手改造设计.md`](AI助手改造设计.md)
 
 设计稿说"做什么、为什么"；本规格说"怎么做"：模块、接口、表结构、协议、校验算法、配置项和每期验收标准。两者冲突时以本规格为准，并回改设计稿。
 
@@ -47,6 +47,20 @@
 拆分的理由：1a 单独上线就能消除"事务里等模型"（R1）和代理缓冲（R20）两个隐患，且不改变用户看到的内容，出问题好回退；3a 先验证纯全文检索够不够用，够用就省下约 1 GB 内存，也不用解决服务器下载模型的问题（R14）。
 
 每期一个 PR，合并前跑 `ruff`、`mypy`、`pytest`、前端 `lint` / `typecheck` / 单测，实际运行页面，更新 `docs/IMPLEMENTATION_LOG.md`。
+
+### 1b 实现与本规格的差异（2026-10-19）
+
+下面几处实现与上文不同，**以实现为准**（原因见 `docs/IMPLEMENTATION_LOG.md` ASSISTANT-1B）：
+
+- **`tool_trace` 是一个对象**，不是数组：`{prompt, model, mode, fast_path, calls, model_calls, usage, repaired, unmatched, failure}`；`calls` 每条 `{step, tool, args, status, cached, ms, evidence, rows, truncated}`（搜索证券时再加 `entities`，只含代码、名称、市场）。`mode` 为 `tools` 或 `planner`。结果行不存。
+- **接口不输出 `null`**：全站响应信封统一 `exclude_none`，所以旧消息上没有的 `blocks / steps / as_of / grounding / sources` 是**缺省**而不是 `null`（§10 写的"为 `null`"按"缺省"理解），前端按可选字段处理。
+- **1b 没有来源，也没有 `[n]` 引用**：`sources` 事件不发，`sources` 字段恒为空，提示词里明确"不要写 `[n]`"，grounding 把任何 `[n]` 当作无效引用拦下。引用标注随 3a 的语料检索一起做。
+- **能力探测在进程内首次使用时做**，不在保存 `LLM_*` 时做；只有接口明确拒绝带工具的请求（400 / 404 / 422）或模型没有按要求调用 `ping` 才缓存为"不支持"，429、5xx、超时、鉴权失败不缓存，下个回合重新探测，避免一次抖动把整个进程永久拉进规划器模式。
+- **规划器模式**：先让模型输出 `{"calls":[{"tool":…,"args":{…}}]}`（最多 4 个，JSON 不合法就只回复"没能理解这个问题"，不猜），服务端执行后再让模型写叙述。
+- **资料文本消毒**（§8 补充）：`render` 把资料里的文字单元格里的换行、`<` `>`、`|`、双引号替换成无害字符，并限制每格 120 字，防止证券名、自选分组名之类的文字伪造 `</资料>` 跳出数据块。
+- **取消检查**：每步开始前和每次模型调用返回后各查一次回答行状态；按句推送过程中不逐句查库。
+- **新增配置**：`ASSISTANT_ENABLED`（默认 false，运行时可在「集成设置」改，5 秒生效）、`ASSISTANT_MAX_STEPS`（默认 4，1–8）、`ASSISTANT_FAST_PATH`（默认 true）、`ASSISTANT_TURN_SECONDS`（默认 150）。启动时校验 `ASSISTANT_STALE_SECONDS ≥ ASSISTANT_TURN_SECONDS + 30`。
+- **与 1a 文档的更正**：同一用户并发第二问返回 **429** `RATE_LIMITED`（不是 409）；409 只用于重发同一个 `client_message_id` 而它还在生成。
 
 ## 2. 后端模块
 

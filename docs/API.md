@@ -151,10 +151,29 @@
 SSE 响应头带 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`。每行 `data:` 是一个 JSON，`type` 为 `delta`（`delta` 字段是文本片段）、`done`（`status` 为最终状态，同时保留 `done: true`）或 `error`（`code`、`message`）。模型迟迟不返回时，服务端每 `ASSISTANT_HEARTBEAT_SECONDS` 秒发一行 `: ping` 注释，客户端应忽略。
 
 - 同一个 `client_message_id` 再次发送：已完成的回答原样重放，不再调用模型；失败的回答先重放一个 `error` 事件再给 `done(status=failed)`；仍在生成时返回 409 `TURN_IN_PROGRESS`。
-- 同一用户同一时刻只允许一轮在生成，再发新问题返回 409 `TURN_IN_PROGRESS`。
+- 同一用户同一时刻只允许一轮在生成，再发新问题返回 429 `RATE_LIMITED`（`message` 提示等上一条回答完成）。409 `TURN_IN_PROGRESS` 只用于重发同一个 `client_message_id` 而它还在生成。
 - 限流返回 429 `RATE_LIMITED`，`message` 为可直接展示的中文说明。三种情况：每分钟次数超过 `ASSISTANT_PER_MINUTE`（进程内滑动窗口）、当日（按上海日历日）回答数超过 `ASSISTANT_DAILY_LIMIT`（按数据库计数）、后台并发已满 `ASSISTANT_WORKERS`（直接拒绝，不排队）。被限流的请求不写任何消息。
 - 处于 `streaming` 超过 `ASSISTANT_STALE_SECONDS` 的回答（例如进程重启留下的）在读取时按 `failed` 返回，下次写入时落成 `failed`。
 - 取消 `streaming` 中的回答会把它标为 `cancelled`；`completed`、`cancelled`、`failed` 视为终态，取消不会改写。
+
+### 数据工具（`ASSISTANT_ENABLED`，默认关）
+
+总开关在环境变量 `ASSISTANT_ENABLED`，管理员也可以在「集成设置」里改（5 秒内生效，不用重启）。**关闭、或没配模型时，行为与上面的 1a 完全相同**：只有 `delta` / `done` 事件，回答是白名单宏观转述或固定说明。
+
+打开并配了 `LLM_*` 后，模型按需调用数据工具（宏观序列、证券搜索与日线、财务指标、行业强弱、自定义指标 PCR / 估值、我的自选、`calc`），回答只能依据查到的资料。SSE 在上面三种事件之外多出：
+
+- `step`：`id`（`s1`…）、`label`、`status`（`running` / `ok` / `stale` / `unavailable`）。同一个 `id` 先 `running` 后变终态。
+- `block`：`block` 是服务端生成的渲染块，`type` 为 `line_chart`、`metric_cards`、`table` 或 `notice`。数据块在模型写叙述之前就推出，块里的数字来自数据库，不经过模型。
+- `delta`：**一句话通过核对后才推这一句**。每句里的数字、日期必须能在已查到的资料里找到，对不上的句子改写一次，仍不通过就隐藏后文，并给一个 `notice` 块（`code=NOT_GROUNDED`）。没有通过核对的文字不会出现在浏览器里。
+- `done`：多出 `as_of`（资料截止日）、`model`、`grounding`（`full` 全部通过 / `partial` 有句子被拦、后文已隐藏 / `none` 一句文字都没推，只给数据块）。`failed` 的收尾仍是 `error` 加 `done`，不带这些字段。
+
+旧前端只读 `delta` 与 `done`，忽略 `step` / `block`，照样能拿到正文和结束信号。
+
+回合结束后这些内容与 `content` 一起存进回答行。`GET /api/v1/assistant/sessions/{sessionId}/messages` 的每条消息多出可选字段 `blocks`、`steps`、`as_of`、`grounding`、`sources`（目前恒为空，来源标注在后续期次）。没有这些内容的旧消息和用户消息**字段缺省**（接口统一不输出 `null`），前端按纯文本显示。同一个 `client_message_id` 重发时，已存的步骤、块、正文与结束信号按事件原样重放，不再调用模型。
+
+数据块在推送之前先追加写入回答行，所以回合中途断开或被取消，已推出的块也能从库里还原；取消后不再写叙述。回合总时长超过 `ASSISTANT_TURN_SECONDS`（默认 150 秒）时不再写叙述，只给已查到的数据并带 `NOT_GROUNDED` 提示；一条可用的数据都没查到就按 `failed` 处理。模型错误、超时、异常文本都不进响应和日志（日志只记异常类型）。
+
+时点：美国序列和美股按纽约日历日，A 股与中国宏观按上海日历日；发布当天的数据在当天不可见。自定义指标（PCR、估值分位）只回答当前，要求历史时点会得到 `unavailable` 并说明原因。
 
 ## 资料库
 

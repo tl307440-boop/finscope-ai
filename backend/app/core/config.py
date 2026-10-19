@@ -155,6 +155,15 @@ class Settings(BaseSettings):
     assistant_heartbeat_seconds: float = 15.0
     # 回答停在 streaming 超过这个秒数（进程重启留下的残留）按 failed 处理。
     assistant_stale_seconds: int = 300
+    # 总开关（界面「集成设置」可改，默认关）：关时问答保持 1a 的行为（白名单转述或固定说明），
+    # 开时由模型按需调用数据工具作答，每个数字都要能在已查到的资料里找到。
+    assistant_enabled: bool = False
+    # 一个回合里模型最多调几轮工具；用完后强制写叙述。
+    assistant_max_steps: int = 4
+    # 一眼能看出要查什么的问题先直取数据，少等一轮模型。
+    assistant_fast_path: bool = True
+    # 一个回合里所有模型调用的总时长上限（秒）；超了只给已查到的数据。
+    assistant_turn_seconds: float = 150.0
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。
@@ -210,6 +219,13 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} 必须为正数")
         if self.assistant_heartbeat_seconds <= 0:
             raise ValueError("ASSISTANT_HEARTBEAT_SECONDS 必须为正数")
+        if not 1 <= self.assistant_max_steps <= 8:
+            raise ValueError("ASSISTANT_MAX_STEPS 需要在 1–8 之间")
+        if self.assistant_turn_seconds <= 0:
+            raise ValueError("ASSISTANT_TURN_SECONDS 必须为正数")
+        # 回合还在跑时不能被当成残留判失败：留出首次能力探测（最多 20 秒）和落库的余量。
+        if self.assistant_turn_seconds + 30 > self.assistant_stale_seconds:
+            raise ValueError("ASSISTANT_STALE_SECONDS 必须比 ASSISTANT_TURN_SECONDS 至少大 30 秒")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")

@@ -1,4 +1,5 @@
 import json
+from datetime import date
 
 from app.services.assistant.sse import (
     HEARTBEAT,
@@ -6,6 +7,7 @@ from app.services.assistant.sse import (
     done_event,
     error_event,
     replay_events,
+    tail_events,
 )
 
 
@@ -69,3 +71,67 @@ def test_failed_turn_replays_an_error_then_done_without_any_text() -> None:
 def test_error_event_has_code_and_message_only() -> None:
     payload = json.loads(error_event("TURN_FAILED", "没有成功").removeprefix("data: "))
     assert payload == {"type": "error", "code": "TURN_FAILED", "message": "没有成功"}
+
+
+STEPS = [{"id": "s1", "label": "查宏观序列：美国 CPI", "status": "ok"}]
+BLOCKS = [{"type": "notice", "level": "info", "code": "X", "message": "m"}]
+
+
+def test_replay_of_a_rich_turn_orders_steps_blocks_text_done() -> None:
+    events = replay_events(
+        "结论。",
+        "completed",
+        steps=STEPS,
+        blocks=BLOCKS,
+        as_of=date(2026, 10, 16),
+        model="m1",
+        grounding="full",
+    )
+    payloads = [json.loads(item.removeprefix("data: ")) for item in events]
+    assert [p["type"] for p in payloads] == ["step", "block", "delta", "done"]
+    assert payloads[0] == {"type": "step", **STEPS[0]}
+    assert payloads[1] == {"type": "block", "block": BLOCKS[0]}
+    assert payloads[-1] == {
+        "type": "done",
+        "done": True,
+        "status": "completed",
+        "as_of": "2026-10-16",
+        "model": "m1",
+        "grounding": "full",
+    }
+    # 旧前端：忽略 step / block，照样拿到正文和结束信号。
+    assert _old_client_text("".join(events)) == ("结论。", True)
+
+
+def test_replay_without_extras_is_identical_to_the_old_output() -> None:
+    plain = replay_events("结论。", "completed")
+    assert plain == replay_events("结论。", "completed", steps=None, blocks=None)
+    assert plain == replay_events("结论。", "completed", steps=[], blocks=[])
+    assert json.loads(plain[-1].removeprefix("data: ")) == {
+        "type": "done",
+        "done": True,
+        "status": "completed",
+    }
+
+
+def test_failed_replay_ignores_stored_blocks() -> None:
+    kinds = [
+        json.loads(item.removeprefix("data: "))["type"]
+        for item in replay_events("", "failed", steps=STEPS, blocks=BLOCKS)
+    ]
+    assert kinds == ["error", "done"]
+
+
+def test_tail_events_carry_metadata_only_for_non_failed_turns() -> None:
+    ok = tail_events("completed", as_of=date(2026, 10, 16), model="m1", grounding="partial")
+    assert len(ok) == 1
+    assert json.loads(ok[0].removeprefix("data: "))["grounding"] == "partial"
+    cancelled = tail_events("cancelled")
+    assert json.loads(cancelled[0].removeprefix("data: ")) == {
+        "type": "done",
+        "done": True,
+        "status": "cancelled",
+    }
+    failed = tail_events("failed", model="m1", grounding="none")
+    assert [json.loads(item.removeprefix("data: "))["type"] for item in failed] == ["error", "done"]
+    assert "m1" not in "".join(failed)

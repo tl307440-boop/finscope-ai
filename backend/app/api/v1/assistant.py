@@ -1,5 +1,6 @@
 from collections.abc import Callable
-from typing import Annotated, cast
+from datetime import date
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
@@ -13,9 +14,12 @@ from app.core.exceptions import AppError
 from app.repositories.chat import ChatRepository, MessageRecord, SessionRecord
 from app.services.assistant.limits import AssistantLimiter
 from app.services.assistant.orchestrator import TurnRunner
+from app.services.assistant.responder import AssistantResponder
+from app.services.assistant.tools import ToolRegistry
 from app.services.assistant.turns import (
     AssistantConfig,
     RateLimited,
+    Responder,
     SessionNotFound,
     TurnInProgress,
     TurnService,
@@ -60,6 +64,12 @@ class MessageItem(BaseModel):
     content: str
     client_message_id: UUID
     completion_status: str
+    # 带数据工具的回答才有；旧消息为 null，按纯文本显示。
+    blocks: list[dict[str, Any]] | None = None
+    sources: list[dict[str, Any]] | None = None
+    steps: list[dict[str, Any]] | None = None
+    as_of: date | None = None
+    grounding: str | None = None
 
 
 class MessageList(BaseModel):
@@ -73,6 +83,18 @@ def _engine(request: Request) -> Engine:
 def _repository(request: Request) -> ChatRepository:
     config = cast(AssistantConfig, request.app.state.assistant_config)
     return ChatRepository(_engine(request), stale_seconds=config.stale_seconds)
+
+
+def _responder(request: Request) -> Responder:
+    state = request.app.state
+    engine = _engine(request)
+    return AssistantResponder(
+        engine=engine,
+        repository=_repository(request),
+        registry=cast(ToolRegistry, state.assistant_registry),
+        config=cast(AssistantConfig, state.assistant_config),
+        legacy=_composer(engine),
+    )
 
 
 def _turns(request: Request) -> TurnService:
@@ -133,7 +155,7 @@ def create_message(
             session_id,
             body.client_message_id,
             body.content,
-            _composer(_engine(request)),
+            _responder(request),
         )
     except ValueError as exc:
         raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
@@ -224,6 +246,11 @@ def _messages(rows: list[MessageRecord]) -> MessageList:
                 content=row.content,
                 client_message_id=row.client_message_id,
                 completion_status=row.completion_status,
+                blocks=row.blocks,
+                sources=row.sources,
+                steps=row.steps,
+                as_of=row.as_of,
+                grounding=row.grounding,
             )
             for row in rows
         ]

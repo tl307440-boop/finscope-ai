@@ -49,5 +49,7 @@ class ChatMessage(Base):
     as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
     model: Mapped[str | None] = mapped_column(String(80), nullable=True)
     grounding: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    tool_trace: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # 对象：回合级字段（prompt、model、mode、fast_path、repaired、unmatched、usage）
+    # + `calls` 数组（每次工具调用一条，不存结果行）。
+    tool_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
