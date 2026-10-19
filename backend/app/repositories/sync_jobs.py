@@ -1,5 +1,5 @@
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -87,6 +87,20 @@ class SyncJobRepository:
                 if existing is None:
                     raise
                 return _snapshot(existing), False
+
+    def succeeded_dedupe_keys(self, dedupe_keys: Sequence[str]) -> set[str]:
+        """这些幂等键里，已经有成功记录的那些。失败记录不算，调用方可以再登记。"""
+
+        if not dedupe_keys:
+            return set()
+        with Session(self.engine) as session:
+            rows = session.scalars(
+                select(SyncJob.dedupe_key).where(
+                    SyncJob.dedupe_key.in_(tuple(dedupe_keys)),
+                    SyncJob.status == "succeeded",
+                )
+            ).all()
+        return set(rows)
 
     def provider_id(self, *, code: str, name: str, config_public: dict[str, object]) -> UUID:
         """取数据源主键；缺失时登记一条 enabled=False 的记录。

@@ -26,6 +26,7 @@ from app.services.scheduler import (
     RegisteredJob,
     build_scheduler,
     catch_up_china_macro,
+    catch_up_fred_history,
     catch_up_universe,
     register_jobs,
 )
@@ -112,6 +113,13 @@ def _catch_up(engine: Engine, settings: Settings) -> None:
     except Exception:
         # 同理：失败不拦调度器，次日 01:20 的定时触发仍会抓。
         logger.warning("scheduler china macro catch-up failed error_type=unexpected")
+    try:
+        queued = catch_up_fred_history(engine, settings)
+        if queued:
+            logger.info("scheduler queued fred history backfill jobs=%s", queued)
+    except Exception:
+        # 失败不拦调度器；当天的定时同步仍会再判一次基期月缺不缺。
+        logger.warning("scheduler fred history catch-up failed error_type=unexpected")
 
 
 def _beat(
