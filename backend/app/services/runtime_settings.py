@@ -102,6 +102,17 @@ MANAGED: tuple[ManagedKey, ...] = (
         "gpt-4o-mini",
     ),
     ManagedKey(
+        "ASSISTANT_ENABLED",
+        "assistant_enabled",
+        "启用 AI 助手（数据工具）",
+        "大模型",
+        False,
+        "bool",
+        "打开后问答由模型按需查询已入库的宏观、行情、财务等数据再作答，回答里的数字都要能在查到的"
+        "资料里找到；需要模型接口支持工具调用，不支持时自动改用「先规划再作答」。"
+        "关闭时问答只转述白名单宏观序列。",
+    ),
+    ManagedKey(
         "ALLOW_REGISTRATION",
         "allow_registration",
         "开放注册",

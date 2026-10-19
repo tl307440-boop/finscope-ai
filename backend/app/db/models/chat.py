@@ -1,8 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Date, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -38,5 +39,17 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     client_message_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # completed / cancelled / streaming（已受理、后台在跑）/ failed
     completion_status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # 以下列只属于助手那一行，全部可空；旧消息为 NULL（规格 §10）。
+    blocks: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    sources: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    steps: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    as_of: Mapped[date | None] = mapped_column(Date, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    grounding: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # 对象：回合级字段（prompt、model、mode、fast_path、repaired、unmatched、usage）
+    # + `calls` 数组（每次工具调用一条，不存结果行）。
+    tool_trace: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

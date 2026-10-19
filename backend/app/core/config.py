@@ -146,6 +146,24 @@ class Settings(BaseSettings):
     macro_batch_limit_daily: int = 2500
     macro_batch_limit_weekly: int = 600
     macro_batch_limit_other: int = 240
+    # AI 投研助手（规格 §15/§16）：回合在后台线程里跑，浏览器断开不等于取消。
+    # 并发与每分钟额度在进程内计，每日额度查库（重启不清零）。
+    assistant_per_minute: int = 6
+    assistant_daily_limit: int = 200
+    assistant_workers: int = 4
+    # 超过这么久没有事件就补一行 SSE 注释心跳，防止代理按读超时切断。
+    assistant_heartbeat_seconds: float = 15.0
+    # 回答停在 streaming 超过这个秒数（进程重启留下的残留）按 failed 处理。
+    assistant_stale_seconds: int = 300
+    # 总开关（界面「集成设置」可改，默认关）：关时问答保持 1a 的行为（白名单转述或固定说明），
+    # 开时由模型按需调用数据工具作答，每个数字都要能在已查到的资料里找到。
+    assistant_enabled: bool = False
+    # 一个回合里模型最多调几轮工具；用完后强制写叙述。
+    assistant_max_steps: int = 4
+    # 一眼能看出要查什么的问题先直取数据，少等一轮模型。
+    assistant_fast_path: bool = True
+    # 一个回合里所有模型调用的总时长上限（秒）；超了只给已查到的数据。
+    assistant_turn_seconds: float = 150.0
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。
@@ -191,6 +209,23 @@ class Settings(BaseSettings):
         ):
             if not 1 <= value <= 20000:
                 raise ValueError(f"{name} 需要在 1–20000 之间")
+        for name, count in (
+            ("ASSISTANT_PER_MINUTE", self.assistant_per_minute),
+            ("ASSISTANT_DAILY_LIMIT", self.assistant_daily_limit),
+            ("ASSISTANT_WORKERS", self.assistant_workers),
+            ("ASSISTANT_STALE_SECONDS", self.assistant_stale_seconds),
+        ):
+            if count < 1:
+                raise ValueError(f"{name} 必须为正数")
+        if self.assistant_heartbeat_seconds <= 0:
+            raise ValueError("ASSISTANT_HEARTBEAT_SECONDS 必须为正数")
+        if not 1 <= self.assistant_max_steps <= 8:
+            raise ValueError("ASSISTANT_MAX_STEPS 需要在 1–8 之间")
+        if self.assistant_turn_seconds <= 0:
+            raise ValueError("ASSISTANT_TURN_SECONDS 必须为正数")
+        # 回合还在跑时不能被当成残留判失败：留出首次能力探测（最多 20 秒）和落库的余量。
+        if self.assistant_turn_seconds + 30 > self.assistant_stale_seconds:
+            raise ValueError("ASSISTANT_STALE_SECONDS 必须比 ASSISTANT_TURN_SECONDS 至少大 30 秒")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")

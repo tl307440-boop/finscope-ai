@@ -61,6 +61,19 @@ def test_cancelled_turn_is_not_regenerated() -> None:
     assert again.status == "cancelled"
 
 
+def test_streaming_turn_can_be_cancelled_but_final_turns_are_kept() -> None:
+    client_id = uuid4()
+    streaming = StoredTurn(client_id, "营收是多少", "", "streaming", False)
+    cancelled = cancel_turn(streaming)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    for final in ("completed", "cancelled", "failed"):
+        kept = cancel_turn(StoredTurn(client_id, "营收是多少", "答", final, False))
+        assert kept is not None
+        assert kept.status == final
+        assert kept.answer == "答"
+
+
 def test_treasury_question_matches_both_yields() -> None:
     codes = match_macro_codes("美国10年期与2年期国债收益率最近怎么走？")
     assert codes == ("DGS10", "DGS2")
