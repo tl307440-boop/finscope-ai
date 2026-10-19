@@ -3,7 +3,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import ColumnElement, Engine, and_, or_, select
+from sqlalchemy import ColumnElement, Engine, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.catalog.macro_series import MacroProvider, MacroSeriesSeed, fred_series_catalog
@@ -188,6 +188,23 @@ class MacroRepository:
                 point = _point(row)
                 if point is not None:
                     found[series_code].append(point)
+        return found
+
+    def earliest_observation_dates(self, series_codes: Sequence[str]) -> dict[str, date | None]:
+        """每条序列已入库的最早观测日；没有观测的序列对应 None。"""
+
+        found: dict[str, date | None] = {code: None for code in series_codes}
+        if not found:
+            return found
+        with Session(self.engine) as session:
+            rows = session.execute(
+                select(MacroSeries.series_code, func.min(MacroObservation.observation_date))
+                .join(MacroSeries, MacroObservation.series_id == MacroSeries.id)
+                .where(MacroSeries.series_code.in_(tuple(found)))
+                .group_by(MacroSeries.series_code)
+            ).all()
+        for series_code, earliest in rows:
+            found[series_code] = earliest
         return found
 
 

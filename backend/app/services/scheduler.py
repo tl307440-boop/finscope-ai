@@ -34,7 +34,7 @@ refresh_hotspot_events  date+source                       ``hotspot:{source}:{da
 """
 
 import logging
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -47,6 +47,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
+from app.catalog.macro_series import fred_codes
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppError
 from app.db.models.document import Document
@@ -76,6 +77,9 @@ METRIC_VERSION = "v1"
 MACRO_REGIME_MODEL_VERSION = "v1"
 # 交易日判断往回找的最大天数，找不到就按不可用处理，不猜。
 MAX_TRADING_DAY_LOOKBACK = 30
+# 指数化基期，与前端 macroCompare.BASE_MONTH（2020-01）同一天。
+# 已入库的最早观测晚于这个月时，补抓这段前缀；覆盖到这个月就不再抓。
+FRED_HISTORY_FLOOR = date(2020, 1, 1)
 FRED_PROVIDER_ID = UUID("a1b2c3d4-0000-4000-8000-000000000101")
 
 
@@ -510,32 +514,151 @@ def enqueue_built(
 # --------------------------------------------------------------------------- 任务登记
 
 
+def history_backfill_window(
+    earliest: date | None,
+    today: date,
+    *,
+    floor: date = FRED_HISTORY_FLOOR,
+) -> tuple[date, date] | None:
+    """已有观测但还没盖住基期月时，返回要补的前缀 [floor, 最早观测的前一天]。
+
+    一条观测都没有时返回 None：那条序列仍由每日 45 天窗口先写入，下次再补前缀。
+    最早观测落在基期月（含）或更早，说明基期月已经在库里，不再补。
+    """
+
+    if earliest is None or today < floor:
+        return None
+    if floor.month == 12:
+        month_end = date(floor.year + 1, 1, 1) - timedelta(days=1)
+    else:
+        month_end = date(floor.year, floor.month + 1, 1) - timedelta(days=1)
+    if earliest <= month_end:
+        return None
+    end = earliest - timedelta(days=1)
+    if end < floor:
+        return None
+    return floor, end
+
+
+def fred_history_backfill_scopes(
+    codes: Sequence[str],
+    earliest_by_code: Mapping[str, date | None],
+    today: date,
+    *,
+    fred_only: frozenset[str],
+    already_succeeded: frozenset[str] = frozenset(),
+    floor: date = FRED_HISTORY_FLOOR,
+) -> list[dict[str, str]]:
+    """需要补前缀的 FRED 序列。东方财富序列只给最新值，补历史也补不到，直接跳过。
+
+    同一窗口已经成功过就不再登记：上游根本没有基期月时，避免每天重抓同一段。
+    """
+
+    scopes: list[dict[str, str]] = []
+    for code in codes:
+        if code not in fred_only:
+            continue
+        window = history_backfill_window(earliest_by_code.get(code), today, floor=floor)
+        if window is None:
+            continue
+        start, end = window
+        scope = {
+            "series_code": code,
+            "observation_start": start.isoformat(),
+            "observation_end": end.isoformat(),
+        }
+        if dedupe_key_for("fred_series", scope) in already_succeeded:
+            continue
+        scopes.append(scope)
+    return scopes
+
+
+def build_fred_backfill_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """基期月还没入库的 FRED 序列，各登记一段前缀补抓。"""
+
+    if not settings.scheduler_enable_fred:
+        return []
+    provider_id = _provider_id(engine, code="fred", name="FRED")
+    allowed = fred_codes()
+    codes = [code for code in settings.scheduler_series_codes() if code in allowed]
+    earliest = MacroRepository(engine).earliest_observation_dates(codes)
+    draft = fred_history_backfill_scopes(codes, earliest, now.date(), fred_only=allowed)
+    succeeded = SyncJobRepository(engine).succeeded_dedupe_keys(
+        [dedupe_key_for("fred_series", scope) for scope in draft]
+    )
+    scopes = fred_history_backfill_scopes(
+        codes,
+        earliest,
+        now.date(),
+        fred_only=allowed,
+        already_succeeded=frozenset(succeeded),
+    )
+    if scopes:
+        logger.info(
+            "scheduler fred history backfill series=%s",
+            ",".join(scope["series_code"] for scope in scopes),
+        )
+    return [_fred_task(provider_id, scope) for scope in scopes]
+
+
+def catch_up_fred_history(
+    engine: Engine,
+    settings: Settings,
+    *,
+    builder: Callable[[Engine, Settings, datetime], Sequence[ScheduledTask]] | None = None,
+    enqueuer: Enqueuer | None = None,
+) -> int:
+    """启动时如果指数化基期月还没入库，立刻补登记，不用等到当天的定时同步。"""
+
+    if not settings.scheduler_enable_fred:
+        return 0
+    return enqueue_built(
+        engine,
+        settings,
+        builder if builder is not None else build_fred_backfill_tasks,
+        "sync_fred_series",
+        enqueuer=enqueuer,
+    )
+
+
 def build_fred_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
-    """每天 1 次宏观序列同步；没有密钥时执行器走 FRED 公开 CSV（只有最新修订）。"""
+    """每天 1 次宏观序列同步；没有密钥时执行器走 FRED 公开 CSV（只有最新修订）。
+
+    另加一段前缀补抓：已有历史但最早观测晚于 2020-01 时，把基期月补上。
+    每日窗口仍只覆盖最近修订，不会把已入库的历史清掉。
+    """
 
     MacroRepository(engine).ensure_catalog()
     provider_id = _provider_id(engine, code="fred", name="FRED")
     end = now.date()
     start = settings.scheduler_fred_start(end)
-    tasks: list[ScheduledTask] = []
-    for series_code in settings.scheduler_series_codes():
-        scope: dict[str, object] = {
-            "series_code": series_code,
-            "observation_start": start.isoformat(),
-            "observation_end": end.isoformat(),
-        }
-        tasks.append(
-            ScheduledTask(
-                task_name="sync_fred_series",
-                job_type="fred_series",
-                # 幂等标识：provider + series + date
-                dedupe_key=dedupe_key_for("fred_series", _as_text_scope(scope)),
-                scope=scope,
-                provider_id=provider_id,
-                failure_policy="超时/429 退避，保留上次已入库的值",
-            )
+    tasks = [
+        _fred_task(
+            provider_id,
+            {
+                "series_code": series_code,
+                "observation_start": start.isoformat(),
+                "observation_end": end.isoformat(),
+            },
         )
+        for series_code in settings.scheduler_series_codes()
+    ]
+    tasks.extend(build_fred_backfill_tasks(engine, settings, now))
     return tasks
+
+
+def _fred_task(provider_id: UUID, scope: dict[str, str]) -> ScheduledTask:
+    return ScheduledTask(
+        task_name="sync_fred_series",
+        job_type="fred_series",
+        # 幂等标识：provider + series + 观察窗
+        dedupe_key=dedupe_key_for("fred_series", scope),
+        scope=dict(scope),
+        provider_id=provider_id,
+        failure_policy="超时/429 退避，保留上次已入库的值",
+    )
 
 
 def build_a_stock_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
