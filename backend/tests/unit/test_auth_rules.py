@@ -127,6 +127,16 @@ def _service(
     return service, sessions
 
 
+def test_interactive_hasher_is_small_and_does_not_hash_on_init() -> None:
+    service = PasswordService("production")
+    assert service.hasher.time_cost == 2
+    assert service.hasher.memory_cost == 19_456
+    assert service.hasher.parallelism == 1
+    assert service._dummy_hash is None
+    assert service.verify(None, "wrong-password") is False
+    assert service._dummy_hash is not None
+
+
 def test_password_hash_is_argon2id_and_hides_plaintext() -> None:
     passwords = PasswordService("test")
     stored = passwords.hash("correct-password")

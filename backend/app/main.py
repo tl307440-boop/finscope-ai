@@ -61,6 +61,7 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = create_db_engine(settings.database_url)
         app.state.engine = engine
+        app.state.passwords = PasswordService(settings.app_env)
         app.state.login_limiter = LoginRateLimiter(
             max_failures=settings.login_max_failures,
             window_seconds=settings.login_failure_window_seconds,

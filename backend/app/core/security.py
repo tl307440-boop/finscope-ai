@@ -19,14 +19,22 @@ class PasswordService:
         if app_env == "test":
             self.hasher = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
         else:
-            self.hasher = PasswordHasher()
-        self.dummy_hash = self.hasher.hash("not-a-real-password")
+            # 库默认是 64MiB、并行 4。注册一次会新建好几个 PasswordService，
+            # 初始化就要先算假哈希，小机器会被打满，注册请求直接断开。
+            # 新密码改为 19MiB、2 次迭代、单线程。已有密码仍按哈希串里的参数校验。
+            self.hasher = PasswordHasher(time_cost=2, memory_cost=19_456, parallelism=1)
+        self._dummy_hash: str | None = None
 
     def hash(self, password: str) -> str:
         return self.hasher.hash(password)
 
+    def _dummy(self) -> str:
+        if self._dummy_hash is None:
+            self._dummy_hash = self.hasher.hash("not-a-real-password")
+        return self._dummy_hash
+
     def verify(self, password_hash: str | None, password: str) -> bool:
-        candidate = password_hash or self.dummy_hash
+        candidate = password_hash or self._dummy()
         try:
             matched = bool(self.hasher.verify(candidate, password))
         except VerifyMismatchError:

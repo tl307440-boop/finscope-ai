@@ -27,6 +27,15 @@ def get_health_service(request: Request) -> HealthService:
     )
 
 
+def get_password_service(request: Request) -> PasswordService:
+    """进程内共用一个。不能在每个请求里 new：构造时不再算哈希，但参数对象也不该反复建。"""
+
+    cached = getattr(request.app.state, "passwords", None)
+    if isinstance(cached, PasswordService):
+        return cached
+    return PasswordService(get_settings().app_env)
+
+
 def get_auth_service(request: Request) -> AuthService:
     settings = get_settings()
     engine = cast(Engine, request.app.state.engine)
@@ -34,7 +43,7 @@ def get_auth_service(request: Request) -> AuthService:
     return AuthService(
         users=AccountRepository(engine),
         sessions=RefreshSessionRepository(engine),
-        passwords=PasswordService(settings.app_env),
+        passwords=get_password_service(request),
         tokens=TokenService(settings.jwt_secret, settings.access_token_minutes),
         limiter=limiter,
         refresh_token_days=settings.refresh_token_days,
@@ -42,9 +51,8 @@ def get_auth_service(request: Request) -> AuthService:
 
 
 def get_account_service(request: Request) -> AccountService:
-    settings = get_settings()
     engine = cast(Engine, request.app.state.engine)
-    passwords = PasswordService(settings.app_env)
+    passwords = get_password_service(request)
     sessions = RefreshSessionRepository(engine)
     return AccountService(
         users=AccountRepository(engine),
