@@ -19,14 +19,22 @@ class PasswordService:
         if app_env == "test":
             self.hasher = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
         else:
-            self.hasher = PasswordHasher()
-        self.dummy_hash = self.hasher.hash("not-a-real-password")
+            # 库默认是 64MiB、并行 4。注册一次会新建好几个 PasswordService，每个初始化都要先算一遍
+            # 假哈希，小内存机器上会把进程打满，浏览器表现为注册请求被掐断。
+            # 这里用 OWASP 的交互式参数：19MiB、2 次迭代、单线程。已有密码的校验仍按哈希串里记下的参数走。
+            self.hasher = PasswordHasher(time_cost=2, memory_cost=19_456, parallelism=1)
+        self._dummy_hash: str | None = None
 
     def hash(self, password: str) -> str:
         return self.hasher.hash(password)
 
+    def _dummy(self) -> str:
+        if self._dummy_hash is None:
+            self._dummy_hash = self.hasher.hash("not-a-real-password")
+        return self._dummy_hash
+
     def verify(self, password_hash: str | None, password: str) -> bool:
-        candidate = password_hash or self.dummy_hash
+        candidate = password_hash or self._dummy()
         try:
             matched = bool(self.hasher.verify(candidate, password))
         except VerifyMismatchError:
