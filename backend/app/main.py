@@ -26,6 +26,9 @@ from app.core.security import PasswordService
 from app.db.session import create_db_engine
 from app.repositories.accounts import AccountRepository
 from app.services.accounts import bootstrap_admin
+from app.services.assistant.limits import AssistantLimiter
+from app.services.assistant.orchestrator import TurnRunner
+from app.services.assistant.turns import AssistantConfig
 from app.services.cockpit import keep_macro_warm
 from app.services.eastmoney_binding import build_service as build_eastmoney_service
 from app.services.login_limiter import LoginRateLimiter
@@ -68,6 +71,20 @@ def create_app() -> FastAPI:
             max_failures=settings.login_max_failures,
             window_seconds=settings.login_failure_window_seconds,
         )
+        # 助手：回合在后台线程池里跑，限流状态放进程内（每日额度查库）。
+        assistant_runner = TurnRunner(
+            workers=settings.assistant_workers,
+            heartbeat_seconds=settings.assistant_heartbeat_seconds,
+        )
+        app.state.assistant_runner = assistant_runner
+        app.state.assistant_limiter = AssistantLimiter(
+            per_minute=settings.assistant_per_minute,
+            workers=settings.assistant_workers,
+        )
+        app.state.assistant_config = AssistantConfig(
+            daily_limit=settings.assistant_daily_limit,
+            stale_seconds=settings.assistant_stale_seconds,
+        )
         _bootstrap_admin(engine, settings)
         # 宏观上游（FRED / 东财 / 外盘）冷启动要多次跨境请求：
         # 后台预热并定期续命，用户打开总览时直接命中缓存。
@@ -87,6 +104,7 @@ def create_app() -> FastAPI:
             if task is not None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+        assistant_runner.shutdown()
         engine.dispose()
 
     app = FastAPI(

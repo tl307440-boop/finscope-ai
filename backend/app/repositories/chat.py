@@ -1,15 +1,24 @@
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models.chat import ChatMessage, ChatSession
-from app.services.chat_reply import StoredTurn, accept_question, cancel_turn
+from app.services.chat_reply import StoredTurn, cancel_turn
 from app.utils.time import utc_now
+
+# 创建会话时的默认标题；第一问受理后才改成问题前 30 个字（规格 §3）。
+DEFAULT_TITLES = frozenset({"新的问答", "研究问答"})
+TITLE_CHARS = 30
+DEFAULT_STALE_SECONDS = 300
+
+
+class TurnExists(Exception):
+    """同一会话里 client_message_id 已经有这一回合（并发重复提交时抛出）。"""
 
 
 @dataclass(frozen=True)
@@ -29,9 +38,17 @@ class MessageRecord:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class TurnLookup:
+    """会话归当前用户时才有；`turn` 为空表示这个 client_message_id 还没有回合。"""
+
+    turn: StoredTurn | None
+
+
 class ChatRepository:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, stale_seconds: int = DEFAULT_STALE_SECONDS) -> None:
         self.engine = engine
+        self.stale_seconds = stale_seconds
 
     def create_session(self, user_id: UUID, title: str) -> SessionRecord:
         now = utc_now()
@@ -67,34 +84,57 @@ class ChatRepository:
                 .where(ChatMessage.session_id == session_id)
                 .order_by(ChatMessage.created_at, ChatMessage.role.desc())
             ).all()
-            return [_message(row) for row in rows]
+            cutoff = utc_now() - timedelta(seconds=self.stale_seconds)
+            return [_message(row, cutoff) for row in rows]
 
-    def accept(
+    def find_turn(
+        self, user_id: UUID, session_id: UUID, client_message_id: UUID
+    ) -> TurnLookup | None:
+        """查这一回合。会话不归该用户返回 None。
+
+        停在 streaming 超过阈值的回答是进程重启留下的残留，这里顺手落库为 failed。
+        """
+
+        with Session(self.engine) as session, session.begin():
+            if not _owned(session, user_id, session_id):
+                return None
+            answer = _assistant_row(session, session_id, client_message_id)
+            if answer is None:
+                return TurnLookup(turn=None)
+            if answer.completion_status == "streaming" and _is_stale(
+                answer.created_at, self.stale_seconds
+            ):
+                answer.completion_status = "failed"
+                answer.finished_at = utc_now()
+            return TurnLookup(turn=_turn(session, session_id, client_message_id))
+
+    def create_turn(
         self,
         user_id: UUID,
         session_id: UUID,
         client_message_id: UUID,
         question: str,
-        compose: Callable[[str], str],
-    ) -> StoredTurn | None:
-        with Session(self.engine) as session, session.begin():
-            if not _owned(session, user_id, session_id):
-                return None
-            current = _turn(session, session_id, client_message_id)
-            turn = accept_question(
-                current,
-                client_message_id=client_message_id,
-                question=question,
-                compose=compose,
-            )
-            if turn.created:
-                now = utc_now()
+    ) -> bool:
+        """第一段：一个短事务写入「提问 + streaming 状态的空回答」，提交后才去调模型。
+
+        会话不归该用户返回 False；同一回合已存在抛 `TurnExists`。
+        """
+
+        now = utc_now()
+        try:
+            with Session(self.engine) as session, session.begin():
+                chat = session.get(ChatSession, session_id)
+                if chat is None or chat.user_id != user_id:
+                    return False
+                if chat.title.strip() in DEFAULT_TITLES:
+                    chat.title = _title_from(question) or chat.title
+                chat.updated_at = now
                 session.add(
                     ChatMessage(
                         id=uuid.uuid4(),
                         session_id=session_id,
                         role="user",
-                        content=turn.question,
+                        content=question,
                         client_message_id=client_message_id,
                         completion_status="completed",
                         created_at=now,
@@ -105,13 +145,52 @@ class ChatRepository:
                         id=uuid.uuid4(),
                         session_id=session_id,
                         role="assistant",
-                        content=turn.answer,
+                        content="",
                         client_message_id=client_message_id,
-                        completion_status=turn.status,
+                        completion_status="streaming",
                         created_at=now,
                     )
                 )
-            return turn
+        except IntegrityError as exc:
+            raise TurnExists from exc
+        return True
+
+    def finish_turn(
+        self,
+        session_id: UUID,
+        client_message_id: UUID,
+        *,
+        status: str,
+        content: str,
+    ) -> str:
+        """第二段：回答定稿。只有仍是 streaming 的回合才会被写入。
+
+        用户在这期间取消了（或残留被判 failed），写入会被跳过，返回库里实际的状态，
+        调用方据此决定给浏览器推什么。
+        """
+
+        with Session(self.engine) as session, session.begin():
+            written = session.execute(
+                update(ChatMessage)
+                .where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.client_message_id == client_message_id,
+                    ChatMessage.role == "assistant",
+                    ChatMessage.completion_status == "streaming",
+                )
+                .values(content=content, completion_status=status, finished_at=utc_now())
+                .returning(ChatMessage.id)
+            ).first()
+            if written is not None:
+                return status
+            current = session.scalars(
+                select(ChatMessage.completion_status).where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.client_message_id == client_message_id,
+                    ChatMessage.role == "assistant",
+                )
+            ).first()
+            return current or "failed"
 
     def cancel(
         self,
@@ -127,20 +206,52 @@ class ChatRepository:
             if updated is None or current is None:
                 return updated
             if updated.status != current.status:
-                assistant = session.scalars(
-                    select(ChatMessage).where(
-                        ChatMessage.session_id == session_id,
-                        ChatMessage.client_message_id == client_message_id,
-                        ChatMessage.role == "assistant",
-                    )
-                ).one()
-                assistant.completion_status = updated.status
+                assistant = _assistant_row(session, session_id, client_message_id)
+                if assistant is not None:
+                    assistant.completion_status = updated.status
+                    assistant.finished_at = utc_now()
             return updated
+
+    def count_assistant_turns_since(self, user_id: UUID, since: datetime) -> int:
+        """该用户从 `since` 起的助手消息条数，每日额度据此判断（重启不清零）。"""
+
+        with Session(self.engine) as session:
+            total = session.scalar(
+                select(func.count())
+                .select_from(ChatMessage)
+                .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+                .where(
+                    ChatSession.user_id == user_id,
+                    ChatMessage.role == "assistant",
+                    ChatMessage.created_at >= since,
+                )
+            )
+            return int(total or 0)
+
+
+def _title_from(question: str) -> str:
+    return " ".join(question.split())[:TITLE_CHARS]
+
+
+def _is_stale(created_at: datetime, stale_seconds: int) -> bool:
+    return utc_now() - created_at > timedelta(seconds=stale_seconds)
 
 
 def _owned(session: Session, user_id: UUID, session_id: UUID) -> bool:
     row = session.get(ChatSession, session_id)
     return row is not None and row.user_id == user_id
+
+
+def _assistant_row(
+    session: Session, session_id: UUID, client_message_id: UUID
+) -> ChatMessage | None:
+    return session.scalars(
+        select(ChatMessage).where(
+            ChatMessage.session_id == session_id,
+            ChatMessage.client_message_id == client_message_id,
+            ChatMessage.role == "assistant",
+        )
+    ).first()
 
 
 def _turn(session: Session, session_id: UUID, client_message_id: UUID) -> StoredTurn | None:
@@ -165,12 +276,15 @@ def _turn(session: Session, session_id: UUID, client_message_id: UUID) -> Stored
     )
 
 
-def _message(row: ChatMessage) -> MessageRecord:
+def _message(row: ChatMessage, stale_cutoff: datetime) -> MessageRecord:
+    status = row.completion_status
+    if row.role == "assistant" and status == "streaming" and row.created_at < stale_cutoff:
+        status = "failed"
     return MessageRecord(
         id=row.id,
         role=row.role,
         content=row.content,
         client_message_id=row.client_message_id,
-        completion_status=row.completion_status,
+        completion_status=status,
         created_at=row.created_at,
     )

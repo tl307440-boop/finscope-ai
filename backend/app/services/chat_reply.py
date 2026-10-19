@@ -1,8 +1,9 @@
-import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
+
+from app.services.assistant.sse import replay_events
 
 NO_MODEL_REPLY = "未配置模型，不能根据这个问题编造财务数字。请查看已保存的研究记录。"
 NO_SERIES_REPLY = (
@@ -63,8 +64,13 @@ def accept_question(
     )
 
 
+_FINAL_STATUSES = frozenset({"completed", "cancelled", "failed"})
+
+
 def cancel_turn(existing: StoredTurn | None) -> StoredTurn | None:
-    if existing is None or existing.status == "completed":
+    """只有还没定稿的回合（pending / streaming）能取消；已完成、已取消、已失败的原样返回。"""
+
+    if existing is None or existing.status in _FINAL_STATUSES:
         return existing
     return StoredTurn(
         client_message_id=existing.client_message_id,
@@ -130,7 +136,6 @@ def _fallback(evidence: tuple[str, ...]) -> str:
 
 
 def event_stream(text: str, size: int = 24) -> list[str]:
-    parts = [text[index : index + size] for index in range(0, len(text), size)] or [""]
-    events = ["data: " + json.dumps({"delta": part}, ensure_ascii=False) + "\n\n" for part in parts]
-    events.append("data: " + json.dumps({"done": True}) + "\n\n")
-    return events
+    """已定稿回答的事件序列，协议见 `services/assistant/sse.py`。"""
+
+    return replay_events(text, "completed", size)

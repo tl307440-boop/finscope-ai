@@ -146,6 +146,15 @@ class Settings(BaseSettings):
     macro_batch_limit_daily: int = 2500
     macro_batch_limit_weekly: int = 600
     macro_batch_limit_other: int = 240
+    # AI 投研助手（规格 §15/§16）：回合在后台线程里跑，浏览器断开不等于取消。
+    # 并发与每分钟额度在进程内计，每日额度查库（重启不清零）。
+    assistant_per_minute: int = 6
+    assistant_daily_limit: int = 200
+    assistant_workers: int = 4
+    # 超过这么久没有事件就补一行 SSE 注释心跳，防止代理按读超时切断。
+    assistant_heartbeat_seconds: float = 15.0
+    # 回答停在 streaming 超过这个秒数（进程重启留下的残留）按 failed 处理。
+    assistant_stale_seconds: int = 300
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。
@@ -191,6 +200,16 @@ class Settings(BaseSettings):
         ):
             if not 1 <= value <= 20000:
                 raise ValueError(f"{name} 需要在 1–20000 之间")
+        for name, count in (
+            ("ASSISTANT_PER_MINUTE", self.assistant_per_minute),
+            ("ASSISTANT_DAILY_LIMIT", self.assistant_daily_limit),
+            ("ASSISTANT_WORKERS", self.assistant_workers),
+            ("ASSISTANT_STALE_SECONDS", self.assistant_stale_seconds),
+        ):
+            if count < 1:
+                raise ValueError(f"{name} 必须为正数")
+        if self.assistant_heartbeat_seconds <= 0:
+            raise ValueError("ASSISTANT_HEARTBEAT_SECONDS 必须为正数")
         if self.app_env == "production":
             if self.jwt_secret == PLACEHOLDER_JWT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("生产环境 JWT_SECRET 不能使用示例值，且长度至少 32")

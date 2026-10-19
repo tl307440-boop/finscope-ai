@@ -1724,3 +1724,56 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 ### 验证
 
 纯文档变更，无代码测试；规格里引用的类名、函数名、配置项、表字段都在代码里逐个核对过。
+
+## 2026-10-19 ASSISTANT-1A 问答回合底座（两段式回合、SSE 协议、限流、nginx、迁移）
+
+分支 `feat/assistant-1a-turn-lifecycle`，未提交。回答内容不变（仍是旧的白名单转述或固定说明），只换底座。
+
+### 做了什么
+
+- 回合改成两段：短事务写入用户消息和 `streaming` 的空回答并提交；后台线程调用模型；`finish_turn` 用 `UPDATE … WHERE completion_status='streaming' … RETURNING` 做比较并设置，已被取消的回合不会被改写。模型调用不再占数据库事务（规格 R1）。
+- SSE：每行 `data:` 带 `type`（`delta` / `done` / `error`），保留旧的 `delta`、`done:true` 键并增加 `status`；15 秒 `: ping` 心跳；重放字节一致；失败回合重放为 `error` 再 `done(failed)`；客户端断开不取消回合。
+- 限流：每用户并发 1、后台线程满直接拒绝、每分钟滑动窗口、按上海日历日从数据库计数的每日额度；429 `RATE_LIMITED`、409 `TURN_IN_PROGRESS`。名额在发出结束事件之前释放，所以客户端收到 `done` 后立刻重发不会撞上自己。
+- 超过 `ASSISTANT_STALE_SECONDS`（300）仍是 `streaming` 的行，读取时按 `failed` 返回，下次写入落成 `failed`。
+- 会话标题：默认标题时用第一问前 30 字（去多余空白）。
+- `frontend/nginx.conf` 给助手消息接口单独一段：HTTP/1.1、关闭缓冲、读超时 180 秒；响应头 `X-Accel-Buffering: no`。
+- 前端：新增 `api/assistantStream.ts`（SSE 行解析、429/409 的提示文字、空回复文字）；`AssistantView.vue` 增加“生成失败”状态，失败回合可重新生成。
+
+### 变更文件
+
+- 后端：`app/core/config.py`、`app/db/models/chat.py`、`app/repositories/chat.py`（重写，去掉旧 `accept`）、`app/services/chat_reply.py`、`app/services/assistant/{sse,limits,orchestrator,turns}.py`（新）、`app/api/v1/assistant.py`、`app/main.py`、`alembic/versions/20261019_0029_assistant_messages.py`（新）。
+- 前端：`nginx.conf`、`src/api/assistantStream.ts`（新）、`src/views/AssistantView.vue`。
+- 文档与配置：`docs/API.md`、`.env.example`、`finscopeAI_deploy/AI助手技术规格.md`。
+- 测试：`tests/unit/test_assistant_{sse,limits,runner}.py`、`tests/integration/test_assistant_turns.py`（14 个）、`tests/unit/test_chat_reply.py` 加 1 个、`frontend/tests/unit/assistantStream.test.ts`（8 个）。
+
+### 迁移
+
+`20261019_0029`（接在 `20261018_0028` 后）：`chat_messages` 加可空列 `blocks / sources / steps / tool_trace`（JSONB）、`as_of`（Date）、`model`（String 80）、`grounding`（String 8）、`finished_at`；加部分索引 `ix_chat_messages_assistant_created`（`created_at WHERE role='assistant'`）。降级会删除这些列和索引。
+
+### 新增配置
+
+`ASSISTANT_PER_MINUTE=6`、`ASSISTANT_DAILY_LIMIT=200`、`ASSISTANT_WORKERS=4`、`ASSISTANT_HEARTBEAT_SECONDS=15`、`ASSISTANT_STALE_SECONDS=300`，启动时校验为正数。
+
+### 与规格的差异
+
+- 默认标题除「新的问答」外还认「研究问答」，因为前端建会话时用的是后者。
+- 心跳间隔和过期秒数做成了配置项（规格里是写死值）。
+- 1a 不引入 `ASSISTANT_ENABLED` 开关。
+- `blocks / sources / steps / grounding / tool_trace / as_of / model` 列已建好，1a 里不写。
+
+### 验证
+
+- nginx：用真实 nginx 对旧配置（默认缓冲、60 秒读超时）做过流式实测，确认了缓冲和超时问题（规格 R20）。具体耗时数字没有留档；`frontend/nginx.conf` 的新段落尚未在部署环境验证，上线时需要用慢响应再看一次。
+- 做过一次变异检查，确认新增的集成用例能拦住回归（已还原，未记录具体改动点）。
+- 后端（`backend` 目录，`DATABASE_URL` 指向 54329 的 `finscope-ai-db-1`）：`ruff check .`、`ruff format --check .`（374 个文件）、`mypy app`（238 个源文件）均通过。
+- 后端全量 `pytest`（共 733 个用例）在**全新临时库**上全部通过。
+- 在长期使用的开发库上全量跑，有 2 个宏观数据用例失败（`test_board_data_flow::test_china_observations_import_is_idempotent_and_reports_bad_rows`、`test_simulation_run::test_mock_simulation_persists_rating_without_an_order`）：开发库里的中国宏观观测值是上次测试残留（CPI 最新值 0.9 而不是 0.8），与问答改动无关；换新库后通过。未去修这两个用例的库依赖，建议单开 PR 让它们自建隔离数据。
+- 前端：`npm run typecheck`、`vitest run`（49 个文件、294 个用例）通过。
+
+### 没有做的
+
+编排器与工具调用、服务端渲染块、grounding、`calc` 工具、前端过程步骤展示（1b 及以后）。`finscope_ai_cursor_refactor_guide.md` 里的卡片与可视化放到第 2 期，由服务端生成结构化块，不由模型直接写数字。
+
+### 下一步建议
+
+1b：编排器与 A 线工具（数据直取、`calc`、按句 grounding），先用 `ASSISTANT_ENABLED` 开关灰度。

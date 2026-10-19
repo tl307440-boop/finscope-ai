@@ -6,7 +6,9 @@
  *  - GET  /api/v1/assistant/sessions                          问答列表（取最近一条，没有就新建）
  *  - POST /api/v1/assistant/sessions                          新建问答
  *  - GET  /api/v1/assistant/sessions/{id}/messages            历史消息（role/content/completion_status）
- *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 逐段回传 {"delta"} / {"done"}
+ *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 回传；只读 data: 行里的 delta / done，
+ *                                                             其余字段（type、status）与 `: ping` 心跳注释行都忽略
+ *                                                             （429 限流 / 409 同一条还在生成：显示后端给的原因）
  *  - POST /api/v1/assistant/sessions/{id}/messages/{cid}/cancel  取消未完成的回答
  *  - GET  /api/v1/analysis/model-status                       模型是否已配置
  *  - GET  /api/v1/watchlists / POST /api/v1/watchlists        自选分组
@@ -20,6 +22,7 @@
 import { computed, nextTick, onMounted, ref } from "vue"
 import { ChatDotRound, Cpu } from "@element-plus/icons-vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
+import { emptyReplyText, failureText, parseSseLine } from "../api/assistantStream"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { newUuid } from "../api/uuid"
 import { VChart } from "../charts"
@@ -291,7 +294,7 @@ async function ask(): Promise<void> {
       refreshToken,
     )
     if (!response.ok) {
-      errorText.value = `发送失败（状态码 ${response.status}），请稍后重试`
+      errorText.value = await failureText(response)
       turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
       question.value = text
       return
@@ -334,11 +337,7 @@ async function readStream(response: Response): Promise<void> {
     const lines = buffer.split("\n")
     buffer = lines.pop() ?? ""
     for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith("data:")) {
-        continue
-      }
-      const payload = parseEvent(trimmed.slice(5).trim())
+      const payload = parseSseLine(line)
       if (!payload) {
         continue
       }
@@ -350,18 +349,6 @@ async function readStream(response: Response): Promise<void> {
         return
       }
     }
-  }
-}
-
-function parseEvent(raw: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-    return null
-  } catch {
-    return null
   }
 }
 
@@ -824,6 +811,11 @@ onMounted(() => {
                     tone="muted"
                   />
                   <StatusPill
+                    v-else-if="turn.role === 'assistant' && turn.completionStatus === 'failed'"
+                    text="生成失败"
+                    tone="danger"
+                  />
+                  <StatusPill
                     v-else-if="turn.role === 'assistant' && modelAvailable === false"
                     text="系统说明"
                     tone="warn"
@@ -838,7 +830,7 @@ onMounted(() => {
                 <p v-if="turn.role === 'user'" class="doc-text user-text">{{ turn.content }}</p>
 
                 <template v-else>
-                  <p v-if="!turn.content" class="muted">正在生成…</p>
+                  <p v-if="!turn.content" class="muted">{{ emptyReplyText(turn.completionStatus) }}</p>
                   <template v-else>
                     <template v-for="(block, index) in bodyBlocks(turn.content)" :key="index">
                       <h3 v-if="block.kind === 'section'" class="doc-section">{{ block.text }}</h3>
@@ -864,7 +856,10 @@ onMounted(() => {
                     <el-button size="small" @click="cancelPending">取消这条回答</el-button>
                   </footer>
                   <footer
-                    v-else-if="turn.completionStatus === 'completed' && modelAvailable !== false"
+                    v-else-if="
+                      (turn.completionStatus === 'completed' || turn.completionStatus === 'failed') &&
+                      modelAvailable !== false
+                    "
                     class="reply-actions"
                   >
                     <el-button size="small" text @click="regenerate">重新生成</el-button>

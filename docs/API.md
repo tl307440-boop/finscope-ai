@@ -144,7 +144,17 @@
 
 ## 问答
 
-`POST /api/v1/assistant/sessions` 新建会话。`POST /api/v1/assistant/sessions/{sessionId}/messages` 用 `client_message_id` 保存回答，并以 SSE 分片返回。同一个 `client_message_id` 再次发送时直接重放已保存的文本，不再生成一次。未配置模型时回答固定说明不会编造财务数字。已经完成的回答在取消后仍然保留。其他用户不能读取会话。
+`POST /api/v1/assistant/sessions` 新建会话。`POST /api/v1/assistant/sessions/{sessionId}/messages` 用 `client_message_id` 保存回答，并以 SSE 分片返回。未配置模型时回答固定说明不会编造财务数字。已经完成的回答在取消后仍然保留。其他用户不能读取会话。
+
+一轮问答分两步落库：先在一个很短的事务里写入用户消息和一条 `completion_status=streaming` 的空回答并提交，再在后台线程调用模型，结束后把这条回答改成 `completed` 或 `failed`。模型调用期间不占数据库事务。客户端断开不会取消这一轮，回答照常写完，之后用同一个 `client_message_id` 重发即可拿到结果。
+
+SSE 响应头带 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`。每行 `data:` 是一个 JSON，`type` 为 `delta`（`delta` 字段是文本片段）、`done`（`status` 为最终状态，同时保留 `done: true`）或 `error`（`code`、`message`）。模型迟迟不返回时，服务端每 `ASSISTANT_HEARTBEAT_SECONDS` 秒发一行 `: ping` 注释，客户端应忽略。
+
+- 同一个 `client_message_id` 再次发送：已完成的回答原样重放，不再调用模型；失败的回答先重放一个 `error` 事件再给 `done(status=failed)`；仍在生成时返回 409 `TURN_IN_PROGRESS`。
+- 同一用户同一时刻只允许一轮在生成，再发新问题返回 409 `TURN_IN_PROGRESS`。
+- 限流返回 429 `RATE_LIMITED`，`message` 为可直接展示的中文说明。三种情况：每分钟次数超过 `ASSISTANT_PER_MINUTE`（进程内滑动窗口）、当日（按上海日历日）回答数超过 `ASSISTANT_DAILY_LIMIT`（按数据库计数）、后台并发已满 `ASSISTANT_WORKERS`（直接拒绝，不排队）。被限流的请求不写任何消息。
+- 处于 `streaming` 超过 `ASSISTANT_STALE_SECONDS` 的回答（例如进程重启留下的）在读取时按 `failed` 返回，下次写入时落成 `failed`。
+- 取消 `streaming` 中的回答会把它标为 `cancelled`；`completed`、`cancelled`、`failed` 视为终态，取消不会改写。
 
 ## 资料库
 
