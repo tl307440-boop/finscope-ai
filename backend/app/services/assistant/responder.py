@@ -116,6 +116,7 @@ class AssistantResponder:
                 model=result.model,
                 grounding=result.grounding,
                 tool_trace=result.trace,
+                sources=result.sources,
             ),
         )
 

@@ -103,10 +103,19 @@ def test_replay_of_a_rich_turn_orders_steps_blocks_text_done() -> None:
     assert _old_client_text("".join(events)) == ("结论。", True)
 
 
+def test_replay_sends_saved_sources_before_the_text() -> None:
+    sources = [{"n": 1, "kind": "corpus", "title": "纪要", "verified": True}]
+    events = replay_events("良率提升[1]。", "completed", steps=STEPS, sources=sources)
+    payloads = [json.loads(item.removeprefix("data: ")) for item in events]
+    assert [p["type"] for p in payloads] == ["step", "sources", "delta", "done"]
+    assert payloads[1] == {"type": "sources", "sources": sources}
+    assert _old_client_text("".join(events)) == ("良率提升[1]。", True)
+
+
 def test_replay_without_extras_is_identical_to_the_old_output() -> None:
     plain = replay_events("结论。", "completed")
     assert plain == replay_events("结论。", "completed", steps=None, blocks=None)
-    assert plain == replay_events("结论。", "completed", steps=[], blocks=[])
+    assert plain == replay_events("结论。", "completed", steps=[], blocks=[], sources=[])
     assert json.loads(plain[-1].removeprefix("data: ")) == {
         "type": "done",
         "done": True,

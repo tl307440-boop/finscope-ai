@@ -44,6 +44,7 @@ class StoredTurn:
     as_of: date | None = None
     model: str | None = None
     grounding: str | None = None
+    sources: list[dict[str, Any]] | None = None
 
 
 def accept_question(

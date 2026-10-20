@@ -14,7 +14,7 @@ from app.services.assistant.evidence import to_decimal
 from app.services.assistant.results import Column, ToolResult
 
 # 工具名 → 不出数据块（只在没数据时出提示）。
-QUIET_TOOLS = frozenset({"calc", "instrument_search"})
+QUIET_TOOLS = frozenset({"calc", "instrument_search", "corpus_search"})
 MIN_CHART_POINTS = 3
 
 

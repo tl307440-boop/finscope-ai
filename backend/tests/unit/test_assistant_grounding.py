@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from app.services.assistant.evidence import EvidenceBook
 from app.services.assistant.grounding import Grounder, check
-from app.services.assistant.results import Column, ToolResult
+from app.services.assistant.results import Column, Passage, ToolResult
 
 AS_OF = date(2026, 10, 17)
 
@@ -288,6 +288,91 @@ def test_hypothetical_evidence_does_not_widen_dates() -> None:
 def test_marker_does_not_let_unrelated_numbers_through() -> None:
     result = check("若市盈率为 20 倍，利润增长 15%。", _scenario_book())
     assert not result.ok and result.unmatched == ("15%",)
+
+
+def _passage(key: str, content: str) -> Passage:
+    return Passage(
+        key=key,
+        title="2026年前三季度业绩预告",
+        publisher="你上传的文档",
+        corpus_kind="user",
+        published=date(2026, 10, 16),
+        content=content,
+    )
+
+
+def _cited_book() -> EvidenceBook:
+    book = _cpi()
+    book.add(
+        ToolResult(
+            tool="corpus_search",
+            title="业绩预告",
+            columns=(),
+            rows=(),
+            as_of=date(2026, 10, 16),
+            source="本系统语料库",
+            passages=(
+                _passage("a", "预计2026年前三季度归母净利润12.5亿元至13亿元，同比增长30%。"),
+                _passage("b", "公司于10月12日召开董事会，审议通过议案共5项。"),
+            ),
+        )
+    )
+    return book
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "公司预计前三季度归母净利润 12.5 亿元至 13 亿元，同比增长 30%[1]。",
+        "预告覆盖 2026 年前三季度[1]。",
+        "董事会在 10月12日 召开，审议了 5 项议案[2]。",
+        "利润区间 12.5 亿元至 13 亿元[1]，董事会审议 5 项议案[2]。",
+        "预告显示利润增长 30%[1]，美国 CPI 同比为 3.1%。",  # 数据工具的数字照常放行
+    ],
+)
+def test_numbers_from_a_cited_passage_pass(text: str) -> None:
+    assert check(text, _cited_book()).ok
+
+
+@pytest.mark.parametrize(
+    ("text", "unmatched"),
+    [
+        ("预计净利润 12.5 亿元。", ("12.5",)),  # 没写出处
+        ("预计净利润 12.5 亿元[2]。", ("12.5",)),  # 挂错出处
+        ("审议通过 5 项议案[1]。", ("5",)),
+        ("董事会在 10月12日 召开[1]。", ("10月12日",)),
+        ("董事会在 10月12日 召开。", ("10月12日",)),
+    ],
+)
+def test_numbers_from_passages_need_the_right_citation(
+    text: str, unmatched: tuple[str, ...]
+) -> None:
+    result = check(text, _cited_book())
+    assert not result.ok and result.unmatched == unmatched
+
+
+def test_citation_numbers_must_exist() -> None:
+    result = check("利润增长 30%[3]。", _cited_book())
+    assert result.bad_citations == (3,)
+    assert check("没有资料[1]。", _cpi()).bad_citations == (1,)
+
+
+def test_same_passage_keeps_one_number_across_searches() -> None:
+    book = _cited_book()
+    again = book.add(
+        ToolResult(
+            tool="corpus_search",
+            title="再查一次",
+            columns=(),
+            rows=(),
+            as_of=date(2026, 10, 16),
+            source="本系统语料库",
+            passages=(_passage("c", "新的一段。"), _passage("a", "（同一段）")),
+        )
+    )
+    assert again.sources == (3, 1)
+    assert book.source_numbers() == frozenset({1, 2, 3})
+    assert book.source(1) is not None and "12.5" in book.source(1).content  # type: ignore[union-attr]
 
 
 def test_grounder_can_be_reused_across_sentences() -> None:

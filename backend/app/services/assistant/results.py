@@ -23,6 +23,23 @@ class Column:
 
 
 @dataclass(frozen=True)
+class Passage:
+    """检索到的一段原文。登记进证据时会分到一个来源编号 [n]，叙述按编号引用它。"""
+
+    key: str  # 去重用：同一段原文在一个回合里只占一个编号
+    title: str
+    publisher: str
+    # filing / official / reference / user
+    corpus_kind: str
+    published: date
+    content: str
+    url: str = ""
+    section: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+
+
+@dataclass(frozen=True)
 class ToolResult:
     tool: str
     title: str
@@ -39,6 +56,8 @@ class ToolResult:
     hypothetical: bool = False
     # (假设名, 假设值)，按出现顺序；连环计算会把上游的假设一起带上。
     assumptions: tuple[tuple[str, str], ...] = ()
+    # 检索类工具的原文片段；片段里的数字和日期只对引用了它的句子放行（见 `grounding.py`）。
+    passages: tuple[Passage, ...] = ()
 
     @property
     def ok(self) -> bool:

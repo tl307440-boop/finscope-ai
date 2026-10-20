@@ -56,6 +56,7 @@ class TurnExtras:
     model: str | None = None
     grounding: str | None = None
     tool_trace: dict[str, Any] | None = None
+    sources: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +213,7 @@ class ChatRepository:
                 model=extras.model,
                 grounding=extras.grounding,
                 tool_trace=extras.tool_trace,
+                sources=extras.sources or None,
             )
         with Session(self.engine) as session, session.begin():
             written = session.execute(
@@ -392,6 +394,7 @@ def _turn(session: Session, session_id: UUID, client_message_id: UUID) -> Stored
         as_of=answer.as_of,
         model=answer.model,
         grounding=answer.grounding,
+        sources=answer.sources,
     )
 
 

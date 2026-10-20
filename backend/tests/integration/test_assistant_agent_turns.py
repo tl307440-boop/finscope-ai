@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from assistant_fakes import FakeModel, FakeSeries, say
+from assistant_fakes import CORPUS, FakeCorpus, FakeModel, FakeSeries, call, say
 
 PASSWORD = "correct-password"
 QUESTION = "美国CPI最近怎么走"  # 快速路径会直取 CPIAUCSL
@@ -358,6 +358,45 @@ def test_enabled_turn_streams_steps_blocks_and_text_then_saves_and_replays_every
     assert [e for e in again if e["type"] == "step"] == [{"type": "step", **row["steps"][0]}]
     assert _text(again) == _text(events)
     assert again[-1] == events[-1]
+
+
+def test_cited_sources_are_saved_and_come_back_on_refresh_and_replay(
+    session_for: Callable[..., tuple[TestClient, dict[str, str], str]],
+    engine: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_text = "管理层表示三季度良率提升到 92%[1]。"
+    model = FakeModel(call(CORPUS), say(answer_text))
+    _use_model(monkeypatch, model)
+    client, headers, session_id = session_for(ASSISTANT_ENABLED="true", **MODEL_ENV)
+    app: Any = client.app
+    app.state.assistant_registry = ToolRegistry([FakeSeries(), CalcTool(), FakeCorpus()])
+
+    response, cid = _ask(client, headers, session_id, "我上传的调研纪要里良率怎么说")
+
+    events = _events(response.text)
+    assert _kinds(events) == ["step", "sources", "delta", "done"]
+    sources = next(e["sources"] for e in events if e["type"] == "sources")
+    assert [(s["n"], s["title"], s["corpus_kind"]) for s in sources] == [
+        (1, "调研纪要.pdf", "user")
+    ]
+    assert _text(events) == answer_text
+    with engine.connect() as connection:
+        stored = connection.execute(
+            text(
+                "SELECT sources FROM chat_messages WHERE session_id = :sid AND role = 'assistant'"
+            ),
+            {"sid": session_id},
+        ).scalar_one()
+    assert stored == sources
+    history = client.get(f"/api/v1/assistant/sessions/{session_id}/messages", headers=headers)
+    answer = next(m for m in history.json()["data"]["messages"] if m["role"] == "assistant")
+    assert answer["sources"] == sources
+    replay, _ = _ask(client, headers, session_id, "再问一次", cid)
+    again = _events(replay.text)
+    assert _kinds(again) == ["step", "sources", "delta", "done"]
+    assert next(e["sources"] for e in again if e["type"] == "sources") == sources
+    assert len(model.calls) == 2
 
 
 def test_blocks_are_saved_before_the_model_is_asked(

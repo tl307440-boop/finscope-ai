@@ -23,6 +23,8 @@ from app.repositories.corpus import (
     NewChunk,
     NewDocument,
 )
+from app.services.assistant.tools.base import ToolContext
+from app.services.assistant.tools.corpus import CorpusSearchArgs, CorpusSearchTool
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -255,6 +257,55 @@ def test_filters_time_window_and_per_document_cap(
     assert {p.title for p in old} == {"Old speech on inflation"}
     assert repo.search(_query(user, keywords_en=("inflation",), kind="filing")) == []
     assert repo.search(_query(user, keywords_en=("inflation",), min_rank=10.0)) == []
+
+
+def test_corpus_search_tool_returns_dated_passages_for_the_asker_only(
+    engine: Engine, make_user: Callable[[], UUID]
+) -> None:
+    owner, stranger = make_user(), make_user()
+    document_id = _upload(engine, owner)
+    CorpusRepository(engine).replace_user_document(
+        NewDocument(
+            source_id=USER_UPLOAD_SOURCE,
+            canonical_url=f"user-document:{document_id}",
+            kind="user",
+            title="我的调研纪要",
+            doc_type="upload",
+            language="zh",
+            # 世界时 10 月 19 日 18 点，上海已经是 20 日。
+            published_at=datetime(2026, 10, 19, 18, 0, tzinfo=UTC),
+            content_hash="e" * 64,
+            authority="user",
+            owner_user_id=owner,
+            user_document_id=document_id,
+        ),
+        [
+            NewChunk(
+                content="管理层表示良率提升到 92%。",
+                char_start=0,
+                char_end=14,
+                token_count=14,
+                page_start=3,
+                page_end=3,
+            )
+        ],
+    )
+    tool = CorpusSearchTool()
+    args = CorpusSearchArgs(keywords_zh=[" 良率 "])
+
+    result = tool.run(ToolContext(engine=engine, user_id=owner, now=NOW), args)
+    assert (result.status, result.title, result.as_of) == ("ok", "良率", date(2026, 10, 20))
+    [passage] = result.passages
+    assert (passage.title, passage.corpus_kind, passage.published, passage.page_start) == (
+        "我的调研纪要",
+        "user",
+        date(2026, 10, 20),
+        3,
+    )
+    assert passage.content == "管理层表示良率提升到 92%。"
+
+    hidden = tool.run(ToolContext(engine=engine, user_id=stranger, now=NOW), args)
+    assert (hidden.status, hidden.passages, hidden.source) == ("unavailable", (), "本系统语料库")
 
 
 def _upload(engine: Engine, owner: UUID) -> UUID:

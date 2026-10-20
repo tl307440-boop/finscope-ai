@@ -18,6 +18,7 @@ from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
+from app.services.assistant.tools.corpus import CorpusSearchTool
 from app.services.assistant.tools.macro import MacroCompareTool, MacroSeriesTool
 from app.services.assistant.tools.market import (
     BoardStrengthTool,
@@ -121,21 +122,25 @@ class ToolRegistry:
         return ToolOutcome(name, args or {}, result, False, _millis(started))
 
 
-def default_registry(cache: ToolCache | None = None) -> ToolRegistry:
-    return ToolRegistry(
-        [
-            BoardStrengthTool(),
-            CalcTool(),
-            CustomIndicatorTool(),
-            FinancialMetricsTool(),
-            InstrumentSearchTool(),
-            MacroCompareTool(),
-            MacroSeriesTool(),
-            PriceBarsTool(),
-            WatchlistTool(),
-        ],
-        cache,
-    )
+def default_registry(
+    cache: ToolCache | None = None, *, corpus_min_rank: float | None = None
+) -> ToolRegistry:
+    """`corpus_min_rank` 为 None 时不开放语料检索。"""
+
+    tools: list[Tool] = [
+        BoardStrengthTool(),
+        CalcTool(),
+        CustomIndicatorTool(),
+        FinancialMetricsTool(),
+        InstrumentSearchTool(),
+        MacroCompareTool(),
+        MacroSeriesTool(),
+        PriceBarsTool(),
+        WatchlistTool(),
+    ]
+    if corpus_min_rank is not None:
+        tools.append(CorpusSearchTool(min_rank=corpus_min_rank))
+    return ToolRegistry(tools, cache)
 
 
 def _parse(raw: str) -> dict[str, Any] | str:

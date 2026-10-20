@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from app.services.assistant.results import Column, ToolResult
+from app.services.assistant.results import Column, Passage, ToolResult
 
 # 回填给模型的最大行数；更多时给首尾各一半并注明省略了多少行（规格 §6）。
 MAX_RENDER_ROWS = 60
@@ -21,18 +21,37 @@ _ID = re.compile(r"^E(\d{1,3})$")
 class Evidence:
     id: str
     result: ToolResult
+    # 这条证据里每个原文片段的来源编号，和 `result.passages` 一一对应。
+    sources: tuple[int, ...] = ()
 
 
 class EvidenceBook:
-    """一个回合里已登记的证据。"""
+    """一个回合里已登记的证据；原文片段另外按出现顺序编成来源 [1]、[2]……"""
 
     def __init__(self) -> None:
         self._items: list[Evidence] = []
+        self._passages: list[Passage] = []
+        self._numbers: dict[str, int] = {}
 
     def add(self, result: ToolResult) -> Evidence:
-        item = Evidence(id=f"E{len(self._items) + 1}", result=result)
+        numbers = tuple(self._number(passage) for passage in result.passages)
+        item = Evidence(id=f"E{len(self._items) + 1}", result=result, sources=numbers)
         self._items.append(item)
         return item
+
+    def source(self, number: int) -> Passage | None:
+        return self._passages[number - 1] if 1 <= number <= len(self._passages) else None
+
+    def source_numbers(self) -> frozenset[int]:
+        return frozenset(range(1, len(self._passages) + 1))
+
+    def _number(self, passage: Passage) -> int:
+        known = self._numbers.get(passage.key)
+        if known is not None:
+            return known
+        self._passages.append(passage)
+        self._numbers[passage.key] = len(self._passages)
+        return len(self._passages)
 
     def get(self, evidence_id: str) -> Evidence | None:
         if _ID.match(evidence_id) is None:
@@ -138,6 +157,8 @@ def render(item: Evidence) -> str:
     )
     if result.status == "unavailable":
         return f"{head}\n没有数据：{_clean(result.reason or '原因未知', 200)}\n</资料>"
+    if result.passages:
+        return _render_passages(head, item)
     lines = [head]
     if result.hypothetical:
         given = "；".join(f"{_clean(label, 40)}={value}" for label, value in result.assumptions)
@@ -164,6 +185,54 @@ def render(item: Evidence) -> str:
         lines.append(f"注意：{_clean(result.reason, 200)}")
     lines.append("</资料>")
     return "\n".join(lines)
+
+
+# 一块最多 360 个词，英文约 2000 字符；8 块合计约 5k token。
+MAX_PASSAGE_CHARS = 2400
+PASSAGE_RULE = (
+    "引用这些片段时在句末写它的编号，例如 [1]；片段里的数字和日期只能写在引用了它的句子里。"
+)
+
+
+def _render_passages(head: str, item: Evidence) -> str:
+    lines = [head]
+    for number, passage in zip(item.sources, item.result.passages, strict=True):
+        lines.append(f"[{number}] {_passage_label(passage)}")
+        lines.append(f"原文：{_clean(passage.content, MAX_PASSAGE_CHARS)}")
+    lines.append(PASSAGE_RULE)
+    lines.append("</资料>")
+    return "\n".join(lines)
+
+
+def _passage_label(passage: Passage) -> str:
+    parts = [passage.title, passage.publisher, passage.published.isoformat()]
+    if passage.page_start is not None:
+        pages = passage.page_start, passage.page_end or passage.page_start
+        parts.append(
+            f"第 {pages[0]} 页" if pages[0] == pages[1] else f"第 {pages[0]}–{pages[1]} 页"
+        )
+    if passage.section:
+        parts.append(passage.section)
+    return "｜".join(_clean(part, 80) for part in parts)
+
+
+def source_payload(number: int, passage: Passage) -> dict[str, object]:
+    """推给浏览器、存进 `chat_messages.sources` 的来源条目（前端 `parseSources` 的字段）。"""
+
+    payload: dict[str, object] = {
+        "n": number,
+        "kind": "corpus",
+        "corpus_kind": passage.corpus_kind,
+        "publisher": passage.publisher,
+        "title": passage.title,
+        "published_at": passage.published.isoformat(),
+        "url": passage.url,
+        "verified": True,
+    }
+    if passage.page_start is not None:
+        payload["page_start"] = passage.page_start
+        payload["page_end"] = passage.page_end or passage.page_start
+    return payload
 
 
 def _header(column: Column) -> str:

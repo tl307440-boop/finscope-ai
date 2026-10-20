@@ -32,7 +32,16 @@ from app.services.assistant.tools.base import ToolContext
 from app.services.assistant.tools.macro import SERIES
 from sqlalchemy import create_engine
 
-from assistant_fakes import CPI, DIFF_LAST_TWO, FakeModel, FakeSeries, call, say
+from assistant_fakes import (
+    CORPUS,
+    CPI,
+    DIFF_LAST_TWO,
+    FakeCorpus,
+    FakeModel,
+    FakeSeries,
+    call,
+    say,
+)
 
 
 class Clock:
@@ -55,12 +64,13 @@ def run(
     history: tuple[HistoryMessage, ...] = (),
     entities: tuple[str, ...] = (),
     series: FakeSeries | None = None,
+    extra_tools: tuple[Any, ...] = (),
 ) -> tuple[AgentResult, list[dict[str, Any]], FakeSeries]:
     series = series or FakeSeries()
     events: list[dict[str, Any]] = []
     agent = Agent(
         model=model,
-        registry=ToolRegistry([series, CalcTool()]),
+        registry=ToolRegistry([series, CalcTool(), *extra_tools]),
         settings=AgentSettings(max_steps=max_steps, turn_seconds=150.0, fast_path=fast_path),
         tools_supported=tools_supported,
         system_prompt="PROMPT",
@@ -171,6 +181,60 @@ def test_scenario_numbers_written_as_facts_are_blocked() -> None:
     assert result.trace["repaired"] is True
     assert result.trace["unmatched"] == ["313"]
     assert deltas(events) == ["请看下方提示。"]
+
+
+def test_cited_passages_become_sources_before_the_sentence_is_shown() -> None:
+    text = "管理层表示三季度良率提升到 92%[1]。公司计划 2027 年新增两条产线[2]。"
+    result, events, _ = run(FakeModel(call(CORPUS), say(text)), extra_tools=(FakeCorpus(),))
+    assert (result.grounding, result.text) == ("full", text)
+    kinds = [event["type"] for event in events]
+    first_source = kinds.index("sources")
+    assert first_source < kinds.index("delta")  # 角标先有来源
+    assert [event["sources"][-1]["n"] for event in events if event["type"] == "sources"] == [1, 2]
+    assert result.sources == [
+        {
+            "n": 1,
+            "kind": "corpus",
+            "corpus_kind": "user",
+            "publisher": "你上传的文档",
+            "title": "调研纪要.pdf",
+            "published_at": "2026-09-30",
+            "url": "",
+            "verified": True,
+            "page_start": 2,
+            "page_end": 2,
+        },
+        {
+            "n": 2,
+            "kind": "corpus",
+            "corpus_kind": "user",
+            "publisher": "你上传的文档",
+            "title": "调研纪要.pdf",
+            "published_at": "2026-09-30",
+            "url": "",
+            "verified": True,
+        },
+    ]
+    assert result.blocks == []  # 检索结果不出数据块
+
+
+def test_uncited_and_miscited_passage_numbers_are_blocked() -> None:
+    # 第一次没写出处，改写后挂错了出处（第 2 段里没有 92%）：两次都拦，正文为空。
+    model = FakeModel(call(CORPUS), say("三季度良率提升到 92%。"), say("良率提升到 92%[2]。"))
+    result, events, _ = run(model, extra_tools=(FakeCorpus(),))
+    assert result.trace["unmatched"] == ["92%"]
+    assert deltas(events) == [] and result.grounding == "none"
+    assert result.sources == []
+    assert [block["code"] for block in notices(result)] == ["NOT_GROUNDED"]
+
+
+def test_only_cited_sources_are_listed() -> None:
+    model = FakeModel(call(CORPUS), say("良率提升到 92%[1]。"))
+    result, _events, _ = run(model, extra_tools=(FakeCorpus(),))
+    assert [item["n"] for item in result.sources] == [1]
+    seen = model.calls[1][0][-1]["content"]
+    assert "[1] 调研纪要.pdf｜你上传的文档｜2026-09-30｜第 2 页" in seen
+    assert "[2] 调研纪要.pdf" in seen and "原文：公司计划在 2027 年新增两条产线。" in seen
 
 
 def test_step_budget_forces_a_final_answer_without_tools() -> None:

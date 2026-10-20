@@ -12,18 +12,21 @@
    须在证据标题 / 列名里出现）；标识符（证据表里文字列出现过的数字串，如证券代码）。
 6. 情景假设（`calc` 的 `assume` 及用它算出的结果）只在句子写明「假设 / 若 / 如果 / 情景」时
    放行，免得假设数字被写成事实。
+7. 检索到的原文片段（来源 [n]）里的数字和日期，只对写了 `[n]` 的句子放行：
+   数字是真的、却挂错了出处，照样拦（知识库设计 §7「按引用核对」）。
 
 返回 `GroundingResult`；`unmatched` 只用于排错和给改写请求，不展示给用户。
 """
 
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.services.assistant.evidence import EvidenceBook
 
-_CITATION = re.compile(r"\[(\d+)\]")
+CITATION = re.compile(r"\[(\d+)\]")
 _EVIDENCE_REF = re.compile(r"\[E\d+\]")
 _ORDINAL = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?(?:\d+[.、](?!\d)|[（(]\d+[)）]|\d+[)）])")
 _NTH = re.compile(r"第\s*\d+")
@@ -46,8 +49,72 @@ _DATE_FULL_CN = re.compile(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日")
 _DATE_YM_CN = re.compile(r"(\d{4})年\s*(\d{1,2})月(?!\d{1,2}日)")
 _DATE_YM_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})(?![\d-])")
 _DATE_MD_CN = re.compile(r"(?<!\d)(\d{1,2})月\s*(\d{1,2})日")
-_DATE_Y_CN = re.compile(r"(?<!\d)(\d{4})年")
+_DATE_Y_CN = re.compile(r"(?<!\d)(\d{4})[ \t\u3000]*年")
 _DATE_M_CN = re.compile(r"(?<!\d)(\d{1,2})月(?!\d)")
+_DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (_DATE_FULL_DASH, "ymd"),
+    (_DATE_FULL_CN, "ymd"),
+    (_DATE_YM_CN, "ym"),
+    (_DATE_YM_DASH, "ym"),
+    (_DATE_MD_CN, "md"),
+    (_DATE_Y_CN, "y"),
+    (_DATE_M_CN, "m"),
+)
+
+
+@dataclass
+class _Dates:
+    """按写出的精度能放行的日期：完整日期、年月、月日、年、月各一层。"""
+
+    ymd: set[tuple[int, ...]] = field(default_factory=set)
+    ym: set[tuple[int, ...]] = field(default_factory=set)
+    md: set[tuple[int, ...]] = field(default_factory=set)
+    y: set[tuple[int, ...]] = field(default_factory=set)
+    m: set[tuple[int, ...]] = field(default_factory=set)
+
+    @classmethod
+    def of(cls, dates: Iterable[date]) -> "_Dates":
+        found = cls()
+        for day in dates:
+            found.add("ymd", (day.year, day.month, day.day))
+        return found
+
+    def add(self, kind: str, parts: tuple[int, ...]) -> None:
+        """写出的精度往下都算：片段里有「2026年10月」，「2026年」「10月」也对得上。"""
+
+        if kind == "ymd":
+            year, month, day = parts
+            self.ymd.add(parts)
+            self.ym.add((year, month))
+            self.md.add((month, day))
+            self.y.add((year,))
+            self.m.add((month,))
+        elif kind == "ym":
+            self.ym.add(parts)
+            self.y.add(parts[:1])
+            self.m.add(parts[1:])
+        elif kind == "md":
+            self.md.add(parts)
+            self.m.add(parts[:1])
+        else:
+            getattr(self, kind).add(parts)
+
+    def ok(self, kind: str, parts: tuple[int, ...]) -> bool:
+        if kind == "ymd":
+            try:
+                date(*parts)
+            except ValueError:
+                return False
+        return parts in getattr(self, kind)
+
+    def merged(self, other: "_Dates") -> "_Dates":
+        return _Dates(
+            self.ymd | other.ymd,
+            self.ym | other.ym,
+            self.md | other.md,
+            self.y | other.y,
+            self.m | other.m,
+        )
 
 
 @dataclass(frozen=True)
@@ -60,33 +127,40 @@ class GroundingResult:
 class Grounder:
     """对一个回合的证据反复校验；证据登记完再创建，校验期间证据不再变化。"""
 
-    def __init__(self, book: EvidenceBook, sources: frozenset[int] = frozenset()) -> None:
+    def __init__(self, book: EvidenceBook, sources: frozenset[int] | None = None) -> None:
+        self._book = book
         self._numbers = book.numbers()
         self._abs_numbers = [abs(item) for item in self._numbers]
         self._assumed = book.hypothetical_numbers()
         self._abs_assumed = [abs(item) for item in self._assumed]
-        self._dates = book.dates()
+        self._dates = _Dates.of(book.dates())
+        self._cited: dict[int, tuple[list[Decimal], _Dates]] = {}
         # 序列名按去掉空格后的形式比较：列名写「5 年分位」，模型写「5年分位」也是同一个名字。
         self._names = _BLANKS_RE.sub("", book.name_text())
         self._windows = frozenset(
             number + unit for number, unit in _WINDOW_IN_NAME.findall(self._names)
         )
         self._identifiers = _identifiers(book)
-        self._sources = sources
+        self._sources = book.source_numbers() if sources is None else sources
 
     def check(self, text: str) -> GroundingResult:
-        bad = tuple(
-            sorted({int(m) for m in _CITATION.findall(text) if int(m) not in self._sources})
-        )
+        cited = {int(m) for m in CITATION.findall(text)}
+        bad = tuple(sorted(cited - self._sources))
+        quoted: list[Decimal] = []
+        dates = self._dates
+        for number in sorted(cited & self._sources):
+            numbers, found = self._passage_facts(number)
+            quoted.extend(numbers)
+            dates = dates.merged(found)
         body = _EVIDENCE_REF.sub(lambda m: " " * len(m.group()), text)
-        body = _CITATION.sub(lambda m: " " * len(m.group()), body)
+        body = CITATION.sub(lambda m: " " * len(m.group()), body)
         body = _ORDINAL.sub(lambda m: " " * len(m.group()), body)
         body = _NTH.sub(lambda m: " " * len(m.group()), body)
         unmatched: list[str] = []
-        body = self._strip_dates(body, unmatched)
+        body = _strip_dates(body, dates, unmatched)
         hypothetical = _HYPOTHETICAL.search(body) is not None
         for match in _NUMBER.finditer(body):
-            if self._number_ok(body, match, hypothetical=hypothetical):
+            if self._number_ok(body, match, hypothetical=hypothetical, quoted=quoted):
                 continue
             unmatched.append(match.group().strip())
         return GroundingResult(
@@ -95,45 +169,28 @@ class Grounder:
             bad_citations=bad,
         )
 
-    # ------------------------------------------------------------------ 日期
-    def _strip_dates(self, text: str, unmatched: list[str]) -> str:
-        for pattern, kind in (
-            (_DATE_FULL_DASH, "ymd"),
-            (_DATE_FULL_CN, "ymd"),
-            (_DATE_YM_CN, "ym"),
-            (_DATE_YM_DASH, "ym"),
-            (_DATE_MD_CN, "md"),
-            (_DATE_Y_CN, "y"),
-            (_DATE_M_CN, "m"),
-        ):
-            text = self._strip_one(text, pattern, kind, unmatched)
-        return text
+    def _passage_facts(self, number: int) -> tuple[list[Decimal], _Dates]:
+        """来源 [n] 原文里的数字与日期；同一个 Grounder 内只算一次。"""
 
-    def _strip_one(self, text: str, pattern: re.Pattern[str], kind: str, bad: list[str]) -> str:
-        def replace(match: re.Match[str]) -> str:
-            parts = tuple(int(group) for group in match.groups())
-            if not self._date_ok(kind, parts):
-                bad.append(match.group())
-            return " " * len(match.group())
-
-        return pattern.sub(replace, text)
-
-    def _date_ok(self, kind: str, parts: tuple[int, ...]) -> bool:
-        if kind == "ymd":
-            try:
-                return date(parts[0], parts[1], parts[2]) in self._dates
-            except ValueError:
-                return False
-        if kind == "ym":
-            return any(d.year == parts[0] and d.month == parts[1] for d in self._dates)
-        if kind == "md":
-            return any(d.month == parts[0] and d.day == parts[1] for d in self._dates)
-        if kind == "y":
-            return any(d.year == parts[0] for d in self._dates)
-        return any(d.month == parts[0] for d in self._dates)
+        known = self._cited.get(number)
+        if known is None:
+            passage = self._book.source(number)
+            content = passage.content if passage is not None else ""
+            found = _Dates()
+            rest = _scan_dates(content, found)
+            known = (_text_numbers(rest), found)
+            self._cited[number] = known
+        return known
 
     # ------------------------------------------------------------------ 数字
-    def _number_ok(self, text: str, match: re.Match[str], *, hypothetical: bool) -> bool:
+    def _number_ok(
+        self,
+        text: str,
+        match: re.Match[str],
+        *,
+        hypothetical: bool,
+        quoted: list[Decimal],
+    ) -> bool:
         digits = match.group(2)
         if digits in self._identifiers:
             return True
@@ -148,6 +205,8 @@ class Grounder:
         pool = self._numbers if signed else self._abs_numbers
         if hypothetical:
             pool = [*pool, *(self._assumed if signed else self._abs_assumed)]
+        if quoted:
+            pool = [*pool, *(quoted if signed else (abs(item) for item in quoted))]
         exponent = value.as_tuple().exponent
         places = max(0, -exponent) if isinstance(exponent, int) else 0
         return any(_same(target, item, places) for item in pool)
@@ -179,8 +238,47 @@ class Grounder:
         return match.group(2) + unit.group(1) in self._windows
 
 
-def check(text: str, book: EvidenceBook, sources: frozenset[int] = frozenset()) -> GroundingResult:
+def check(text: str, book: EvidenceBook, sources: frozenset[int] | None = None) -> GroundingResult:
     return Grounder(book, sources).check(text)
+
+
+def _strip_dates(text: str, dates: _Dates, unmatched: list[str]) -> str:
+    """按精度从长到短找日期，对不上的记进 `unmatched`；处理过的片段换成空格。"""
+
+    for pattern, kind in _DATE_PATTERNS:
+
+        def replace(match: re.Match[str], kind: str = kind) -> str:
+            parts = tuple(int(group) for group in match.groups())
+            if not dates.ok(kind, parts):
+                unmatched.append(match.group())
+            return " " * len(match.group())
+
+        text = pattern.sub(replace, text)
+    return text
+
+
+def _scan_dates(text: str, found: _Dates) -> str:
+    """把原文里的日期收进 `found`，返回去掉日期之后的文字（剩下的再抽数字）。"""
+
+    for pattern, kind in _DATE_PATTERNS:
+
+        def collect(match: re.Match[str], kind: str = kind) -> str:
+            found.add(kind, tuple(int(group) for group in match.groups()))
+            return " " * len(match.group())
+
+        text = pattern.sub(collect, text)
+    return text
+
+
+def _text_numbers(text: str) -> list[Decimal]:
+    found: list[Decimal] = []
+    for match in _NUMBER.finditer(text):
+        try:
+            value = Decimal(match.group(2).replace(",", ""))
+        except InvalidOperation:
+            continue
+        found.append(-value if match.group(1) else value)
+    return found
 
 
 def _same(target: Decimal, evidence: Decimal, places: int) -> bool:
