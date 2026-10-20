@@ -19,6 +19,7 @@ from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
 from app.services.assistant.tools.corpus import CorpusSearchTool
+from app.services.assistant.tools.filings import FilingFetchTool
 from app.services.assistant.tools.macro import MacroCompareTool, MacroSeriesTool
 from app.services.assistant.tools.market import (
     BoardStrengthTool,
@@ -140,7 +141,9 @@ def default_registry(
         WatchlistTool(),
     ]
     if corpus_min_rank is not None:
-        tools.extend((CorpusSearchTool(min_rank=corpus_min_rank), QuoteTableTool()))
+        tools.extend(
+            (CorpusSearchTool(min_rank=corpus_min_rank), FilingFetchTool(), QuoteTableTool())
+        )
     return ToolRegistry(tools, cache)
 
 

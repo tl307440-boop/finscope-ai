@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     scheduler_enable_a_stock_bars: bool = True
     # SEC / A 股财报 / 美股日线只刷新「被关注过」的公司（自选、已抓取过、有行情的），不全市场轮询。
     scheduler_enable_us_sec_filings: bool = True
+    # 公告正文：财报季每 30 分钟扫全市场业绩预告/快报，其余月份每天一次；自选股每天两次。
+    # 没有真实联系邮箱（SEC_USER_AGENT 仍是 example.com）时只记日志，不登记任务。
+    scheduler_enable_cninfo_filings: bool = True
     scheduler_enable_cn_statements: bool = True
     scheduler_enable_us_bars: bool = True
     # 全市场证券清单（SEC ticker 表 + 巨潮 A 股列表）每周刷新一次。

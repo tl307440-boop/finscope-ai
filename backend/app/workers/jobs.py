@@ -13,7 +13,9 @@ from app.repositories.custom_analysis import CustomAnalysisRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.sync_jobs import JobSnapshot
 from app.services.akshare_sync import apply_bars, fetch_bars
+from app.services.assistant.tools.filings import resume_filing
 from app.services.board_market_sync import sync_board_market
+from app.services.cninfo_filings import sync_recent
 from app.services.custom_analysis_sync import sync_custom_analysis
 from app.services.data_sync import (
     sync_china_macro,
@@ -87,6 +89,10 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return compute_macro_regime(
             engine, as_of=_day(job.scope, "as_of"), model_version=_text(job.scope, "model_version")
         )
+    if job.job_type == "corpus_filing":
+        return resume_filing(engine, job.scope)
+    if job.job_type == "corpus_cninfo_scan":
+        return sync_recent(engine, _text(job.scope, "mode"))
     if job.job_type == "hotspot_events":
         return asyncio.run(
             sync_hotspot_events(
