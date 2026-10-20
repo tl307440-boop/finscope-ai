@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { fetchMarket } from "../../src/api/dashboard"
 import { isTimeout, timeoutSignal } from "../../src/api/client"
 import { FetchFailure } from "../../src/api/industryMarket"
-import { isTransient } from "../../src/api/slotCache"
+import { isTransient, withRetry } from "../../src/api/slotCache"
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -32,5 +32,30 @@ describe("request timeout", () => {
     expect(isTransient(failure)).toBe(true)
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.signal).toBeDefined()
+  })
+
+  it("retries a timed-out request with a fresh signal and a shorter deadline", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { trade_date: "2026-10-20" } }), { status: 200 }))
+    vi.stubGlobal("fetch", fetchMock)
+    const timeouts: number[] = []
+    const spy = vi.spyOn(AbortSignal, "timeout")
+
+    const market = await withRetry((ms) => {
+      timeouts.push(ms)
+      return fetchMarket(ms)
+    }, () => Promise.resolve())
+
+    expect(market.tradeDate).toBe("2026-10-20")
+    expect(timeouts).toEqual([30_000, 15_000])
+    expect(spy.mock.calls.map(([ms]) => ms)).toEqual([30_000, 15_000])
+    const signals = fetchMock.mock.calls.map((call) => (call[1] as RequestInit).signal)
+    expect(signals[0]).toBeDefined()
+    expect(signals[1]).toBeDefined()
+    expect(signals[1]).not.toBe(signals[0])
+    expect(signals[1]?.aborted).toBe(false)
+    spy.mockRestore()
   })
 })

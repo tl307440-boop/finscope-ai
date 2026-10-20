@@ -1,7 +1,5 @@
 import { createPinia } from "pinia"
 import { createApp } from "vue"
-import ElementPlus from "element-plus"
-import zhCn from "element-plus/es/locale/lang/zh-cn"
 import "element-plus/dist/index.css"
 import "element-plus/theme-chalk/dark/css-vars.css"
 import App from "./App.vue"
@@ -17,7 +15,6 @@ applyTheme(readTheme(window.localStorage.getItem(THEME_STORAGE_KEY)))
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
-// 规格书技术选型：组件库 Element Plus，中文语境。
-app.use(ElementPlus, { locale: zhCn })
+// 规格书技术选型：组件库 Element Plus（按需引入，见 vite.config.ts；中文语境在 App.vue 的 ConfigProvider）。
 installCharts(app)
 app.mount("#app")

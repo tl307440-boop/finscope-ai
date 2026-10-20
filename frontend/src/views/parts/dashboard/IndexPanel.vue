@@ -12,6 +12,7 @@ import {
   type MarketOverview,
 } from "../../../api/dashboard"
 import { sectionBadge } from "../../../api/industryMarket"
+import { withRetry } from "../../../api/slotCache"
 import DeltaValue from "../../../components/ui/DeltaValue.vue"
 import PanelCard from "../../../components/ui/PanelCard.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
@@ -42,7 +43,7 @@ async function ensure(code: string, span: IndexPeriod): Promise<void> {
   }
   pending.value = { ...pending.value, [id]: true }
   try {
-    const bars = await fetchIndexBars(code, span)
+    const bars = await withRetry((ms) => fetchIndexBars(code, span, ms))
     cache.value = { ...cache.value, [id]: bars }
     failures.value = { ...failures.value, [id]: "" }
   } catch (error) {

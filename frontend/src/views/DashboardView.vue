@@ -70,7 +70,11 @@ const announcements = slot<AnnouncementsOverview>("dashboard:announcements")
 const watch = slot<WatchOverview>()
 const dialog = ref<"" | "temperature" | "macro" | "boards">("")
 
-async function fill<T>(target: { value: Slot<T> }, loader: () => Promise<T>, key = ""): Promise<void> {
+async function fill<T>(
+  target: { value: Slot<T> },
+  loader: (timeoutMs: number) => Promise<T>,
+  key = "",
+): Promise<void> {
   target.value = { ...target.value, loading: true, error: "" }
   try {
     const data = await withRetry(loader)
@@ -93,14 +97,14 @@ function loadWatch(groupId = watch.value.data?.groupId ?? ""): Promise<void> {
   if (!signedIn.value) {
     return Promise.resolve()
   }
-  return fill(watch, () => fetchWatch(groupId, session.accessToken, refreshToken))
+  return fill(watch, (ms) => fetchWatch(groupId, session.accessToken, refreshToken, ms))
 }
 
-const loadMarket = () => fill(market, fetchMarket, "dashboard:market")
-const loadMacro = () => fill(macro, fetchMacro, "dashboard:macro")
-const loadBoards = () => fill(boards, fetchBoards, "dashboard:boards")
-const loadStocks = () => fill(stocks, fetchStocks, "dashboard:stocks")
-const loadAnnouncements = () => fill(announcements, fetchAnnouncements, "dashboard:announcements")
+const loadMarket = () => fill(market, (ms) => fetchMarket(ms), "dashboard:market")
+const loadMacro = () => fill(macro, (ms) => fetchMacro(ms), "dashboard:macro")
+const loadBoards = () => fill(boards, (ms) => fetchBoards(ms), "dashboard:boards")
+const loadStocks = () => fill(stocks, (ms) => fetchStocks(ms), "dashboard:stocks")
+const loadAnnouncements = () => fill(announcements, (ms) => fetchAnnouncements(ms), "dashboard:announcements")
 
 const busy = computed(() =>
   [market, macro, boards, stocks, announcements, watch].some((item) => item.value.loading),
