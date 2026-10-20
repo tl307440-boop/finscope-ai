@@ -5,38 +5,6 @@ import {
   type Router,
 } from "vue-router"
 import { restoreSession, useSessionStore, type Role } from "../stores/auth"
-import AssistantView from "../views/AssistantView.vue"
-import BoardView from "../views/BoardView.vue"
-import CompanyAnalysisView from "../views/CompanyAnalysisView.vue"
-import CompanyFilingsView from "../views/CompanyFilingsView.vue"
-import CompanyView from "../views/CompanyView.vue"
-import CustomAnalysisView from "../views/CustomAnalysisView.vue"
-import DashboardView from "../views/DashboardView.vue"
-import DataCenterView from "../views/DataCenterView.vue"
-import IndustryBoardView from "../views/IndustryBoardView.vue"
-import IndustryDetailView from "../views/IndustryDetailView.vue"
-import IndustryView from "../views/IndustryView.vue"
-import ForbiddenView from "../views/ForbiddenView.vue"
-import HotspotsView from "../views/HotspotsView.vue"
-import LibraryView from "../views/LibraryView.vue"
-import LoginView from "../views/LoginView.vue"
-import MacroChinaView from "../views/MacroChinaView.vue"
-import MacroLiquidityView from "../views/MacroLiquidityView.vue"
-import MacroScenariosView from "../views/MacroScenariosView.vue"
-import MacroView from "../views/MacroView.vue"
-import MarketIndicesView from "../views/MarketIndicesView.vue"
-import MarketPulseView from "../views/MarketPulseView.vue"
-import MarketSectorsView from "../views/MarketSectorsView.vue"
-import MetricsView from "../views/MetricsView.vue"
-import NotFoundView from "../views/NotFoundView.vue"
-import QuotesView from "../views/QuotesView.vue"
-import ReportView from "../views/ReportView.vue"
-import SettingsView from "../views/SettingsView.vue"
-import SimulationView from "../views/SimulationView.vue"
-import SystemStatusView from "../views/SystemStatusView.vue"
-import TemperatureView from "../views/TemperatureView.vue"
-import UploadView from "../views/UploadView.vue"
-import WatchlistView from "../views/WatchlistView.vue"
 
 export interface NavigationSession {
   authenticated: boolean
@@ -44,6 +12,9 @@ export interface NavigationSession {
 }
 
 /**
+ * 所有页面都是路由级懒加载（`() => import(...)`）：首屏只下载当前页用到的代码，
+ * 其余页面和 ECharts 等大依赖在第一次访问时才加载，而不是打进一个 2.6 MB 的入口包。
+ *
  * 路由表对齐规格书 §1.3（20 条主路由）。
  * 规格书未列、但已实现且有真实后端的页面挂在二级路径下，保持可访问，
  * 不删除既有能力：/status、/market/temperature、/research/board、
@@ -52,35 +23,35 @@ export interface NavigationSession {
  */
 export const routes = [
   { path: "/", redirect: "/dashboard" },
-  { path: "/login", name: "login", component: LoginView },
+  { path: "/login", name: "login", component: () => import("../views/LoginView.vue") },
 
   // 总览驾驶舱（P0）
-  { path: "/dashboard", name: "dashboard", component: DashboardView },
+  { path: "/dashboard", name: "dashboard", component: () => import("../views/DashboardView.vue") },
 
   // 全球宏观（P0/P1）
-  { path: "/macro/us", name: "macro-us", component: MacroView },
-  { path: "/macro/china", name: "macro-china", component: MacroChinaView },
-  { path: "/macro/liquidity", name: "macro-liquidity", component: MacroLiquidityView },
-  { path: "/macro/scenarios", name: "macro-scenarios", component: MacroScenariosView },
+  { path: "/macro/us", name: "macro-us", component: () => import("../views/MacroView.vue") },
+  { path: "/macro/china", name: "macro-china", component: () => import("../views/MacroChinaView.vue") },
+  { path: "/macro/liquidity", name: "macro-liquidity", component: () => import("../views/MacroLiquidityView.vue") },
+  { path: "/macro/scenarios", name: "macro-scenarios", component: () => import("../views/MacroScenariosView.vue") },
 
   // 市场行情（P0/P1）
-  { path: "/market/indices", name: "market-indices", component: MarketIndicesView },
-  { path: "/market/sectors", name: "market-sectors", component: MarketSectorsView },
-  { path: "/market/stocks/:symbol", name: "market-stock", component: QuotesView, props: true },
+  { path: "/market/indices", name: "market-indices", component: () => import("../views/MarketIndicesView.vue") },
+  { path: "/market/sectors", name: "market-sectors", component: () => import("../views/MarketSectorsView.vue") },
+  { path: "/market/stocks/:symbol", name: "market-stock", component: () => import("../views/QuotesView.vue"), props: true },
 
   // 公司研究（P0/P1）
-  { path: "/company/:symbol", name: "company", component: CompanyView, props: true },
+  { path: "/company/:symbol", name: "company", component: () => import("../views/CompanyView.vue"), props: true },
   {
     path: "/company/:symbol/filings",
     name: "company-filings",
-    component: CompanyFilingsView,
+    component: () => import("../views/CompanyFilingsView.vue"),
     props: true,
     meta: { requiresAuth: true },
   },
   {
     path: "/company/:symbol/analysis/:runId",
     name: "company-analysis",
-    component: CompanyAnalysisView,
+    component: () => import("../views/CompanyAnalysisView.vue"),
     props: true,
     meta: { requiresAuth: true },
   },
@@ -88,67 +59,67 @@ export const routes = [
   {
     path: "/company/:symbol/metrics",
     name: "company-metrics",
-    component: MetricsView,
+    component: () => import("../views/MetricsView.vue"),
     props: true,
   },
   {
     path: "/company/:symbol/uploads",
     name: "company-uploads",
-    component: UploadView,
+    component: () => import("../views/UploadView.vue"),
     props: true,
     meta: { requiresAuth: true },
   },
 
   // 产业研究（P1）
-  { path: "/industry", name: "industry", component: IndustryView },
-  { path: "/industry/pulse", name: "industry-pulse", component: MarketPulseView },
-  { path: "/industry/board/:code", name: "industry-board", component: IndustryBoardView, props: true },
-  { path: "/industry/:id", name: "industry-detail", component: IndustryDetailView, props: true },
+  { path: "/industry", name: "industry", component: () => import("../views/IndustryView.vue") },
+  { path: "/industry/pulse", name: "industry-pulse", component: () => import("../views/MarketPulseView.vue") },
+  { path: "/industry/board/:code", name: "industry-board", component: () => import("../views/IndustryBoardView.vue"), props: true },
+  { path: "/industry/:id", name: "industry-detail", component: () => import("../views/IndustryDetailView.vue"), props: true },
 
   // 热点（P2）
-  { path: "/hotspots", name: "hotspots", component: HotspotsView },
+  { path: "/hotspots", name: "hotspots", component: () => import("../views/HotspotsView.vue") },
 
   // AI 问答（P1）
-  { path: "/assistant", name: "assistant", component: AssistantView, meta: { requiresAuth: true } },
+  { path: "/assistant", name: "assistant", component: () => import("../views/AssistantView.vue"), meta: { requiresAuth: true } },
 
   // 自定义数据分析（规格书未列，用户自加；数据全部来自公开页面，无需登录）
-  { path: "/custom-analysis", name: "custom-analysis", component: CustomAnalysisView },
+  { path: "/custom-analysis", name: "custom-analysis", component: () => import("../views/CustomAnalysisView.vue") },
 
   // 报告管理（P1）
-  { path: "/reports", name: "reports", component: LibraryView, meta: { requiresAuth: true } },
+  { path: "/reports", name: "reports", component: () => import("../views/LibraryView.vue"), meta: { requiresAuth: true } },
   {
     path: "/reports/:runId",
     name: "report",
-    component: ReportView,
+    component: () => import("../views/ReportView.vue"),
     meta: { requiresAuth: true },
   },
 
   // 自选研究（P1）
-  { path: "/watchlist", name: "watchlist", component: WatchlistView, meta: { requiresAuth: true } },
+  { path: "/watchlist", name: "watchlist", component: () => import("../views/WatchlistView.vue"), meta: { requiresAuth: true } },
 
   // 数据管理（P0，仅 admin）
   {
     path: "/data-center",
     name: "data-center",
-    component: DataCenterView,
+    component: () => import("../views/DataCenterView.vue"),
     meta: { requiresAuth: true, requiresAdmin: true },
   },
 
   // 设置（P0）
-  { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
+  { path: "/settings", name: "settings", component: () => import("../views/SettingsView.vue"), meta: { requiresAuth: true } },
 
   // 规格书未列、既有能力保留
-  { path: "/status", name: "status", component: SystemStatusView },
-  { path: "/market/temperature", name: "temperature", component: TemperatureView },
-  { path: "/research/board", name: "board", component: BoardView },
+  { path: "/status", name: "status", component: () => import("../views/SystemStatusView.vue") },
+  { path: "/market/temperature", name: "temperature", component: () => import("../views/TemperatureView.vue") },
+  { path: "/research/board", name: "board", component: () => import("../views/BoardView.vue") },
   {
     path: "/simulation/mvp",
     name: "simulation",
-    component: SimulationView,
+    component: () => import("../views/SimulationView.vue"),
     meta: { requiresAuth: true },
   },
-  { path: "/forbidden", name: "forbidden", component: ForbiddenView, meta: { requiresAuth: true } },
-  { path: "/:pathMatch(.*)*", name: "not-found", component: NotFoundView },
+  { path: "/forbidden", name: "forbidden", component: () => import("../views/ForbiddenView.vue"), meta: { requiresAuth: true } },
+  { path: "/:pathMatch(.*)*", name: "not-found", component: () => import("../views/NotFoundView.vue") },
 ]
 
 export function decideNavigation(

@@ -51,7 +51,7 @@ from app.schemas.industry_market import (
     WindowReturns,
 )
 from app.services import board_analytics as rules
-from app.services.market_cache import Cached, TtlCache, shared_gateway
+from app.services.market_cache import Cached, TtlCache, market_cache, shared_gateway
 from app.utils.market_time import SHANGHAI, shanghai_pit
 from app.utils.time import utc_now
 
@@ -130,7 +130,7 @@ class Gateway(Protocol):
 @dataclass
 class IndustryMarketService:
     gateway: Gateway
-    cache: TtlCache = field(default_factory=TtlCache)
+    cache: TtlCache = field(default_factory=market_cache)
     today: Callable[[], date] = field(default=lambda: shanghai_pit(utc_now()))
     now: Callable[[], datetime] = field(default=utc_now)
     store: BoardReader | None = None
@@ -766,11 +766,17 @@ class IndustryMarketService:
     async def _load_ths_plates(
         self,
     ) -> tuple[tuple[em.ThsHotPlate, ...], tuple[em.ThsHotPlate, ...]]:
-        industries = await self._fetch(
-            em.THS_HOT_PLATE_URL.format(kind="industry"), em.THS_HEADERS, em.parse_ths_hot_plates
-        )
-        concepts = await self._fetch(
-            em.THS_HOT_PLATE_URL.format(kind="concept"), em.THS_HEADERS, em.parse_ths_hot_plates
+        industries, concepts = await asyncio.gather(
+            self._fetch(
+                em.THS_HOT_PLATE_URL.format(kind="industry"),
+                em.THS_HEADERS,
+                em.parse_ths_hot_plates,
+            ),
+            self._fetch(
+                em.THS_HOT_PLATE_URL.format(kind="concept"),
+                em.THS_HEADERS,
+                em.parse_ths_hot_plates,
+            ),
         )
         return industries, concepts
 

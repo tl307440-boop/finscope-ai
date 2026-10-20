@@ -5,6 +5,17 @@ export function apiUrl(path: string): string {
   return `${base}${path}`
 }
 
+/** 给 fetch 一个总时限：没有它，卡住的连接会让页面无限转圈，自动重试也无从触发。 */
+export function timeoutSignal(ms: number): AbortSignal | undefined {
+  return typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+    ? AbortSignal.timeout(ms)
+    : undefined
+}
+
+export function isTimeout(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "TimeoutError"
+}
+
 export class ApiError extends Error {
   readonly code: string
   readonly requestId: string | null

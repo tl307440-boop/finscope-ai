@@ -3,7 +3,7 @@
  * 温度、流动性、热度指数、强弱分组等所有派生数字都由后端规则函数算好，这里只做收窄。
  * 百分数单位 %，金额单位元（外盘资产为各自报价单位），利率变化单位 bp。
  */
-import { authorizedFetch, readJson } from "./client"
+import { authorizedFetch, readJson, timeoutSignal } from "./client"
 import { FetchFailure, getData, parseSection, unwrap, type Section, type SourceRef } from "./industryMarket"
 import { asBool, asList, asNumber, asRecord, asString, listOf } from "./json"
 
@@ -308,36 +308,43 @@ export interface WatchOverview {
 
 type Refresh = () => Promise<string | null>
 
+/** 后端单个上游最长 25 秒（含重试），再留出聚合余量；超过就放弃，交给自动重试。 */
+const REQUEST_TIMEOUT_MS = 40_000
+
+function timed(): RequestInit {
+  return { signal: timeoutSignal(REQUEST_TIMEOUT_MS) }
+}
+
 export async function fetchMarket(): Promise<MarketOverview> {
-  return parseMarket(await getData("/api/v1/dashboard/market"))
+  return parseMarket(await getData("/api/v1/dashboard/market", timed()))
 }
 
 export async function fetchIndexBars(symbol: string, period: IndexPeriod): Promise<IndexBars> {
   const query = `symbol=${encodeURIComponent(symbol)}&period=${period}`
-  return parseIndexBars(await getData(`/api/v1/dashboard/index-bars?${query}`))
+  return parseIndexBars(await getData(`/api/v1/dashboard/index-bars?${query}`, timed()))
 }
 
 export async function fetchMacro(): Promise<MacroOverview> {
-  return parseMacro(await getData("/api/v1/dashboard/macro"))
+  return parseMacro(await getData("/api/v1/dashboard/macro", timed()))
 }
 
 export async function fetchBoards(): Promise<BoardsOverview> {
-  return parseBoards(await getData("/api/v1/dashboard/boards"))
+  return parseBoards(await getData("/api/v1/dashboard/boards", timed()))
 }
 
 export async function fetchStocks(): Promise<StocksOverview> {
-  return parseStocks(await getData("/api/v1/dashboard/stocks"))
+  return parseStocks(await getData("/api/v1/dashboard/stocks", timed()))
 }
 
 export async function fetchAnnouncements(): Promise<AnnouncementsOverview> {
-  return parseAnnouncements(await getData("/api/v1/dashboard/announcements"))
+  return parseAnnouncements(await getData("/api/v1/dashboard/announcements", timed()))
 }
 
 export async function fetchWatch(groupId: string, token: string | null, refresh: Refresh): Promise<WatchOverview> {
   const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : ""
   let response: Response
   try {
-    response = await authorizedFetch(`/api/v1/dashboard/watch${query}`, { method: "GET" }, token, refresh)
+    response = await authorizedFetch(`/api/v1/dashboard/watch${query}`, { method: "GET", ...timed() }, token, refresh)
   } catch {
     throw new FetchFailure("网络连接失败，请稍后重试")
   }

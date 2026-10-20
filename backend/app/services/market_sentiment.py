@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -28,7 +29,7 @@ from app.schemas.market_sentiment import (
     SurveyView,
 )
 from app.services.industry_market import Gateway
-from app.services.market_cache import Cached, TtlCache, shared_gateway
+from app.services.market_cache import Cached, TtlCache, market_cache, shared_gateway
 from app.utils.market_time import SHANGHAI
 from app.utils.time import utc_now
 
@@ -67,7 +68,7 @@ SURVEY_RULES = [
 @dataclass
 class MarketSentimentService:
     gateway: Gateway
-    cache: TtlCache = field(default_factory=TtlCache)
+    cache: TtlCache = field(default_factory=market_cache)
     now: Callable[[], datetime] = field(default=utc_now)
 
     async def limit_up(self, day: date | None = None) -> LimitUpView:
@@ -86,8 +87,10 @@ class MarketSentimentService:
                 ),
                 source,
             )
-        broken, broken_reason = await self._optional_pool("broken", target, local)
-        limit_down, down_reason = await self._optional_pool("limit_down", target, local)
+        (broken, broken_reason), (limit_down, down_reason) = await asyncio.gather(
+            self._optional_pool("broken", target, local),
+            self._optional_pool("limit_down", target, local),
+        )
         reasons = [reason for reason in (broken_reason, down_reason) if reason]
         stocks = list(page.value.stocks)
         zt, zb = len(stocks), None if broken is None else len(broken)
