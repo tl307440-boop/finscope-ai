@@ -5,6 +5,7 @@
  * 后端新增的 `type`、`status` 字段这里不用，旧逻辑照常工作；
  * 空闲时后端补的 `: ping` 是 SSE 注释行，按规范不是事件，直接忽略。
  */
+import { EMPTY_EXTRAS, extrasFromMessage, type ReplyExtras } from "./assistantBlocks"
 import { readJson } from "./client"
 import { asRecord, asString } from "./json"
 
@@ -38,6 +39,39 @@ export async function failureText(response: Response): Promise<string> {
     }
   }
   return `发送失败（状态码 ${response.status}），请稍后重试`
+}
+
+export interface ParsedTurn {
+  id: string
+  clientMessageId: string
+  role: string
+  content: string
+  completionStatus: string
+  extras: ReplyExtras
+}
+
+/**
+ * 把消息接口返回的一条读成界面用的一轮。
+ *
+ * 正文允许是空串：流式占位、失败、取消，以及「每句话都没通过核对、只剩数据块」的回答，
+ * 落库时正文都是空的，界面要照样显示，不能因为没有字就把整条回答丢掉
+ * （否则用户只看到自己的提问，下面什么都没有）。缺 id、角色，或正文根本不是字符串才丢弃。
+ */
+export function parseTurn(value: Record<string, unknown>): ParsedTurn | null {
+  const id = asString(value.id)
+  const role = asString(value.role)
+  const content = typeof value.content === "string" ? value.content : null
+  if (!id || !role || content === null) {
+    return null
+  }
+  return {
+    id,
+    clientMessageId: asString(value.client_message_id) ?? "",
+    role,
+    content,
+    completionStatus: asString(value.completion_status) ?? "",
+    extras: role === "assistant" ? extrasFromMessage(value) : EMPTY_EXTRAS,
+  }
 }
 
 /** 助手那一条没有正文时显示什么：生成中、失败和已取消要分开说，不能一直转圈。 */

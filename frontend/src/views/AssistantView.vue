@@ -26,13 +26,12 @@ import { apiUrl, authorizedFetch, readJson } from "../api/client"
 import {
   applyEvent,
   EMPTY_EXTRAS,
-  extrasFromMessage,
   splitNotices,
   type AssistantBlock,
   type NoticeBlock,
   type ReplyExtras,
 } from "../api/assistantBlocks"
-import { emptyReplyText, failureText, parseSseLine } from "../api/assistantStream"
+import { emptyReplyText, failureText, parseSseLine, parseTurn } from "../api/assistantStream"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { newUuid } from "../api/uuid"
 import { VChart } from "../charts"
@@ -236,22 +235,8 @@ async function loadMessages(): Promise<void> {
 }
 
 function readTurn(value: Record<string, unknown>): Turn[] {
-  const id = asString(value.id)
-  const role = asString(value.role)
-  const content = asString(value.content)
-  if (!id || !role || content === null) {
-    return []
-  }
-  return [
-    {
-      id,
-      clientMessageId: asString(value.client_message_id) ?? "",
-      role,
-      content,
-      completionStatus: asString(value.completion_status) ?? "",
-      extras: role === "assistant" ? extrasFromMessage(value) : EMPTY_EXTRAS,
-    },
-  ]
+  const turn = parseTurn(value)
+  return turn ? [turn] : []
 }
 
 function verdictBlocks(turn: Turn): NoticeBlock[] {

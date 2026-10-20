@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { emptyReplyText, failureText, parseSseLine } from "../../src/api/assistantStream"
+import { emptyReplyText, failureText, parseSseLine, parseTurn } from "../../src/api/assistantStream"
 
 /** 复刻视图里 readStream 的循环：逐行解析，累加 delta，遇到 done 结束。 */
 function readAll(raw: string): { text: string; done: boolean } {
@@ -87,5 +87,52 @@ describe("没有正文时的提示", () => {
     expect(emptyReplyText("failed")).toContain("没有生成成功")
     expect(emptyReplyText("cancelled")).toBe("这条回答已取消。")
     expect(emptyReplyText("completed")).toBe("（没有内容）")
+  })
+})
+
+describe("读一条历史消息", () => {
+  const base = { id: "m1", client_message_id: "c1", role: "assistant", completion_status: "completed" }
+
+  it("正文为空的回答也要保留：只剩数据块的回答不能被丢掉", () => {
+    const turn = parseTurn({
+      ...base,
+      content: "",
+      blocks: [
+        { type: "notice", code: "NOT_GROUNDED", level: "warning", message: "没能生成可核对的文字回答" },
+      ],
+      grounding: "none",
+      as_of: "2026-08-01",
+    })
+    expect(turn).not.toBeNull()
+    expect(turn?.content).toBe("")
+    expect(turn?.completionStatus).toBe("completed")
+    expect(turn?.extras.blocks).toHaveLength(1)
+    expect(turn?.extras.asOf).toBe("2026-08-01")
+  })
+
+  it("失败、取消、仍在生成的空回答照样显示，由界面按状态说明", () => {
+    for (const status of ["failed", "cancelled", "streaming"]) {
+      const turn = parseTurn({ ...base, content: "", completion_status: status })
+      expect(turn?.completionStatus).toBe(status)
+    }
+  })
+
+  it("旧消息没有任何新字段，照常读出", () => {
+    const turn = parseTurn({ ...base, content: "旧回答。" })
+    expect(turn?.content).toBe("旧回答。")
+    expect(turn?.extras.blocks).toEqual([])
+    expect(turn?.extras.steps).toEqual([])
+  })
+
+  it("用户消息不带步骤和块", () => {
+    const turn = parseTurn({ ...base, role: "user", content: "问题", blocks: [{ type: "notice" }] })
+    expect(turn?.extras.blocks).toEqual([])
+  })
+
+  it("缺 id、缺角色、正文不是字符串才丢弃", () => {
+    expect(parseTurn({ ...base, id: "", content: "x" })).toBeNull()
+    expect(parseTurn({ ...base, role: undefined, content: "x" })).toBeNull()
+    expect(parseTurn({ ...base, content: null })).toBeNull()
+    expect(parseTurn({ ...base })).toBeNull()
   })
 })
