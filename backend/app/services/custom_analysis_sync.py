@@ -3,6 +3,7 @@
 约定（与 board_market_sync 一致）：
 - 一律走限速网关，连续 3 次上游失败就停，已写入的保留，整体按任务重试策略重来；
 - 交易日以中证指数沪深300 日行情的日期为准，周末 / 节假日不请求；
+  指数收盘经常晚于 18:30 才发布，期权在日历末尾再试最近几个工作日，空结果不入库；
 - 可重复运行：已入库的交易日不重抓（近 7 天的指数行情与国债收益率重抓一遍以吸收修正）；
 - 质量闸门在入库前执行，被拒绝的行不入库，标待审的行入库并带 quality_note。
 """
@@ -61,6 +62,9 @@ _OPTION_START = {
     "CFFEX": date(2019, 12, 23),
 }
 _JUMP_LIMITS = {SERIES_MV: Decimal("0.15"), SERIES_PB: Decimal("0.12")}
+# 指数行情没跟上时，期权最多再向前试这么多个工作日。空文件不入库，下次还会再试；
+# 封顶是为了长假期间不要对着深交所把同一天反复打满。
+OPTION_TAIL_WEEKDAYS = 3
 
 
 def index_close_series(index_code: str) -> str:
@@ -223,6 +227,26 @@ async def _sync_indices(
     )
 
 
+def option_candidate_days(calendar_days: Sequence[date], today: date) -> list[date]:
+    """指数交易日，再加日历末尾到 today 之间的少量工作日。
+
+    中证指数当天的收盘经常在定时任务之后才出现。只认已入库的指数日期时，
+    交易所已经公布的期权统计也会被整段跳过，页面就停在上一个交易日。
+    """
+
+    days = list(calendar_days)
+    if not days:
+        return []
+    cursor = days[-1] + timedelta(days=1)
+    extra = 0
+    while cursor <= today and extra < OPTION_TAIL_WEEKDAYS:
+        if cursor.weekday() < 5:
+            days.append(cursor)
+            extra += 1
+        cursor += timedelta(days=1)
+    return days
+
+
 def _year_chunks(start: date, end: date) -> list[tuple[date, date]]:
     chunks: list[tuple[date, date]] = []
     cursor = start
@@ -294,9 +318,10 @@ async def _sync_options(
     report: SyncReport,
     say: Progress,
 ) -> None:
-    calendar_days = sorted(
+    stored_days = sorted(
         day for day in store.series_dates(index_close_series(CALENDAR_INDEX)) if day >= start
     )
+    calendar_days = option_candidate_days(stored_days, today)
     if not calendar_days:
         raise ProviderError(
             code="NO_ROWS", message="拿不到沪深300 行情，无法确定交易日", status_code=503

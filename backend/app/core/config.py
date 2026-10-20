@@ -118,7 +118,9 @@ class Settings(BaseSettings):
     scheduler_board_market_hour: int = 15
     scheduler_board_market_minute: int = 45
     # 自定义数据分析：期权 PCR、股债收益差、巴菲特指标、中位数 PB。
-    # 交易所与中证指数在收盘后一两个小时内陆续发布，18:30 取数；首次回填 5 年用
+    # 中证指数收盘经常晚于 18:30 才发布。只跑这一次的话，任务会记成成功，
+    # 页面要到下一个工作日 18:30 才看得到新交易日。所以 21:30 再补当天，
+    # 次日 08:30 再补一次。首次回填 5 年用
     # `python -m app.scripts.backfill_custom_analysis`，调度只做增量。
     scheduler_enable_custom_analysis: bool = True
     scheduler_custom_analysis_hour: int = 18
@@ -272,6 +274,15 @@ class Settings(BaseSettings):
             slots.append((hour, minute))
         if not slots:
             raise ValueError("SCHEDULER_SEC_TIMES 至少需要一个时刻")
+        return slots
+
+    def scheduler_custom_analysis_slots(self) -> list[tuple[int, int]]:
+        """收盘后的主任务，加上当晚和次日早上的补跑，去掉重复时刻。"""
+
+        slots = [(self.scheduler_custom_analysis_hour, self.scheduler_custom_analysis_minute)]
+        for extra in ((21, 30), (8, 30)):
+            if extra not in slots:
+                slots.append(extra)
         return slots
 
     def scheduler_fred_start(self, end: date) -> date:

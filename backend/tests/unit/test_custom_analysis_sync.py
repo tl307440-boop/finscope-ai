@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
+from app.core.config import Settings
 from app.providers.errors import ProviderError
 from app.services import custom_analysis_sync as sync
 from app.services.custom_analysis_rules import INDEX_CODES
+from app.services.scheduler import build_triggers, custom_analysis_dedupe_key
 from tests.unit.custom_analysis_fakes import (
     NOW,
     TODAY,
@@ -18,6 +20,7 @@ from tests.unit.custom_analysis_fakes import (
     build_gateway,
     cross_section_payload,
     failing,
+    sse_payload,
     treasury_payload,
     weekdays,
 )
@@ -327,3 +330,60 @@ def test_szse_requests_are_spaced_out_but_other_exchanges_are_not(
 
     # 只有深交所每个交易日后多等一次；上交所 / 中金所不额外限速
     assert waits == [sync._EXTRA_INTERVAL["SZSE"]] * len(CALENDAR)
+
+
+def test_option_candidate_days_skip_the_weekend_and_stop_after_three_weekdays() -> None:
+    calendar = [date(2026, 10, 16)]
+    # 16 日周五之后：19、20、21 日三个工作日；22 日仍是工作日，但超过封顶
+    assert sync.option_candidate_days(calendar, date(2026, 10, 22)) == [
+        date(2026, 10, 16),
+        date(2026, 10, 19),
+        date(2026, 10, 20),
+        date(2026, 10, 21),
+    ]
+
+
+def test_late_index_print_still_fetches_option_stats_for_the_new_session() -> None:
+    """指数停在 10 月 16 日时，19 日已公布的期权要入库；20 日空文件不能记成已抓过。"""
+
+    store = MemoryStore()
+    gateway = build_gateway(CALENDAR)
+    _run(store, gateway, years=1)
+
+    def sse_with_unpublished_tuesday(url: str) -> bytes:
+        if "tradeDate=20261020" in url:
+            return b'cb({"result":[]})'
+        raw = url.split("tradeDate=")[1][:8]
+        return sse_payload(date(int(raw[:4]), int(raw[4:6]), int(raw[6:8])))
+
+    gateway.routes.insert(0, ("query.sse.com.cn", sse_with_unpublished_tuesday))
+    gateway.calls.clear()
+    later = datetime(2026, 10, 20, 10, 0, tzinfo=UTC)  # 北京时间 18:00，指数仍只有到 16 日
+
+    report = asyncio.run(sync.sync_custom_analysis(store, gateway, later, years=1))
+
+    assert report.failures == []
+    assert max(store.series_dates(sync.index_close_series("000300"))) == TODAY
+    assert date(2026, 10, 19) in store.option_days("SSE")
+    assert date(2026, 10, 20) not in store.option_days("SSE")
+    assert any("tradeDate=20261019" in url for url in gateway.calls)
+    assert any("tradeDate=20261020" in url for url in gateway.calls)
+
+
+def test_custom_analysis_catch_up_slots_use_distinct_dedupe_keys() -> None:
+    evening = datetime(2026, 10, 19, 10, 30, tzinfo=UTC)  # 18:30 上海
+    later = datetime(2026, 10, 19, 13, 30, tzinfo=UTC)  # 21:30 上海，UTC 仍是 19 日
+    morning = datetime(2026, 10, 20, 0, 30, tzinfo=UTC)  # 次日 08:30 上海
+    assert custom_analysis_dedupe_key(evening) == "custom_analysis:2026-10-19:1830"
+    assert custom_analysis_dedupe_key(later) == "custom_analysis:2026-10-19:2130"
+    assert custom_analysis_dedupe_key(morning) == "custom_analysis:2026-10-20:0830"
+    job_ids = [
+        item.job_id
+        for item in build_triggers(Settings())
+        if item.task_name == "sync_custom_analysis"
+    ]
+    assert job_ids == [
+        "sync_custom_analysis_1830",
+        "sync_custom_analysis_2130",
+        "sync_custom_analysis_0830",
+    ]
