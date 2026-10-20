@@ -788,9 +788,7 @@ def _cninfo_tasks(
             scope={"mode": mode},
             provider_id=_provider_id(engine, code="cninfo", name="巨潮资讯"),
             failure_policy="403/429 停止该来源，不换身份重试",
-            unavailable_reason=None
-            if email
-            else "SEC_USER_AGENT 不是可用联系邮箱，不抓公告正文",
+            unavailable_reason=None if email else "SEC_USER_AGENT 不是可用联系邮箱，不抓公告正文",
         )
     ]
 
