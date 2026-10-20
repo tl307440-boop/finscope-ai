@@ -40,7 +40,9 @@ import DeltaValue from "../components/ui/DeltaValue.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
+import MarkdownText from "../components/assistant/MarkdownText.vue"
 import ReplyBlocks from "../components/assistant/ReplyBlocks.vue"
+import ReplySources from "../components/assistant/ReplySources.vue"
 import ReplySteps from "../components/assistant/ReplySteps.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
@@ -91,16 +93,6 @@ interface SeriesLine {
   name: string
   dates: string[]
   values: number[]
-}
-
-interface BodyBlock {
-  kind: "section" | "text"
-  text: string
-}
-
-interface TextPart {
-  cite: boolean
-  text: string
 }
 
 /** 示例问题都能用库里已有的数据回答；点击只填入输入框，由用户决定是否发送。 */
@@ -443,51 +435,6 @@ const pendingClientId = computed<string>(() =>
     ? lastTurn.value.clientMessageId
     : "",
 )
-
-const SECTION = /^[一二三四五六七八九十]+[、.．]/
-const BULLET = /^([-*•·]|\d+[.)、]|[（(]\d+[)）])\s*/
-
-/** 把正文按行拆成小标题/段落；行首的列表符号交给模板判断。 */
-function bodyBlocks(text: string): BodyBlock[] {
-  const blocks: BodyBlock[] = []
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim()
-    if (!line) {
-      continue
-    }
-    blocks.push(SECTION.test(line) ? { kind: "section", text: line } : { kind: "text", text: line })
-  }
-  return blocks
-}
-
-function isListLine(line: string): boolean {
-  return BULLET.test(line)
-}
-
-function listText(line: string): string {
-  return line.replace(BULLET, "")
-}
-
-/** 正文里若带 [1]【2】这类角标就渲染成 .cite，没有就按纯文本渲染，不自己造引用。 */
-function citeParts(line: string): TextPart[] {
-  const parts: TextPart[] = []
-  const pattern = /\[(\d{1,2})\]|【(\d{1,2})】/g
-  let cursor = 0
-  for (const match of line.matchAll(pattern)) {
-    const at = match.index
-    const head = line.slice(cursor, at)
-    if (head) {
-      parts.push({ cite: false, text: head })
-    }
-    parts.push({ cite: true, text: match[1] ?? match[2] ?? "" })
-    cursor = at + match[0].length
-  }
-  const tail = line.slice(cursor)
-  if (tail) {
-    parts.push({ cite: false, text: tail })
-  }
-  return parts.length ? parts : [{ cite: false, text: line }]
-}
 
 function docStatus(status: string): { text: string; tone: "ok" | "warn" | "danger" | "muted" | "accent" } {
   return DOC_STATUS[status] ?? { text: "处理中", tone: "muted" }
@@ -885,28 +832,15 @@ onMounted(() => {
                   <p v-if="!turn.content && !turn.extras.blocks.length" class="muted">
                     {{ emptyReplyText(turn.completionStatus) }}
                   </p>
-                  <template v-else-if="turn.content">
-                    <template v-for="(block, index) in bodyBlocks(turn.content)" :key="index">
-                      <h3 v-if="block.kind === 'section'" class="doc-section">{{ block.text }}</h3>
-                      <ul v-else-if="isListLine(block.text)" class="doc-list">
-                        <li>
-                          <template v-for="(part, at) in citeParts(listText(block.text))" :key="at">
-                            <span v-if="part.cite" class="cite">{{ part.text }}</span>
-                            <template v-else>{{ part.text }}</template>
-                          </template>
-                        </li>
-                      </ul>
-                      <p v-else class="doc-text">
-                        <template v-for="(part, at) in citeParts(block.text)" :key="at">
-                          <span v-if="part.cite" class="cite">{{ part.text }}</span>
-                          <template v-else>{{ part.text }}</template>
-                        </template>
-                      </p>
-                    </template>
-                  </template>
+                  <MarkdownText
+                    v-else-if="turn.content"
+                    :text="turn.content"
+                    :sources="turn.extras.sources"
+                  />
 
                   <ReplyBlocks :blocks="verdictBlocks(turn)" />
                   <ReplyBlocks :blocks="dataBlocks(turn)" />
+                  <ReplySources :sources="turn.extras.sources" />
                   <p v-if="turn.extras.asOf" class="muted asof">资料截止 {{ turn.extras.asOf }}</p>
 
                   <footer v-if="pendingClientId === turn.clientMessageId" class="reply-actions">

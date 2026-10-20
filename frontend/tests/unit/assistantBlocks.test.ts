@@ -188,6 +188,15 @@ describe("流式事件并入", () => {
     expect(applyEvent(before, { type: "delta", delta: "x" })).toBe(before)
   })
 
+  it("sources 事件整体替换来源清单，历史消息同样读出", () => {
+    const list = [{ n: 1, kind: "corpus", publisher: "美联储", title: "声明", url: "https://a.gov/x" }]
+    const next = applyEvent(EMPTY_EXTRAS, { type: "sources", sources: list })
+    expect(next.sources.map((source) => source.n)).toEqual([1])
+    expect(applyEvent(next, { type: "sources", sources: [] }).sources).toEqual([])
+    expect(extrasFromMessage({ sources: list }).sources).toHaveLength(1)
+    expect(extrasFromMessage({}).sources).toEqual([])
+  })
+
   it("并入不改写原对象", () => {
     const next = applyEvent(EMPTY_EXTRAS, { type: "block", block: TABLE })
     expect(EMPTY_EXTRAS.blocks).toHaveLength(0)

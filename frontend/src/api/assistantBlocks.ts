@@ -66,15 +66,27 @@ export interface NoticeBlock {
 
 export type AssistantBlock = LineChartBlock | MetricCardsBlock | TableBlock | NoticeBlock
 
+/** 叙述里引用到的来源（规格 §4）。网页来源 `verified` 为 false，界面要如实标出。 */
+export interface AssistantSource {
+  n: number
+  kind: "corpus" | "web"
+  publisher: string
+  title: string
+  publishedAt: string
+  url: string
+  verified: boolean
+}
+
 /** 一条回答带的附加内容：流式过程中逐个事件累加，历史消息一次读出。 */
 export interface ReplyExtras {
   steps: AssistantStep[]
   blocks: AssistantBlock[]
+  sources: AssistantSource[]
   asOf: string
   grounding: string
 }
 
-export const EMPTY_EXTRAS: ReplyExtras = { steps: [], blocks: [], asOf: "", grounding: "" }
+export const EMPTY_EXTRAS: ReplyExtras = { steps: [], blocks: [], sources: [], asOf: "", grounding: "" }
 
 const STEP_STATUS: readonly StepStatus[] = ["running", "ok", "stale", "unavailable"]
 
@@ -215,11 +227,52 @@ export function parseBlocks(value: unknown): AssistantBlock[] {
   })
 }
 
+export function parseSources(value: unknown): AssistantSource[] {
+  const seen = new Set<number>()
+  return asList(value).flatMap((item): AssistantSource[] => {
+    const record = asRecord(item)
+    const n = asNumber(record?.n)
+    if (!record || n === null || !Number.isInteger(n) || n < 1 || seen.has(n)) {
+      return []
+    }
+    const title = asString(record.title)
+    const publisher = asString(record.publisher)
+    if (!title && !publisher) {
+      return []
+    }
+    seen.add(n)
+    const kind = record.kind === "web" ? "web" : "corpus"
+    return [
+      {
+        n,
+        kind,
+        publisher: publisher ?? "",
+        title: title ?? "",
+        publishedAt: asString(record.published_at) ?? "",
+        url: asString(record.url) ?? "",
+        // 网页来源没有被系统核验过；缺字段时按未核验处理，不替后端说「已核验」。
+        verified: kind === "corpus" && record.verified !== false,
+      },
+    ]
+  })
+}
+
+/** 只放行 http(s) 链接：来源地址来自抓取的网页，不能让 `javascript:` 之类的地址进到 href。 */
+export function safeUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === "https:" || parsed.protocol === "http:" ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
 /** 历史消息里的附加内容；旧消息没有这些字段，就是空。 */
 export function extrasFromMessage(record: Record<string, unknown>): ReplyExtras {
   return {
     steps: parseSteps(record.steps),
     blocks: parseBlocks(record.blocks),
+    sources: parseSources(record.sources),
     asOf: asString(record.as_of) ?? "",
     grounding: asString(record.grounding) ?? "",
   }
@@ -244,6 +297,8 @@ export function applyEvent(extras: ReplyExtras, payload: Record<string, unknown>
       const block = parseBlock(payload.block)
       return block ? { ...extras, blocks: [...extras.blocks, block] } : extras
     }
+    case "sources":
+      return { ...extras, sources: parseSources(payload.sources) }
     case "done":
       return {
         ...extras,
