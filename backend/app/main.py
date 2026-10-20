@@ -7,6 +7,7 @@ from typing import cast
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import Engine
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
@@ -31,9 +32,10 @@ from app.services.assistant.orchestrator import TurnRunner
 from app.services.assistant.tool_cache import ToolCache
 from app.services.assistant.tools import default_registry
 from app.services.assistant.turns import AssistantConfig
-from app.services.cockpit import keep_macro_warm
+from app.services.cockpit import keep_dashboard_warm
 from app.services.eastmoney_binding import build_service as build_eastmoney_service
 from app.services.login_limiter import LoginRateLimiter
+from app.services.market_cache import close_gateways
 
 ExceptionHandler = Callable[[Request, Exception], Awaitable[Response]]
 
@@ -95,10 +97,10 @@ def create_app() -> FastAPI:
         # 自选和计算不进缓存，所以不会把一个用户的数据给到另一个用户。
         app.state.assistant_registry = default_registry(ToolCache())
         _bootstrap_admin(engine, settings)
-        # 宏观上游（FRED / 东财 / 外盘）冷启动要多次跨境请求：
+        # 总览的上游（FRED / 东财 / 外盘 / 指数 / 板块 / 公告）冷启动要几十次跨境请求：
         # 后台预热并定期续命，用户打开总览时直接命中缓存。
         warmer = (
-            asyncio.create_task(keep_macro_warm(engine)) if settings.app_env != "test" else None
+            asyncio.create_task(keep_dashboard_warm(engine)) if settings.app_env != "test" else None
         )
         # 已绑定东方财富的用户：后台定时把东财自选同步进来。
         eastmoney = build_eastmoney_service(engine, settings)
@@ -113,6 +115,7 @@ def create_app() -> FastAPI:
             if task is not None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+        await close_gateways()
         assistant_runner.shutdown()
         engine.dispose()
 
@@ -131,6 +134,9 @@ def create_app() -> FastAPI:
         expose_headers=["X-Request-ID"],
     )
     app.add_middleware(RequestIdMiddleware)
+    # 最外层压缩：总览、宏观这类 JSON 动辄上百 KB，不压缩时慢网络下传输就是首屏的大头。
+    # Starlette 默认不压缩 text/event-stream，AI 助手的流式响应不受影响。
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
     app.add_exception_handler(AppError, cast(ExceptionHandler, app_error_handler))
     app.add_exception_handler(
         RequestValidationError,

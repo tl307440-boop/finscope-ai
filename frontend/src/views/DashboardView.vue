@@ -25,6 +25,7 @@ import {
 } from "../api/dashboard"
 import type { SourceRef } from "../api/industryMarket"
 import { formatMoment } from "../api/json"
+import { recall, remember, withRetry } from "../api/slotCache"
 import DeltaValue from "../components/ui/DeltaValue.vue"
 import MiniRing from "../components/ui/MiniRing.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
@@ -55,23 +56,28 @@ interface Slot<T> {
   error: string
 }
 
-function slot<T>() {
-  return ref<Slot<T>>({ data: null, loading: false, error: "" })
+/** 公开行情模块用上次成功的数据秒开（见 slotCache），随后在后台刷新；自选是用户私有数据，不缓存。 */
+function slot<T>(key = "") {
+  return ref<Slot<T>>({ data: key ? recall<T>(key) : null, loading: false, error: "" })
 }
 
 const session = useSessionStore()
-const market = slot<MarketOverview>()
-const macro = slot<MacroOverview>()
-const boards = slot<BoardsOverview>()
-const stocks = slot<StocksOverview>()
-const announcements = slot<AnnouncementsOverview>()
+const market = slot<MarketOverview>("dashboard:market")
+const macro = slot<MacroOverview>("dashboard:macro")
+const boards = slot<BoardsOverview>("dashboard:boards")
+const stocks = slot<StocksOverview>("dashboard:stocks")
+const announcements = slot<AnnouncementsOverview>("dashboard:announcements")
 const watch = slot<WatchOverview>()
 const dialog = ref<"" | "temperature" | "macro" | "boards">("")
 
-async function fill<T>(target: { value: Slot<T> }, loader: () => Promise<T>): Promise<void> {
+async function fill<T>(target: { value: Slot<T> }, loader: () => Promise<T>, key = ""): Promise<void> {
   target.value = { ...target.value, loading: true, error: "" }
   try {
-    target.value = { data: await loader(), loading: false, error: "" }
+    const data = await withRetry(loader)
+    if (key) {
+      remember(key, data)
+    }
+    target.value = { data, loading: false, error: "" }
   } catch (error) {
     target.value = { ...target.value, loading: false, error: error instanceof Error ? error.message : "暂时不可用" }
   }
@@ -90,11 +96,11 @@ function loadWatch(groupId = watch.value.data?.groupId ?? ""): Promise<void> {
   return fill(watch, () => fetchWatch(groupId, session.accessToken, refreshToken))
 }
 
-const loadMarket = () => fill(market, fetchMarket)
-const loadMacro = () => fill(macro, fetchMacro)
-const loadBoards = () => fill(boards, fetchBoards)
-const loadStocks = () => fill(stocks, fetchStocks)
-const loadAnnouncements = () => fill(announcements, fetchAnnouncements)
+const loadMarket = () => fill(market, fetchMarket, "dashboard:market")
+const loadMacro = () => fill(macro, fetchMacro, "dashboard:macro")
+const loadBoards = () => fill(boards, fetchBoards, "dashboard:boards")
+const loadStocks = () => fill(stocks, fetchStocks, "dashboard:stocks")
+const loadAnnouncements = () => fill(announcements, fetchAnnouncements, "dashboard:announcements")
 
 const busy = computed(() =>
   [market, macro, boards, stocks, announcements, watch].some((item) => item.value.loading),

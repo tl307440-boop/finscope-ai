@@ -44,8 +44,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+// 这里只验证「登录成功后跳到总览」。路由表是懒加载的，真去加载总览页会连带转译 ECharts 等一大串依赖，
+// 既慢又与登录页无关，所以把总览换成空占位组件，路由名与路径保持不变。
+const testRoutes = routes.map((route) =>
+  route.name === "dashboard" ? { ...route, component: { render: () => null } } : route,
+)
+
 async function renderLogin() {
-  const router = createRouter({ history: createMemoryHistory(), routes })
+  const router = createRouter({ history: createMemoryHistory(), routes: testRoutes })
   await router.push("/login")
   await router.isReady()
   render(LoginView, { global: { plugins: [router] } })

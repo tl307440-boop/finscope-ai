@@ -2,7 +2,7 @@
  * 产业研究 · 板块行情接口（/api/v1/industry-market/*）的解析层。
  * 后端已经算好所有派生数字（区间涨幅、超额、估值分位、子行业加权），这里只做收窄与展示格式。
  */
-import { apiUrl, authorizedFetch, readJson } from "./client"
+import { apiUrl, authorizedFetch, isTimeout, readJson } from "./client"
 import { asList, asNumber, asRecord, asString, dataOf, listOf } from "./json"
 
 export type BoardLevel = "1" | "2" | "3" | "concept"
@@ -270,8 +270,8 @@ export async function getData(path: string, init?: RequestInit): Promise<Record<
   let response: Response
   try {
     response = await fetch(apiUrl(path), init)
-  } catch {
-    throw new FetchFailure("网络连接失败，请稍后重试")
+  } catch (error) {
+    throw new FetchFailure(isTimeout(error) ? "请求超时，请稍后重试" : "网络连接失败，请稍后重试")
   }
   return unwrap(response, await readJson(response))
 }

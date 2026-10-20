@@ -29,7 +29,7 @@ from app.schemas.watchlist_insights import (
     WatchSummary,
 )
 from app.services.industry_market import Gateway, IndustryMarketService, get_service
-from app.services.market_cache import TtlCache, shared_gateway
+from app.services.market_cache import TtlCache, market_cache, shared_gateway
 from app.services.market_sentiment import MarketSentimentService, get_sentiment_service
 from app.utils.market_time import SHANGHAI
 from app.utils.time import utc_now
@@ -152,7 +152,7 @@ class WatchlistInsightsService:
     gateway: Gateway
     industry: IndustryMarketService
     sentiment: MarketSentimentService
-    cache: TtlCache = field(default_factory=TtlCache)
+    cache: TtlCache = field(default_factory=market_cache)
     now: Callable[[], datetime] = field(default=utc_now)
 
     async def build(

@@ -75,7 +75,13 @@ from app.schemas.industry_market import Section, SourceRef
 from app.schemas.market_sentiment import LimitUpView
 from app.services import dashboard_rules as rules
 from app.services.industry_market import IndustryMarketService, get_service
-from app.services.market_cache import Cached, PacedGateway, TtlCache, shared_gateway
+from app.services.market_cache import (
+    Cached,
+    PacedGateway,
+    TtlCache,
+    market_cache,
+    shared_gateway,
+)
 from app.services.market_sentiment import MarketSentimentService, get_sentiment_service
 from app.services.watchlist_insights import WatchlistInsightsService, get_insights_service
 from app.utils.market_time import SHANGHAI
@@ -217,6 +223,10 @@ class CockpitGateway(Protocol):
     ) -> bytes: ...
 
 
+async def _no_spark() -> tuple[list[Decimal], str | None]:
+    return [], None
+
+
 def minutes_traded(moment: time) -> int:
     """连续竞价 09:30–11:30、13:00–15:00，共 240 分钟。"""
 
@@ -263,7 +273,7 @@ class DashboardService:
     industry: IndustryMarketService
     sentiment: MarketSentimentService
     insights: WatchlistInsightsService
-    cache: TtlCache = field(default_factory=TtlCache)
+    cache: TtlCache = field(default_factory=market_cache)
     now: Callable[[], datetime] = field(default=utc_now)
     metrics: DashboardMetricRepository | None = None
     snapshots: DashboardSnapshotRepository | None = None
@@ -275,12 +285,22 @@ class DashboardService:
     async def market(self) -> MarketOverview:
         local = self.now().astimezone(SHANGHAI)
         symbols = [symbol for symbol, _ in MAIN_INDICES] + [TREND_INDEX[0]]
-        quotes, quotes_section = await self._guard(self._index_quotes(symbols))
-        fenbu, breadth_section = await self._guard(self._fenbu())
-        pool, limits_section = await self._pool()
-        sh_bars, sh_section = await self._guard(self._klines("sh000001", "day"))
-        sz_bars, sz_section = await self._guard(self._klines("sz399001", "day"))
-        trend_bars, trend_section = await self._guard(self._klines(TREND_INDEX[0], "day"))
+        # 六路上游互不依赖：并发回源，总耗时取最慢的一路而不是六路相加（出口限速仍然生效）。
+        (
+            (quotes, quotes_section),
+            (fenbu, breadth_section),
+            (pool, limits_section),
+            (sh_bars, sh_section),
+            (sz_bars, sz_section),
+            (trend_bars, trend_section),
+        ) = await asyncio.gather(
+            self._guard(self._index_quotes(symbols)),
+            self._guard(self._fenbu()),
+            self._pool(),
+            self._guard(self._klines("sh000001", "day")),
+            self._guard(self._klines("sz399001", "day")),
+            self._guard(self._klines(TREND_INDEX[0], "day")),
+        )
         if fenbu is not None and fenbu.trade_date is None:
             breadth_section = Section(
                 status="unavailable", reason="东财今日没有涨跌分布（非交易日）"
@@ -459,6 +479,29 @@ class DashboardService:
 
         await asyncio.gather(self._fred(), self._china_rates(), self._guard(self._assets()))
 
+    async def warm_market(self) -> None:
+        """预热行情类上游缓存（指数、涨跌分布、涨停池、板块、热榜、公告），同样不写指标表。
+
+        用户请求只读缓存；缓存快到期时后台续上，首屏不必等任何一个上游。
+        """
+
+        start, end = announcement_window(self.now().astimezone(SHANGHAI).date())
+        symbols = [symbol for symbol, _ in MAIN_INDICES] + [TREND_INDEX[0]]
+        await asyncio.gather(
+            self._guard(self._index_quotes(symbols)),
+            self._guard(self._fenbu()),
+            self._pool(),
+            *(
+                self._guard(self._klines(code, "day"))
+                for code in ("sh000001", "sz399001", TREND_INDEX[0])
+            ),
+            self._guard(self.industry.ths_plates()),
+            self._guard(self.industry.ths_stocks()),
+            self._guard(self._sina_boards()),
+            self._guard(self._gainers()),
+            self._guard(self._announcement_rows(start, end)),
+        )
+
     async def macro(self) -> MacroOverview:
         # 三组上游互不依赖，并发拉取；总耗时取最慢的一组而不是三组相加。
         (fred, us_section), (china, china_section), (assets, assets_section) = await asyncio.gather(
@@ -542,8 +585,9 @@ class DashboardService:
     # ------------------------------------------------------------ 热点板块
 
     async def boards(self) -> BoardsOverview:
-        plates, heat_section = await self._guard(self.industry.ths_plates())
-        sina_boards, gain_section = await self._guard(self._sina_boards())
+        (plates, heat_section), (sina_boards, gain_section) = await asyncio.gather(
+            self._guard(self.industry.ths_plates()), self._guard(self._sina_boards())
+        )
         industries, concepts = plates if plates is not None else ((), ())
         inputs = [
             rules.PlateInput(
@@ -602,20 +646,28 @@ class DashboardService:
     # ------------------------------------------------------------ 热点股票
 
     async def stocks(self) -> StocksOverview:
-        ths, hot_section = await self._guard(self.industry.ths_stocks())
-        top = list(ths or ())[:_TOP]
-        quotes: dict[str, tx.Quote] = {}
-        if top:
-            symbols = sorted({tx.a_share_symbol(row.code) for row in top if _is_a_share(row.code)})
-            found, quote_section = await self._guard(self._stock_quotes(symbols))
-            quotes = found or {}
-            if quote_section.status == "unavailable":
-                hot_section = Section(
-                    status="stale",
-                    reason=f"腾讯行情不可用，价格与市盈率留空：{quote_section.reason}",
-                    fetched_at=hot_section.fetched_at,
+        async def hot() -> tuple[list[em.ThsHotStock], dict[str, tx.Quote], Section]:
+            # 热榜 → 个股快照有先后依赖，但整条链不依赖涨幅榜，两边并发。
+            ths, section = await self._guard(self.industry.ths_stocks())
+            rows = list(ths or ())[:_TOP]
+            found_quotes: dict[str, tx.Quote] = {}
+            if rows:
+                symbols = sorted(
+                    {tx.a_share_symbol(row.code) for row in rows if _is_a_share(row.code)}
                 )
-        gainers, gain_section = await self._guard(self._gainers())
+                found, quote_section = await self._guard(self._stock_quotes(symbols))
+                found_quotes = found or {}
+                if quote_section.status == "unavailable":
+                    section = Section(
+                        status="stale",
+                        reason=f"腾讯行情不可用，价格与市盈率留空：{quote_section.reason}",
+                        fetched_at=section.fetched_at,
+                    )
+            return rows, found_quotes, section
+
+        (top, quotes, hot_section), (gainers, gain_section) = await asyncio.gather(
+            hot(), self._guard(self._gainers())
+        )
         return StocksOverview(
             hot_section=hot_section,
             gain_section=gain_section,
@@ -651,12 +703,9 @@ class DashboardService:
 
     async def announcements(self) -> AnnouncementsOverview:
         start, end = announcement_window(self.now().astimezone(SHANGHAI).date())
-        cached, section = await self._guard(
-            self.cache.get(
-                f"cninfo:{start.isoformat()}:{end.isoformat()}",
-                _TTL_ANNOUNCEMENTS,
-                lambda: self._load_announcements(start, end),
-            )
+        # 公告检索与「热度判断」（热榜 / 涨停池 / 涨幅榜）互不依赖，并发取。
+        (cached, section), (heat, heat_note) = await asyncio.gather(
+            self._guard(self._announcement_rows(start, end)), self._stock_heat()
         )
         rows, problems = cached if cached is not None else ((), ())
         if cached is not None and problems:
@@ -665,7 +714,6 @@ class DashboardService:
                 reason="部分检索失败：" + "；".join(problems),
                 fetched_at=section.fetched_at,
             )
-        heat, heat_note = await self._stock_heat()
         if heat_note and section.status != "unavailable":
             section = Section(
                 status="stale",
@@ -731,24 +779,36 @@ class DashboardService:
         insights = await self.insights.build(group, recent)
         rows: list[WatchRow] = []
         problems: list[str] = []
-        for index, stock in enumerate(insights.stocks):
-            closes: list[Decimal] = []
-            if index < _SPARK_LIMIT and _is_a_share(stock.code):
-                symbol = tx.a_share_symbol(stock.code)
-                try:
-                    bars = await self.cache.get(
-                        f"spark:{symbol}",
-                        _TTL_SPARK,
-                        partial(
-                            self._fetch,
-                            tx.kline_url(symbol, 12),
-                            tx.TENCENT_HEADERS,
-                            partial(tx.parse_klines, symbol=symbol),
-                        ),
-                    )
-                    closes = [bar.close for bar in bars.value][-10:]
-                except ProviderError as error:
-                    problems.append(f"{stock.name}：{error.message}")
+
+        async def spark(code: str, name: str) -> tuple[list[Decimal], str | None]:
+            symbol = tx.a_share_symbol(code)
+            try:
+                bars = await self.cache.get(
+                    f"spark:{symbol}",
+                    _TTL_SPARK,
+                    partial(
+                        self._fetch,
+                        tx.kline_url(symbol, 12),
+                        tx.TENCENT_HEADERS,
+                        partial(tx.parse_klines, symbol=symbol),
+                    ),
+                )
+            except ProviderError as error:
+                return [], f"{name}：{error.message}"
+            return [bar.close for bar in bars.value][-10:], None
+
+        # 最多 12 只的走势互相独立：并发取，不再一只一只排队。
+        sparks = await asyncio.gather(
+            *(
+                spark(stock.code, stock.name)
+                if index < _SPARK_LIMIT and _is_a_share(stock.code)
+                else _no_spark()
+                for index, stock in enumerate(insights.stocks)
+            )
+        )
+        for stock, (closes, problem) in zip(insights.stocks, sparks, strict=True):
+            if problem:
+                problems.append(problem)
             change_5d = stock.change_5d_pct
             if change_5d is None and len(closes) > 5:
                 change_5d = _r(rules.pct_change(closes[-1], closes[-6]) or Decimal(0))
@@ -999,15 +1059,23 @@ class DashboardService:
         found: dict[str, list[object]] = {}
         failed: list[str] = []
         fetched: datetime | None = None
-        for key, (url, parse) in loaders.items():
+
+        async def one(key: str) -> Cached[Sequence[object]] | ProviderError:
+            url, parse = loaders[key]
             try:
-                cached = await self.cache.get(
+                return await self.cache.get(
                     f"china:{key}",
                     _TTL_CHINA,
                     partial(self._fetch, url, rates.DATACENTER_HEADERS, parse),
                 )
             except ProviderError as error:
-                failed.append(f"{labels[key]}（{error.message}）")
+                return error
+
+        # 三张表互不依赖：并发取，按固定顺序汇总。
+        results = await asyncio.gather(*(one(key) for key in loaders))
+        for key, cached in zip(loaders, results, strict=True):
+            if isinstance(cached, ProviderError):
+                failed.append(f"{labels[key]}（{cached.message}）")
                 continue
             found[key] = list(cached.value)
             fetched = cached.fetched_at if fetched is None else min(fetched, cached.fetched_at)
@@ -1026,7 +1094,22 @@ class DashboardService:
 
     async def _load_assets(self) -> list[GlobalAsset]:
         symbols = [code for code, _ in GLOBAL_TENCENT] + ["whUSDCNY"]
-        payload = await self.gateway.get(tx.quote_url(symbols), tx.TENCENT_HEADERS)
+
+        async def sina_quotes_or_empty() -> Mapping[str, sina.SinaQuote]:
+            try:
+                return sina.parse_hq(
+                    await self.gateway.get(
+                        sina.hq_url([code for code, _ in GLOBAL_SINA]), sina.SINA_HEADERS
+                    )
+                )
+            except ProviderError:
+                return {}
+
+        # 腾讯与新浪两个来源互不依赖：并发取。腾讯失败照旧整体失败，新浪失败只是少几个品种。
+        payload, sina_quotes = await asyncio.gather(
+            self.gateway.get(tx.quote_url(symbols), tx.TENCENT_HEADERS),
+            sina_quotes_or_empty(),
+        )
         quotes = tx.parse_quotes(payload)
         assets = [
             GlobalAsset(
@@ -1052,14 +1135,6 @@ class DashboardService:
             )
         except ProviderError:
             pass
-        try:
-            sina_quotes = sina.parse_hq(
-                await self.gateway.get(
-                    sina.hq_url([code for code, _ in GLOBAL_SINA]), sina.SINA_HEADERS
-                )
-            )
-        except ProviderError:
-            sina_quotes = {}
         for code, name in GLOBAL_SINA:
             future = sina_quotes.get(code)
             if future is not None:
@@ -1078,8 +1153,10 @@ class DashboardService:
 
     async def _sina_boards(self) -> Cached[tuple[sina.SinaBoard, ...]]:
         async def load() -> tuple[sina.SinaBoard, ...]:
-            industries = await self._fetch(sina.INDUSTRY_URL, sina.SINA_HEADERS, sina.parse_boards)
-            concepts = await self._fetch(sina.CONCEPT_URL, sina.SINA_HEADERS, sina.parse_boards)
+            industries, concepts = await asyncio.gather(
+                self._fetch(sina.INDUSTRY_URL, sina.SINA_HEADERS, sina.parse_boards),
+                self._fetch(sina.CONCEPT_URL, sina.SINA_HEADERS, sina.parse_boards),
+            )
             return (*industries, *concepts)
 
         return await self.cache.get("sina:boards", _TTL_SINA, load)
@@ -1093,12 +1170,21 @@ class DashboardService:
             ),
         )
 
+    async def _announcement_rows(
+        self, start: date, end: date
+    ) -> Cached[tuple[tuple[MarketAnnouncement, ...], tuple[str, ...]]]:
+        return await self.cache.get(
+            f"cninfo:{start.isoformat()}:{end.isoformat()}",
+            _TTL_ANNOUNCEMENTS,
+            lambda: self._load_announcements(start, end),
+        )
+
     async def _load_announcements(
         self, start: date, end: date
     ) -> tuple[tuple[MarketAnnouncement, ...], tuple[str, ...]]:
-        found: dict[str, MarketAnnouncement] = {}
-        problems: list[str] = []
-        for category, keyword, page in ANNOUNCEMENT_QUERIES:
+        async def one(
+            category: str, keyword: str, page: int
+        ) -> tuple[list[MarketAnnouncement], str | None]:
             form = cninfo_market_form(
                 start=start, end=end, page=page, category=category, searchkey=keyword
             )
@@ -1106,10 +1192,21 @@ class DashboardService:
                 payload = await self.gateway.post(
                     CNINFO_QUERY, urlencode(form).encode(), _CNINFO_HEADERS, content_type=_FORM_TYPE
                 )
-                for row in parse_cninfo_market(payload):
-                    found.setdefault(row.announcement_id, row)
+                return list(parse_cninfo_market(payload)), None
             except ProviderError as error:
-                problems.append(f"{keyword or category or f'第{page}页'}：{error.message}")
+                return [], f"{keyword or category or f'第{page}页'}：{error.message}"
+
+        # 九路检索互不依赖：并发发出（出口限速仍然生效）；按原顺序合并，去重结果不变。
+        results = await asyncio.gather(
+            *(one(category, keyword, page) for category, keyword, page in ANNOUNCEMENT_QUERIES)
+        )
+        found: dict[str, MarketAnnouncement] = {}
+        problems: list[str] = []
+        for rows_found, problem in results:
+            for row in rows_found:
+                found.setdefault(row.announcement_id, row)
+            if problem:
+                problems.append(problem)
         if not found and problems:
             raise ProviderError(
                 code="UPSTREAM_ERROR", message="巨潮检索全部失败：" + problems[0], status_code=502
@@ -1123,20 +1220,33 @@ class DashboardService:
         limit_up: list[tuple[str, int | None]] = []
         limit_down: list[str] = []
         gainers: list[str] = []
-        try:
-            ranks = [(row.code, row.rank) for row in (await self.industry.ths_stocks()).value]
-        except ProviderError as error:
-            notes.append(f"同花顺热榜：{error.message}")
-        pool, pool_section = await self._pool()
+
+        async def guarded[V](pending: Awaitable[V]) -> V | ProviderError:
+            try:
+                return await pending
+            except ProviderError as error:
+                return error
+
+        # 三路来源互不依赖，并发取；某一路失败只在 notes 里记一笔。
+        ths, pool_result, gain = await asyncio.gather(
+            guarded(self.industry.ths_stocks()),
+            self._pool(),
+            guarded(self._gainers()),
+        )
+        if isinstance(ths, ProviderError):
+            notes.append(f"同花顺热榜：{ths.message}")
+        else:
+            ranks = [(row.code, row.rank) for row in ths.value]
+        pool, pool_section = pool_result
         if pool is not None:
             limit_up = [(row.code, row.streak) for row in pool.limit_up_stocks]
             limit_down = [row.code for row in pool.limit_down_stocks]
         else:
             notes.append(f"涨停池：{pool_section.reason}")
-        try:
-            gainers = [row.code for row in _filter_gainers((await self._gainers()).value)]
-        except ProviderError as error:
-            notes.append(f"涨幅榜：{error.message}")
+        if isinstance(gain, ProviderError):
+            notes.append(f"涨幅榜：{gain.message}")
+        else:
+            gainers = [row.code for row in _filter_gainers(gain.value)]
         heat = rules.stock_heat(
             ths_ranks=ranks, limit_up=limit_up, limit_down=limit_down, gainers=gainers
         )
@@ -1473,18 +1583,39 @@ def attach_repositories(service: DashboardService, engine: Engine) -> None:
         service.snapshots = DashboardSnapshotRepository(engine)
 
 
-async def keep_macro_warm(engine: Engine, interval_seconds: float = 300.0) -> None:
-    """启动后立即预热一次，之后定期续命缓存；任何异常只记日志，不影响接口。"""
+_WARM_TRADING_SECONDS = 30.0
+_WARM_IDLE_SECONDS = 300.0
+_FRIDAY = 4
+_TRADING_OPEN = time(9, 10)
+_TRADING_CLOSE = time(15, 20)
 
-    attach_repositories(get_dashboard_service(), engine)
+
+def warm_interval(moment: datetime) -> float:
+    """交易时段（工作日 9:10–15:20）每 30 秒续一次缓存，其余时间 5 分钟一次。"""
+
+    local = moment.astimezone(SHANGHAI)
+    trading = local.weekday() <= _FRIDAY and _TRADING_OPEN <= local.time() <= _TRADING_CLOSE
+    return _WARM_TRADING_SECONDS if trading else _WARM_IDLE_SECONDS
+
+
+async def keep_dashboard_warm(engine: Engine) -> None:
+    """启动后立即预热一次，之后定期续命宏观与行情缓存；任何异常只记日志，不影响接口。
+
+    用户请求只读缓存（过期后也是先给旧值、后台刷新），所以首屏速度不再取决于上游当下快不快。
+    """
+
+    service = get_dashboard_service()
+    attach_repositories(service, engine)
     while True:
-        try:
-            await get_dashboard_service().warm_macro()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning("macro warm-up failed", exc_info=True)
-        await asyncio.sleep(interval_seconds)
+        results = await asyncio.gather(
+            service.warm_macro(), service.warm_market(), return_exceptions=True
+        )
+        for name, result in zip(("macro", "market"), results, strict=True):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                logger.warning("%s warm-up failed", name, exc_info=result)
+        await asyncio.sleep(warm_interval(service.now()))
 
 
 def get_dashboard_service() -> DashboardService:
