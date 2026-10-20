@@ -35,6 +35,10 @@ class ToolResult:
     truncated: int = 0
     # 时间序列里要画线 / 出指标卡的那一列；为空表示按表格呈现。
     primary: str | None = None
+    # 用到了情景假设的计算结果：它的数字不是事实，只能出现在写明假设的句子里。
+    hypothetical: bool = False
+    # (假设名, 假设值)，按出现顺序；连环计算会把上游的假设一起带上。
+    assumptions: tuple[tuple[str, str], ...] = ()
 
     @property
     def ok(self) -> bool:

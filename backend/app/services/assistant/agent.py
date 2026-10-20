@@ -36,7 +36,7 @@ from app.services.assistant.tools.macro import SERIES
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "assistant_v2"
+PROMPT_VERSION = "assistant_v3"
 MAX_PARALLEL = 3
 PLANNER_MAX_CALLS = 4
 MAX_ENTITIES = 8

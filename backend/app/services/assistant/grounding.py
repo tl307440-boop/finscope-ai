@@ -10,6 +10,8 @@
    写出的数字不带负号时按绝对值比较（「下降 0.3」对得上 -0.3），带负号必须逐位同号。
 5. 三类放行：紧贴字母的数字（`Q3`、`M2`、`DGS10`）；序列名里的数字（`10年期`、`沪深300`，
    须在证据标题 / 列名里出现）；标识符（证据表里文字列出现过的数字串，如证券代码）。
+6. 情景假设（`calc` 的 `assume` 及用它算出的结果）只在句子写明「假设 / 若 / 如果 / 情景」时
+   放行，免得假设数字被写成事实。
 
 返回 `GroundingResult`；`unmatched` 只用于排错和给改写请求，不展示给用户。
 """
@@ -36,6 +38,7 @@ _BLANKS_RE = re.compile(r"[ \t\u3000]+")
 # 列名里的统计窗口：「5 年分位」「36 个月分位」。窗口长度是资料写明的口径，不是数据值。
 _WINDOW_IN_NAME = re.compile(r"(\d+)(年|个月)(?=分位)")
 _UNIT_AFTER = re.compile(r"[ \t\u3000]*(年|个月)")
+_HYPOTHETICAL = re.compile(r"假设|假定|假如|如果|倘若|情景|(?<!倘)若(?!干)")
 
 # 日期按精度从长到短依次处理，处理过的片段替换成空格，避免被后面的规则重复匹配。
 _DATE_FULL_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
@@ -60,6 +63,8 @@ class Grounder:
     def __init__(self, book: EvidenceBook, sources: frozenset[int] = frozenset()) -> None:
         self._numbers = book.numbers()
         self._abs_numbers = [abs(item) for item in self._numbers]
+        self._assumed = book.hypothetical_numbers()
+        self._abs_assumed = [abs(item) for item in self._assumed]
         self._dates = book.dates()
         # 序列名按去掉空格后的形式比较：列名写「5 年分位」，模型写「5年分位」也是同一个名字。
         self._names = _BLANKS_RE.sub("", book.name_text())
@@ -79,8 +84,9 @@ class Grounder:
         body = _NTH.sub(lambda m: " " * len(m.group()), body)
         unmatched: list[str] = []
         body = self._strip_dates(body, unmatched)
+        hypothetical = _HYPOTHETICAL.search(body) is not None
         for match in _NUMBER.finditer(body):
-            if self._number_ok(body, match):
+            if self._number_ok(body, match, hypothetical=hypothetical):
                 continue
             unmatched.append(match.group().strip())
         return GroundingResult(
@@ -127,7 +133,7 @@ class Grounder:
         return any(d.month == parts[0] for d in self._dates)
 
     # ------------------------------------------------------------------ 数字
-    def _number_ok(self, text: str, match: re.Match[str]) -> bool:
+    def _number_ok(self, text: str, match: re.Match[str], *, hypothetical: bool) -> bool:
         digits = match.group(2)
         if digits in self._identifiers:
             return True
@@ -140,6 +146,8 @@ class Grounder:
         signed = match.group(1) is not None
         target = -value if signed else value
         pool = self._numbers if signed else self._abs_numbers
+        if hypothetical:
+            pool = [*pool, *(self._assumed if signed else self._abs_assumed)]
         exponent = value.as_tuple().exponent
         places = max(0, -exponent) if isinstance(exponent, int) else 0
         return any(_same(target, item, places) for item in pool)

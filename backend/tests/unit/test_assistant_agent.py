@@ -121,7 +121,7 @@ def test_tool_loop_answers_from_evidence_and_streams_in_order() -> None:
     assert {block["type"] for block in result.blocks} == {"line_chart", "metric_cards"}
     assert "".join(deltas(events)) == result.text
     trace = result.trace
-    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v2"
+    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v3"
     assert trace["model_calls"] == 2 and trace["usage"] == {"total_tokens": 5}
     assert [c["tool"] for c in trace["calls"]] == ["macro_series"]
 
@@ -141,6 +141,36 @@ def test_arithmetic_without_calc_is_blocked() -> None:
     assert result.trace["repaired"] is True
     assert result.trace["unmatched"] == ["1.5"]
     assert deltas(events) == ["请看图表。"]
+
+
+SCENARIO = (
+    "calc",
+    {
+        "op": "diff",
+        "inputs": [
+            {"evidence": "E1", "column": "value", "row": -1},
+            {"assume": 10, "label": "假设回落幅度"},
+        ],
+    },
+)
+
+
+def test_scenario_numbers_pass_when_the_sentence_says_it_is_a_hypothesis() -> None:
+    text = "最新是 323.0。若再回落 10，将降到 313。"
+    result, _events, _ = run(FakeModel(call(CPI), call(SCENARIO), say(text)))
+    assert (result.grounding, result.text) == ("full", text)
+    assumption = [block for block in notices(result) if block["code"] == "ASSUMPTION"]
+    assert assumption and assumption[0]["level"] == "info"
+    assert "假设回落幅度 = 10" in assumption[0]["message"]
+    assert "算得 313" in assumption[0]["message"]
+
+
+def test_scenario_numbers_written_as_facts_are_blocked() -> None:
+    model = FakeModel(call(CPI), call(SCENARIO), say("CPI 将降到 313。"), say("请看下方提示。"))
+    result, events, _ = run(model)
+    assert result.trace["repaired"] is True
+    assert result.trace["unmatched"] == ["313"]
+    assert deltas(events) == ["请看下方提示。"]
 
 
 def test_step_budget_forces_a_final_answer_without_tools() -> None:

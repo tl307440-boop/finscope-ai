@@ -122,6 +122,76 @@ def test_non_numeric_cell_is_rejected() -> None:
     assert "不是数字" in (outcome.reason or "")
 
 
+def test_assumptions_make_a_hypothetical_result() -> None:
+    # 「若预期市盈率从 30 倍降到 20 倍」：两个都是假设，没有引用资料。
+    result = _calc(
+        EvidenceBook(),
+        op="pct_change",
+        inputs=[{"assume": 20, "label": "压缩后市盈率"}, {"assume": 30, "label": "当前市盈率"}],
+    )
+    assert result.status == "ok"
+    assert result.rows == ({"value": "-33.3333"},)
+    assert result.hypothetical
+    assert result.assumptions == (("压缩后市盈率", "20"), ("当前市盈率", "30"))
+    assert result.title == "计算：涨跌幅（情景假设）"
+    assert result.source == "计算（基于 假设「压缩后市盈率」、假设「当前市盈率」）"
+    assert "20" not in result.source and "30" not in result.source
+
+
+def test_assumption_mixed_with_evidence_keeps_unit_and_date() -> None:
+    book = _book(_series(["2.9", "3.1"]))
+    result = _calc(book, op="diff", inputs=[_ref(-1), {"assume": 0.25, "label": "假设降息幅度"}])
+    assert result.rows == ({"value": "2.85"},)
+    assert result.columns[0].unit == "%"
+    assert result.as_of == date(2026, 10, 17)
+    assert result.hypothetical and result.assumptions == (("假设降息幅度", "0.25"),)
+
+
+def test_hypothesis_propagates_through_chained_calc() -> None:
+    book = _book(_series(["2.9", "3.1"]))
+    first = _calc(book, op="diff", inputs=[_ref(-1), {"assume": 0.5, "label": "冲击"}])
+    book.add(first)
+    follow = _calc(book, op="scale", inputs=[_ref(1, evidence="E2")], exponent=2)
+    assert follow.hypothetical
+    assert follow.assumptions == (("冲击", "0.5"),)
+    plain = _calc(book, op="scale", inputs=[_ref(1)], exponent=2)
+    assert not plain.hypothetical and plain.assumptions == ()
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        {"assume": 1},
+        {"label": "x"},
+        {"assume": 1, "label": "x", "evidence": "E1", "column": "value"},
+        {"evidence": "E1"},
+        {"column": "value"},
+        {"row": 1},
+        {},
+    ],
+)
+def test_each_input_is_either_a_reference_or_an_assumption(ref: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        CalcArgs.model_validate({"op": "mean", "inputs": [ref]})
+
+
+def test_out_of_range_assumption_is_reported() -> None:
+    result = _calc(EvidenceBook(), op="mean", inputs=[{"assume": 1e13, "label": "太大"}])
+    assert result.status == "unavailable"
+    assert "超出范围" in (result.reason or "")
+
+
+def test_calc_schema_stays_flat_for_models() -> None:
+    from app.services.assistant.tools.base import compact_schema
+
+    schema = compact_schema(CalcArgs)
+    item = schema["properties"]["inputs"]["items"]
+    properties = item["properties"]
+    assert set(properties) == {"evidence", "column", "row", "assume", "label"}
+    assert all("anyOf" not in field for field in properties.values())
+    assert properties["assume"]["type"] == "number"
+
+
 def test_model_cannot_pass_raw_numbers() -> None:
     with pytest.raises(ValueError):
         CalcArgs.model_validate({"op": "diff", "inputs": [{"value": "3"}, {"value": "2"}]})

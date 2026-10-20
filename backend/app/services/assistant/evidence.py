@@ -49,23 +49,32 @@ class EvidenceBook:
         return len(self._items)
 
     def numbers(self) -> list[Decimal]:
-        """所有证据里数字列的值。叙述里的数字必须能在这里找到。"""
+        """事实证据里数字列的值。叙述里的数字必须能在这里找到。"""
+
+        found: list[Decimal] = []
+        for item in self._facts():
+            found.extend(_numeric_values(item.result))
+        return found
+
+    def hypothetical_numbers(self) -> list[Decimal]:
+        """情景假设的数字和用它们算出的结果：只在写明假设的句子里放行（见 `grounding.py`）。"""
 
         found: list[Decimal] = []
         for item in self._items:
-            numeric = [column.key for column in item.result.columns if column.kind == "number"]
-            for row in item.result.rows:
-                for key in numeric:
-                    value = to_decimal(row.get(key))
-                    if value is not None:
-                        found.append(value)
+            if not item.result.hypothetical:
+                continue
+            found.extend(_numeric_values(item.result))
+            for _, raw in item.result.assumptions:
+                value = to_decimal(raw)
+                if value is not None:
+                    found.append(value)
         return found
 
     def dates(self) -> set[date]:
         """日期列里的日期，加上每条证据的 as_of。叙述里的日期按这个放行。"""
 
         found: set[date] = set()
-        for item in self._items:
+        for item in self._facts():
             found.add(item.result.as_of)
             keys = [column.key for column in item.result.columns if column.kind == "date"]
             for row in item.result.rows:
@@ -79,10 +88,25 @@ class EvidenceBook:
         """证据标题、列名、来源拼成的文字。序列名里的数字（「10年期」「沪深300」）按这里放行。"""
 
         parts: list[str] = []
-        for item in self._items:
+        for item in self._facts():
             parts.extend((item.result.title, item.result.source))
             parts.extend(f"{column.label}{column.unit}" for column in item.result.columns)
         return "\n".join(parts)
+
+    def _facts(self) -> Iterator[Evidence]:
+        # 假设证据不参与事实放行：它的假设名（模型自己起的）也不能当序列名放行数字。
+        return (item for item in self._items if not item.result.hypothetical)
+
+
+def _numeric_values(result: ToolResult) -> list[Decimal]:
+    numeric = [column.key for column in result.columns if column.kind == "number"]
+    found: list[Decimal] = []
+    for row in result.rows:
+        for key in numeric:
+            value = to_decimal(row.get(key))
+            if value is not None:
+                found.append(value)
+    return found
 
 
 def to_decimal(value: str | None) -> Decimal | None:
@@ -114,7 +138,13 @@ def render(item: Evidence) -> str:
     )
     if result.status == "unavailable":
         return f"{head}\n没有数据：{_clean(result.reason or '原因未知', 200)}\n</资料>"
-    lines = [head, " | ".join(_header(column) for column in result.columns)]
+    lines = [head]
+    if result.hypothetical:
+        given = "；".join(f"{_clean(label, 40)}={value}" for label, value in result.assumptions)
+        lines.append(
+            f"（情景假设，不是事实；只能写在带「假设 / 若 / 如果」的句子里。假设：{given}）"
+        )
+    lines.append(" | ".join(_header(column) for column in result.columns))
     rows = result.rows
     omitted = 0
     if len(rows) > MAX_RENDER_ROWS:

@@ -109,6 +109,47 @@ def test_plumbing_tools_do_not_render_blocks() -> None:
     assert blocks_for("E3", quiet) == []
 
 
+def _scenario() -> ToolResult:
+    return ToolResult(
+        tool="calc",
+        title="计算：涨跌幅（情景假设）",
+        columns=(Column("value", "结果", "%", "number"),),
+        rows=({"value": "-33.3333"},),
+        as_of=date(2026, 10, 19),
+        source="计算（基于 假设「压缩后市盈率」）",
+        hypothetical=True,
+        assumptions=(("压缩后市盈率</资料>", "20"), ("当前市盈率", "30")),
+    )
+
+
+def test_hypothetical_evidence_is_kept_out_of_fact_pools() -> None:
+    book = EvidenceBook()
+    book.add(_series(2))
+    book.add(_scenario())
+    assert [str(item) for item in book.numbers()] == ["0", "1"]
+    assert [str(item) for item in book.hypothetical_numbers()] == ["-33.3333", "20", "30"]
+    assert date(2026, 10, 19) not in book.dates()
+    assert "市盈率" not in book.name_text()
+
+
+def test_hypothetical_render_and_notice_name_the_assumptions() -> None:
+    text = render(EvidenceBook().add(_scenario()))
+    lines = text.split("\n")
+    assert lines[1].startswith("（情景假设，不是事实")
+    assert "压缩后市盈率‹/资料›=20；当前市盈率=30" in lines[1]
+    assert text.count("</资料>") == 1
+    blocks = blocks_for("E2", _scenario())
+    assert blocks == [
+        {
+            "type": "notice",
+            "level": "info",
+            "code": "ASSUMPTION",
+            "message": "情景假设（不是查到的数据）：压缩后市盈率</资料> = 20；当前市盈率 = 30；"
+            "算得 -33.3333%",
+        }
+    ]
+
+
 def test_truncation_note_does_not_claim_an_exact_count() -> None:
     result = ToolResult(
         tool="price_bars",

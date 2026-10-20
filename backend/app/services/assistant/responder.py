@@ -36,7 +36,7 @@ from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "assistant_v2.txt").read_text(
+SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "assistant_v3.txt").read_text(
     encoding="utf-8"
 )
 HISTORY_TURNS = 3  # 最近 3 个回合 = 6 条消息

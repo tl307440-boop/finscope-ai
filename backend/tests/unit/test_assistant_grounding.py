@@ -233,6 +233,63 @@ def test_unmatched_are_deduplicated_and_in_text_order() -> None:
     assert result.unmatched == ("7", "8")
 
 
+def _scenario_book() -> EvidenceBook:
+    """「若预期市盈率从 30 倍降到 20 倍」：两个假设和它们算出的 -33.3333%。"""
+
+    book = _cpi()
+    book.add(
+        ToolResult(
+            tool="calc",
+            title="计算：涨跌幅（情景假设）",
+            columns=(Column("value", "结果", "%", "number"),),
+            rows=({"value": "-33.3333"},),
+            as_of=date(2026, 10, 19),
+            source="计算（基于 假设「当前市盈率30倍」、假设「压缩后市盈率」）",
+            hypothetical=True,
+            assumptions=(("压缩后市盈率", "20"), ("当前市盈率30倍", "30")),
+        )
+    )
+    return book
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "若预期市盈率从 30 倍降到 20 倍，股价对应下跌 33.3%。",
+        "假设市盈率压缩到 20 倍，跌幅约 33.33%。",
+        "如果估值回到 20 倍，对应 -33.3333%。",
+        "在这个情景下，30 倍到 20 倍意味着下跌 33.3%。",
+        "倘若压缩到 20 倍，CPI 同比仍是 3.1%。",
+    ],
+)
+def test_hypothetical_numbers_pass_only_in_marked_sentences(text: str) -> None:
+    assert check(text, _scenario_book()).ok
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "预期市盈率从 30 倍降到 20 倍，股价下跌 33.3%。",
+        "股价下跌 33.3%。",
+        "当前市盈率 30 倍。",  # 假设名里的数字不能当序列名放行
+        "若干机构给出 20 倍估值。",  # 「若干」不是假设
+    ],
+)
+def test_hypothetical_numbers_are_rejected_as_facts(text: str) -> None:
+    assert not check(text, _scenario_book()).ok
+
+
+def test_hypothetical_evidence_does_not_widen_dates() -> None:
+    # 只有假设的计算以今天为截止日；今天不是任何事实资料的日期，不能借它放行。
+    assert not check("2026-10-19 若市盈率为 20 倍。", _scenario_book()).ok
+    assert check("2026-10-17 若市盈率为 20 倍。", _scenario_book()).ok
+
+
+def test_marker_does_not_let_unrelated_numbers_through() -> None:
+    result = check("若市盈率为 20 倍，利润增长 15%。", _scenario_book())
+    assert not result.ok and result.unmatched == ("15%",)
+
+
 def test_grounder_can_be_reused_across_sentences() -> None:
     grounder = Grounder(_cpi())
     assert grounder.check("最新 3.1%。").ok
