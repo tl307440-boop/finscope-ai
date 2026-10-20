@@ -6,13 +6,15 @@ from pathlib import Path
 from time import monotonic
 from uuid import UUID
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError
 from app.db.models.document import Document
+from app.repositories.corpus import CorpusRepository
 from app.repositories.document_chunks import ChunkRepository, StoredChunk
 from app.repositories.documents import DocumentRepository, OwnedFile
+from app.services.corpus_ingest import mirror_user_document
 from app.services.pdf_chunks import TextChunk, chunk_pages
 from app.services.pdf_text import (
     DEFAULT_TIME_BUDGET_SECONDS,
@@ -281,8 +283,9 @@ def _index_claimed(
                 extracted.parser_name,
                 extracted.parser_version,
             )
+        merged = _with_tables(pages)
         prepared = chunk_pages(
-            _with_tables(pages),
+            merged,
             target_tokens=target_tokens,
             max_tokens=max_tokens,
             overlap_tokens=overlap_tokens,
@@ -304,6 +307,7 @@ def _index_claimed(
             search_texts,
             page_count=len(pages),
         )
+        _mirror(chunks, claimed, merged)
     except PdfTextError as exc:
         chunks.finish(claimed.id, "failed", str(exc)[:200])
         return IndexOutcome("failed", 0, str(exc))
@@ -317,6 +321,55 @@ def _index_claimed(
         extracted.parser_name,
         extracted.parser_version,
     )
+
+
+def backfill_corpus_mirrors(engine: Engine, root: Path) -> tuple[int, int]:
+    """给已经解析好、还没有语料库副本的文件补副本；返回（补上的, 失败的）。可重复运行。"""
+
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT d.id, d.owner_id, d.title, d.storage_path, d.parse_status, d.parse_error,
+                       d.page_count, d.uploaded_at
+                FROM documents AS d
+                WHERE d.parse_status = 'parsed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM corpus_documents AS c WHERE c.user_document_id = d.id
+                  )
+                ORDER BY d.uploaded_at
+                """
+            )
+        ).all()
+    repo = CorpusRepository(engine)
+    done = failed = 0
+    for row in rows:
+        upload = OwnedFile(**row._mapping)
+        try:
+            extracted = extract_document(
+                _read_stored(root, upload.storage_path),
+                time_budget_seconds=settings.upload_parse_time_budget_seconds,
+                max_pages=settings.upload_max_pages,
+            )
+            mirror_user_document(repo, upload, _with_tables(extracted.pages))
+            done += 1
+        except (PdfTextError, OSError):
+            failed += 1
+    return done, failed
+
+
+def _mirror(chunks: ChunkRepository, claimed: OwnedFile, pages: list[PageText]) -> None:
+    """助手检索用的副本；写不进去只记日志，「我的文档」本身照常可用，可以用回补脚本补。"""
+
+    try:
+        mirror_user_document(CorpusRepository(chunks.engine), claimed, pages)
+    except Exception as exc:
+        logger.warning(
+            "corpus mirror failed document_id=%s error=%s", claimed.id, type(exc).__name__
+        )
 
 
 def _with_tables(pages: list[PageText]) -> list[PageText]:
