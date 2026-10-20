@@ -16,6 +16,7 @@
 """
 
 import json
+import logging
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -33,14 +34,16 @@ from app.services.assistant.tools import ToolRegistry
 from app.services.assistant.tools.base import ToolContext
 from app.services.assistant.tools.macro import SERIES
 
-PROMPT_VERSION = "assistant_v1"
+logger = logging.getLogger(__name__)
+
+PROMPT_VERSION = "assistant_v2"
 MAX_PARALLEL = 3
 PLANNER_MAX_CALLS = 4
 MAX_ENTITIES = 8
 
 NO_PLAN_TEXT = "没能理解这个问题，请换个问法，或直接说明要查的序列、证券或指标。"
-NO_TEXT_NOTICE = "没能生成可核对的文字回答，上面是查到的数据。"
-HIDDEN_NOTICE = "后续内容没能通过核对，已隐藏。"
+NO_TEXT_NOTICE = "没能生成可核对的文字回答，请看下方查到的数据。"
+HIDDEN_NOTICE = "后续内容没能通过核对，已隐藏；请看下方查到的数据。"
 IGNORED_CALL = "本轮同时调用的工具太多，这个调用被忽略；需要的话下一步再调用。"
 
 STEP_LABELS = {
@@ -351,9 +354,11 @@ class Agent:
         if failed is None:
             return pushed, "full"
         turn.unmatched.extend(failed.unmatched)
+        # 排错用：只记没对上的数字和日期（模型写的数，不是密钥或用户资料），不记整句。
+        logger.warning("助手回答有句子没通过核对：%s", ", ".join(failed.unmatched) or "引用无效")
         rewritten = self._rewrite(turn, pushed, failed)
         if rewritten is not None:
-            second = self._push(turn, grounder, rewritten, pushed)
+            second = self._push(turn, grounder, rewritten, pushed, skip_repeats=True)
             if second is None:
                 turn.repaired = True
                 return pushed, "full"
@@ -363,11 +368,23 @@ class Agent:
         return pushed, grounding
 
     def _push(
-        self, turn: _Turn, grounder: Grounder, text: str, pushed: list[str]
+        self,
+        turn: _Turn,
+        grounder: Grounder,
+        text: str,
+        pushed: list[str],
+        *,
+        skip_repeats: bool = False,
     ) -> GroundingResult | None:
-        """逐句校验并推送；遇到第一句不通过就停，返回它的校验结果。"""
+        """逐句校验并推送；遇到第一句不通过就停，返回它的校验结果。
 
+        `skip_repeats`：改写时模型常把已经展示过的前文原样再写一遍，这些句子不再推第二次。
+        """
+
+        shown = {item.strip() for item in pushed} if skip_repeats else set()
         for sentence in split_sentences(text):
+            if sentence.strip() and sentence.strip() in shown:
+                continue
             result = grounder.check(sentence)
             if not result.ok:
                 return result

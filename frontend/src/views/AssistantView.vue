@@ -6,8 +6,9 @@
  *  - GET  /api/v1/assistant/sessions                          问答列表（取最近一条，没有就新建）
  *  - POST /api/v1/assistant/sessions                          新建问答
  *  - GET  /api/v1/assistant/sessions/{id}/messages            历史消息（role/content/completion_status）
- *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 回传；只读 data: 行里的 delta / done，
- *                                                             其余字段（type、status）与 `: ping` 心跳注释行都忽略
+ *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 回传；读 data: 行里的 delta / done，
+ *                                                             以及 step / block（步骤与服务端生成的图表、表格、提示，
+ *                                                             见 api/assistantBlocks.ts）；`: ping` 心跳注释行忽略
  *                                                             （429 限流 / 409 同一条还在生成：显示后端给的原因）
  *  - POST /api/v1/assistant/sessions/{id}/messages/{cid}/cancel  取消未完成的回答
  *  - GET  /api/v1/analysis/model-status                       模型是否已配置
@@ -22,6 +23,15 @@
 import { computed, nextTick, onMounted, ref } from "vue"
 import { ChatDotRound, Cpu } from "@element-plus/icons-vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
+import {
+  applyEvent,
+  EMPTY_EXTRAS,
+  extrasFromMessage,
+  splitNotices,
+  type AssistantBlock,
+  type NoticeBlock,
+  type ReplyExtras,
+} from "../api/assistantBlocks"
 import { emptyReplyText, failureText, parseSseLine } from "../api/assistantStream"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { newUuid } from "../api/uuid"
@@ -30,6 +40,8 @@ import DeltaValue from "../components/ui/DeltaValue.vue"
 import MetricTile from "../components/ui/MetricTile.vue"
 import MiniSpark from "../components/ui/MiniSpark.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
+import ReplyBlocks from "../components/assistant/ReplyBlocks.vue"
+import ReplySteps from "../components/assistant/ReplySteps.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
@@ -44,6 +56,8 @@ interface Turn {
   role: string
   content: string
   completionStatus: string
+  /** 步骤与渲染块：流式时逐个事件并入，历史消息一次读出；旧消息为空。 */
+  extras: ReplyExtras
 }
 
 interface StockRow {
@@ -243,8 +257,17 @@ function readTurn(value: Record<string, unknown>): Turn[] {
       role,
       content,
       completionStatus: asString(value.completion_status) ?? "",
+      extras: role === "assistant" ? extrasFromMessage(value) : EMPTY_EXTRAS,
     },
   ]
+}
+
+function verdictBlocks(turn: Turn): NoticeBlock[] {
+  return splitNotices(turn.extras.blocks).verdict
+}
+
+function dataBlocks(turn: Turn): AssistantBlock[] {
+  return splitNotices(turn.extras.blocks).data
 }
 
 async function scrollToLatest(): Promise<void> {
@@ -277,8 +300,22 @@ async function ask(): Promise<void> {
   activeClientId.value = clientMessageId
   turns.value = [
     ...turns.value,
-    { id: clientMessageId, clientMessageId, role: "user", content: text, completionStatus: "completed" },
-    { id: clientMessageId, clientMessageId, role: "assistant", content: "", completionStatus: "streaming" },
+    {
+      id: clientMessageId,
+      clientMessageId,
+      role: "user",
+      content: text,
+      completionStatus: "completed",
+      extras: EMPTY_EXTRAS,
+    },
+    {
+      id: clientMessageId,
+      clientMessageId,
+      role: "assistant",
+      content: "",
+      completionStatus: "streaming",
+      extras: EMPTY_EXTRAS,
+    },
   ]
   question.value = ""
   await scrollToLatest()
@@ -345,10 +382,24 @@ async function readStream(response: Response): Promise<void> {
       if (delta !== null) {
         appendDelta(delta)
       }
+      applyExtras(payload)
       if (payload.done === true) {
         return
       }
     }
+  }
+}
+
+/** step / block / done 事件并入正在生成的那条；没有这些事件（旧协议）时什么也不变。 */
+function applyExtras(payload: Record<string, unknown>): void {
+  const target = turns.value.find((turn) => turn.id === activeClientId.value && turn.role === "assistant")
+  if (!target) {
+    return
+  }
+  const next = applyEvent(target.extras, payload)
+  if (next !== target.extras) {
+    target.extras = next
+    void scrollToLatest()
   }
 }
 
@@ -830,8 +881,11 @@ onMounted(() => {
                 <p v-if="turn.role === 'user'" class="doc-text user-text">{{ turn.content }}</p>
 
                 <template v-else>
-                  <p v-if="!turn.content" class="muted">{{ emptyReplyText(turn.completionStatus) }}</p>
-                  <template v-else>
+                  <ReplySteps :steps="turn.extras.steps" />
+                  <p v-if="!turn.content && !turn.extras.blocks.length" class="muted">
+                    {{ emptyReplyText(turn.completionStatus) }}
+                  </p>
+                  <template v-else-if="turn.content">
                     <template v-for="(block, index) in bodyBlocks(turn.content)" :key="index">
                       <h3 v-if="block.kind === 'section'" class="doc-section">{{ block.text }}</h3>
                       <ul v-else-if="isListLine(block.text)" class="doc-list">
@@ -850,6 +904,10 @@ onMounted(() => {
                       </p>
                     </template>
                   </template>
+
+                  <ReplyBlocks :blocks="verdictBlocks(turn)" />
+                  <ReplyBlocks :blocks="dataBlocks(turn)" />
+                  <p v-if="turn.extras.asOf" class="muted asof">资料截止 {{ turn.extras.asOf }}</p>
 
                   <footer v-if="pendingClientId === turn.clientMessageId" class="reply-actions">
                     <el-button size="small" @click="stop">停止</el-button>
@@ -1165,6 +1223,11 @@ onMounted(() => {
 
 .user-text {
   margin-bottom: 0;
+}
+
+.asof {
+  margin: 8px 0 0;
+  font-size: 12px;
 }
 
 .reply-actions {

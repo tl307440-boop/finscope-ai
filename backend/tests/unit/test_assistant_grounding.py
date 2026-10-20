@@ -165,6 +165,59 @@ def test_identifiers_and_series_names_are_allowed_but_not_values() -> None:
     assert not check("编号 11111111。", names).ok
 
 
+def _percentile_book() -> EvidenceBook:
+    """真实的期权 PCR 工具返回的列名：「成交量 PCR 5 年分位」，数字和汉字之间有空格。"""
+
+    return _book(
+        ToolResult(
+            tool="custom_indicator",
+            title="沪深300期权认沽认购比",
+            columns=(
+                Column("basket", "合约组", "", "text"),
+                Column("trade_date", "交易日", "", "date"),
+                Column("volume_pcr", "成交量 PCR", "", "number"),
+                Column("percentile", "成交量 PCR 5 年分位", "%", "number"),
+            ),
+            rows=(
+                {
+                    "basket": "沪深300ETF期权",
+                    "trade_date": "2026-10-16",
+                    "volume_pcr": "0.8512",
+                    "percentile": "32.1",
+                },
+            ),
+            as_of=AS_OF,
+            source="本系统自定义分析（交易所期权成交 / 指数估值数据）",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "成交量 PCR 的 5 年分位为 32.1%。",
+        "成交量 PCR 的5年分位为32.1%。",
+        "成交量 PCR 处于近 5 年的 32.1% 分位。",
+        "沪深 300 期权成交量 PCR 为 0.8512。",
+    ],
+)
+def test_window_named_in_a_column_label_is_not_a_value_even_with_spaces(text: str) -> None:
+    assert check(text, _percentile_book()).ok
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "近 3 年分位为 32.1%。",  # 资料里的窗口是 5 年
+        "5 个月分位为 32.1%。",  # 单位不同
+        "成交量 PCR 为 5。",  # 光秃秃的 5 仍然是数值
+        "5 年均值是 32.1%。",  # 资料里是「5 年分位」，不是均值
+    ],
+)
+def test_window_allowance_is_narrow(text: str) -> None:
+    assert not check(text, _percentile_book()).ok
+
+
 def test_letters_adjacent_to_digits_are_not_numbers() -> None:
     book = _cpi()
     assert check("看 Q3 的 M2 和 DGS10，最新 3.1%。", book).ok
