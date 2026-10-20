@@ -31,6 +31,11 @@ _NUMBER = re.compile(
 )
 _DIGITS = re.compile(r"\d+(?:\.\d+)?")
 _CJK_OR_LETTER = re.compile(r"[\u4e00-\u9fffA-Za-z]")
+_BLANKS = " \t\u3000"
+_BLANKS_RE = re.compile(r"[ \t\u3000]+")
+# 列名里的统计窗口：「5 年分位」「36 个月分位」。窗口长度是资料写明的口径，不是数据值。
+_WINDOW_IN_NAME = re.compile(r"(\d+)(年|个月)(?=分位)")
+_UNIT_AFTER = re.compile(r"[ \t\u3000]*(年|个月)")
 
 # 日期按精度从长到短依次处理，处理过的片段替换成空格，避免被后面的规则重复匹配。
 _DATE_FULL_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
@@ -56,7 +61,11 @@ class Grounder:
         self._numbers = book.numbers()
         self._abs_numbers = [abs(item) for item in self._numbers]
         self._dates = book.dates()
-        self._names = book.name_text()
+        # 序列名按去掉空格后的形式比较：列名写「5 年分位」，模型写「5年分位」也是同一个名字。
+        self._names = _BLANKS_RE.sub("", book.name_text())
+        self._windows = frozenset(
+            number + unit for number, unit in _WINDOW_IN_NAME.findall(self._names)
+        )
         self._identifiers = _identifiers(book)
         self._sources = sources
 
@@ -137,15 +146,29 @@ class Grounder:
 
     def _is_name_number(self, text: str, match: re.Match[str]) -> bool:
         start, end = match.start(2), match.end(2)
-        for left in range(0, 4):
-            for right in range(0, 4):
-                if left + right < 2 or start - left < 0 or end + right > len(text):
+        for left in range(0, 5):
+            for right in range(0, 5):
+                if start - left < 0 or end + right > len(text):
                     continue
-                candidate = text[start - left : end + right]
                 outside = text[start - left : start] + text[end : end + right]
-                if all(_CJK_OR_LETTER.match(char) for char in outside) and candidate in self._names:
+                # 空格只是排版：不算「名字里的字」，也不让名字变长。
+                letters = [char for char in outside if char not in _BLANKS]
+                if len(letters) < 2:
+                    continue
+                if not all(_CJK_OR_LETTER.match(char) or char in _BLANKS for char in outside):
+                    continue
+                candidate = _BLANKS_RE.sub("", text[start - left : end + right])
+                if candidate in self._names:
                     return True
-        return False
+        return self._is_window(text, match)
+
+    def _is_window(self, text: str, match: re.Match[str]) -> bool:
+        """「近 5 年的 32.1% 分位」里的 5 年：资料列名写明了 5 年分位，且这句话说的是分位。"""
+
+        unit = _UNIT_AFTER.match(text, match.end(2))
+        if unit is None or "分位" not in text:
+            return False
+        return match.group(2) + unit.group(1) in self._windows
 
 
 def check(text: str, book: EvidenceBook, sources: frozenset[int] = frozenset()) -> GroundingResult:

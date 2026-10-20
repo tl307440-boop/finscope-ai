@@ -83,6 +83,14 @@ def notices(result: AgentResult) -> list[dict[str, Any]]:
     return [block for block in result.blocks if block["type"] == "notice"]
 
 
+def test_prompt_file_carries_the_version_the_trace_records() -> None:
+    from app.services.assistant.agent import PROMPT_VERSION
+    from app.services.assistant.responder import SYSTEM_PROMPT
+
+    assert SYSTEM_PROMPT.rstrip().endswith(f"当前版本：{PROMPT_VERSION}")
+    assert "下表" in SYSTEM_PROMPT  # 数据块显示在正文下方，提示词要这样告诉模型
+
+
 # ---------------------------------------------------------------- 工具循环
 def test_tool_loop_answers_from_evidence_and_streams_in_order() -> None:
     model = FakeModel(call(CPI), say("最新是 323.0。"))
@@ -113,7 +121,7 @@ def test_tool_loop_answers_from_evidence_and_streams_in_order() -> None:
     assert {block["type"] for block in result.blocks} == {"line_chart", "metric_cards"}
     assert "".join(deltas(events)) == result.text
     trace = result.trace
-    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v1"
+    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v2"
     assert trace["model_calls"] == 2 and trace["usage"] == {"total_tokens": 5}
     assert [c["tool"] for c in trace["calls"]] == ["macro_series"]
 
@@ -210,6 +218,31 @@ def test_one_bad_sentence_is_rewritten_once() -> None:
     assert "9.99%" in instruction["content"] and "最新是 323.0。" in instruction["content"]
     assert model.calls[2][1] is None
     assert model.calls[2][0][:-1] == model.calls[1][0]
+
+
+def test_rewrite_that_repeats_the_shown_text_does_not_show_it_twice() -> None:
+    """模型被要求「接着往下写」，却把已展示的前文原样再写了一遍。"""
+
+    model = FakeModel(
+        call(CPI),
+        say("最新是 323.0。同比增长 9.99%。"),
+        say("最新是 323.0。同比变化请看图表。"),
+    )
+    result, events, _ = run(model)
+    assert (result.grounding, result.trace["repaired"]) == ("full", True)
+    assert deltas(events) == ["最新是 323.0。", "同比变化请看图表。"]
+    assert result.text == "最新是 323.0。同比变化请看图表。"
+
+
+def test_rewrite_that_only_repeats_and_then_fails_still_shows_the_prefix_once() -> None:
+    model = FakeModel(
+        call(CPI),
+        say("最新是 323.0。同比增长 9.99%。"),
+        say("最新是 323.0。又涨了 8.88%。"),
+    )
+    result, events, _ = run(model)
+    assert (result.grounding, result.text) == ("partial", "最新是 323.0。")
+    assert deltas(events) == ["最新是 323.0。"]
 
 
 def test_rewrite_that_still_fails_hides_the_rest() -> None:
