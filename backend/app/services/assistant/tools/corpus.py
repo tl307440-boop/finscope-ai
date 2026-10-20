@@ -66,7 +66,7 @@ class CorpusSearchArgs(BaseModel):
 class CorpusSearchTool:
     name: ClassVar[str] = "corpus_search"
     description: ClassVar[str] = (
-        "在本系统语料库里按关键词检索原文片段（目前收录：用户自己上传的文档）。"
+        "在本系统语料库里按关键词检索原文片段（用户自己上传的文档，以及已经抓取的公告正文）。"
         "适合问文档、公告、讲话里写了什么；数字、行情、宏观序列用其他数据工具，不要来这里查。"
         "返回的每段原文有编号 [n]，回答里用到它的内容就在句末写 [n]。"
     )

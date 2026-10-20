@@ -19,6 +19,8 @@ from app.services.corpus_text import en_query_terms, index_text, ts_config, zh_q
 from app.utils.time import utc_now
 
 USER_UPLOAD_SOURCE = UUID("00000000-0000-4000-8000-00000000c0a1")
+CNINFO_SOURCE = UUID("00000000-0000-4000-8000-00000000c0a2")
+SEC_SOURCE = UUID("00000000-0000-4000-8000-00000000c0a3")
 MAX_PASSAGES = 8
 PER_DOCUMENT = 2
 # 半衰期（天），按文档类型；不在表里的不衰减。数值待评测集校准（知识库设计 §6）。
@@ -137,6 +139,34 @@ class CorpusRepository:
                 {"doc": document.user_document_id},
             )
             return _insert(connection, document, chunks, 1)
+
+    def latest_passages(
+        self, *, source_id: UUID, url: str, limit: int = MAX_PASSAGES
+    ) -> list[Passage]:
+        """某篇公告最新版本的前几块，按原文顺序。还没抓过就返回空。"""
+
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT c.id, c.document_id, d.title, s.publisher, d.kind, d.doc_type,
+                        d.canonical_url, d.published_at, c.content, 0 AS rank, c.section_title,
+                        c.page_start, c.page_end, d.symbol, d.period
+                    FROM corpus_chunks c
+                    JOIN corpus_documents d ON d.id = c.document_id
+                    JOIN corpus_sources s ON s.id = d.source_id
+                    WHERE d.source_id = :source AND d.canonical_url = :url
+                        AND d.version = (
+                            SELECT max(version) FROM corpus_documents
+                            WHERE source_id = :source AND canonical_url = :url
+                        )
+                    ORDER BY c.chunk_index
+                    LIMIT :limit
+                    """
+                ),
+                {"source": source_id, "url": url, "limit": limit},
+            ).mappings()
+            return [_passage(row) for row in rows]
 
     def drop_user_document(self, user_document_id: UUID) -> None:
         with self.engine.begin() as connection:

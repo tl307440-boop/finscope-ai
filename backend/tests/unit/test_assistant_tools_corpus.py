@@ -128,5 +128,7 @@ def test_args_need_at_least_one_real_keyword() -> None:
 
 def test_tool_is_registered_only_when_enabled_and_never_cached() -> None:
     assert not {"corpus_search", "quote_table"} & set(default_registry().names)
-    assert {"corpus_search", "quote_table"} <= set(default_registry(corpus_min_rank=0.0).names)
+    assert {"corpus_search", "filing_fetch", "quote_table"} <= set(
+        default_registry(corpus_min_rank=0.0).names
+    )
     assert {"corpus_search", "quote_table"} <= NEVER_CACHED

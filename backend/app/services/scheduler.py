@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -53,6 +54,7 @@ from app.core.exceptions import AppError
 from app.db.models.document import Document
 from app.db.models.provider import DataProvider
 from app.providers.akshare_bars import DAILY_TARGETS, AdjustmentCode, target_for
+from app.providers.polite import contact_email
 from app.repositories.instruments import InstrumentRepository
 from app.repositories.macro import MacroRepository
 from app.repositories.macro_china import MacroChinaRepository, SeriesStoredSummary
@@ -196,6 +198,37 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                     failure_policy="遵守 SEC 公平访问政策：串行、限速、带 UA，不做并发抓取",
                 )
             )
+    if settings.scheduler_enable_cninfo_filings:
+        zone = settings.scheduler_timezone
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_cninfo_filings_frequent",
+                task_name="sync_cninfo_filings",
+                trigger=CronTrigger(
+                    day_of_week="mon-fri", hour="9-21", minute="0,30", timezone=zone
+                ),
+                builder=build_cninfo_frequent_tasks,
+                failure_policy="403/429 停止该来源，不换身份重试",
+            )
+        )
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_cninfo_filings_daily",
+                task_name="sync_cninfo_filings",
+                trigger=CronTrigger(day_of_week="mon-fri", hour=18, minute=0, timezone=zone),
+                builder=build_cninfo_daily_tasks,
+                failure_policy="403/429 停止该来源，不换身份重试",
+            )
+        )
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_cninfo_watchlist",
+                task_name="sync_cninfo_watchlist",
+                trigger=CronTrigger(day_of_week="mon-fri", hour="18,21", minute=5, timezone=zone),
+                builder=build_cninfo_watchlist_tasks,
+                failure_policy="403/429 停止该来源，不换身份重试",
+            )
+        )
     if settings.scheduler_enable_financial_metrics:
         triggers.append(
             TriggerRegistration(
@@ -700,6 +733,64 @@ def cn_bars_task(engine: Engine, symbol: str, start: date, end: date) -> Schedul
         failure_policy="最多重试 3 次",
         max_attempts=3,
     )
+
+
+_EARNINGS_MONTHS = frozenset({1, 4, 7, 8, 10})
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def build_cninfo_frequent_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """财报季（1、4、7、8、10 月）的工作日，全市场业绩预告和快报。"""
+
+    return _cninfo_tasks(engine, settings, now, mode="market", earnings_only=True)
+
+
+def build_cninfo_daily_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """非财报季每个工作日扫一次全市场业绩预告和快报。"""
+
+    return _cninfo_tasks(engine, settings, now, mode="market", earnings_only=False)
+
+
+def build_cninfo_watchlist_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """每个工作日扫全部用户自选股里的新公告。"""
+
+    return _cninfo_tasks(engine, settings, now, mode="watchlist", earnings_only=None)
+
+
+def _cninfo_tasks(
+    engine: Engine,
+    settings: Settings,
+    now: datetime,
+    *,
+    mode: str,
+    earnings_only: bool | None,
+) -> list[ScheduledTask]:
+    local = now.astimezone(_SHANGHAI)
+    if local.weekday() >= 5:
+        return []
+    in_season = local.month in _EARNINGS_MONTHS
+    if earnings_only is True and not in_season:
+        return []
+    if earnings_only is False and in_season:
+        return []
+    email = contact_email(settings.sec_user_agent)
+    return [
+        ScheduledTask(
+            task_name="sync_cninfo_filings" if mode == "market" else "sync_cninfo_watchlist",
+            job_type="corpus_cninfo_scan",
+            dedupe_key=f"corpus-cninfo:{mode}:{local.strftime('%Y-%m-%dT%H:%M')}",
+            scope={"mode": mode},
+            provider_id=_provider_id(engine, code="cninfo", name="巨潮资讯"),
+            failure_policy="403/429 停止该来源，不换身份重试",
+            unavailable_reason=None if email else "SEC_USER_AGENT 不是可用联系邮箱，不抓公告正文",
+        )
+    ]
 
 
 def build_sec_tasks(engine: Engine, settings: Settings, now: datetime) -> list[ScheduledTask]:
