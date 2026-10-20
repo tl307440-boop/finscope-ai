@@ -1,5 +1,3 @@
-from datetime import date
-
 from app.services.corpus_text import (
     context_header,
     detect_language,
@@ -38,10 +36,13 @@ def test_query_terms() -> None:
 
 def test_context_header_skips_empty_parts() -> None:
     header = context_header(
-        title="2026年前三季度业绩预告",
+        title="2026年前三季度业绩预亏公告",
         publisher="巨潮资讯",
-        published=date(2026, 10, 16),
         section="一、本期业绩预计情况",
         symbol="688825",
+        report_type="forecast",
     )
-    assert header == "巨潮资讯｜688825｜2026年前三季度业绩预告｜2026-10-16｜一、本期业绩预计情况"
+    assert header == "巨潮资讯｜688825｜2026年前三季度业绩预亏公告｜业绩预告｜一、本期业绩预计情况"
+    assert context_header(title="纪要", publisher="你上传的文档", report_type="other") == (
+        "你上传的文档｜纪要"
+    )

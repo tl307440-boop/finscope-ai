@@ -1,11 +1,11 @@
 """把解析好的文本写进语料库（知识库设计 §5）。
 
 第 3a-1 期只有用户文档：「我的文档」解析成功后另写一份副本（`kind=user`），
-按语料库自己的分块参数切块、带块头，只对上传者可见。抓取类来源（公告、美联储）在 3a-2 / 3a-3 接入。
+按语料库自己的分块参数切块、带块头，只对上传者可见。抓取类来源（公告、美联储）在 3a-2 / 3a-3 接入，
+切块同样走 `corpus_chunks`。
 """
 
 import hashlib
-from zoneinfo import ZoneInfo
 
 from app.repositories.corpus import USER_UPLOAD_SOURCE, CorpusRepository, NewChunk, NewDocument
 from app.repositories.documents import OwnedFile
@@ -20,11 +20,18 @@ from app.services.pdf_chunks import chunk_pages
 from app.services.pdf_text import PageText
 
 USER_PUBLISHER = "你上传的文档"
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
-def mirror_user_document(repo: CorpusRepository, upload: OwnedFile, pages: list[PageText]) -> int:
-    """写入（或整份替换）一份用户文档的副本，返回块数。`pages` 是已经并入表格行的页文本。"""
+def corpus_chunks(
+    pages: list[PageText],
+    *,
+    title: str,
+    publisher: str,
+    symbol: str | None = None,
+    period: str | None = None,
+    report_type: str | None = None,
+) -> list[NewChunk]:
+    """按语料库的分块参数切块，每块带上模板拼的块头。"""
 
     pieces = chunk_pages(
         pages,
@@ -32,11 +39,7 @@ def mirror_user_document(repo: CorpusRepository, upload: OwnedFile, pages: list[
         max_tokens=CHUNK_MAX_TOKENS,
         overlap_tokens=CHUNK_OVERLAP_TOKENS,
     )
-    if not pieces:
-        repo.drop_user_document(upload.id)
-        return 0
-    published = upload.uploaded_at.astimezone(_SHANGHAI).date()
-    chunks = [
+    return [
         NewChunk(
             content=piece.content,
             char_start=piece.char_start,
@@ -46,15 +49,30 @@ def mirror_user_document(repo: CorpusRepository, upload: OwnedFile, pages: list[
             page_start=piece.page_start,
             page_end=piece.page_end,
             context_header=context_header(
-                title=upload.title,
-                publisher=USER_PUBLISHER,
-                published=published,
+                title=title,
+                publisher=publisher,
                 section=piece.section_title,
+                symbol=symbol,
+                period=period,
+                report_type=report_type,
             ),
         )
         for piece in pieces
     ]
-    body = "\n".join(piece.content for piece in pieces)
+
+
+def content_hash(chunks: list[NewChunk]) -> str:
+    body = "\n".join(chunk.content for chunk in chunks)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def mirror_user_document(repo: CorpusRepository, upload: OwnedFile, pages: list[PageText]) -> int:
+    """写入（或整份替换）一份用户文档的副本，返回块数。`pages` 是已经并入表格行的页文本。"""
+
+    chunks = corpus_chunks(pages, title=upload.title, publisher=USER_PUBLISHER)
+    if not chunks:
+        repo.drop_user_document(upload.id)
+        return 0
     repo.replace_user_document(
         NewDocument(
             source_id=USER_UPLOAD_SOURCE,
@@ -62,9 +80,9 @@ def mirror_user_document(repo: CorpusRepository, upload: OwnedFile, pages: list[
             kind="user",
             title=upload.title,
             doc_type="upload",
-            language=detect_language(body),
+            language=detect_language("\n".join(chunk.content for chunk in chunks)),
             published_at=upload.uploaded_at,
-            content_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            content_hash=content_hash(chunks),
             authority="user",
             owner_user_id=upload.owner_id,
             user_document_id=upload.id,

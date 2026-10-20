@@ -7,7 +7,6 @@
 
 import re
 from collections.abc import Sequence
-from datetime import date
 
 from app.services.text_embed import search_tokens
 
@@ -55,19 +54,32 @@ def en_query_terms(keywords: Sequence[str]) -> list[str]:
     return [term for term in dict.fromkeys(terms) if term]
 
 
+REPORT_TYPE_LABELS = {
+    "annual": "年度报告",
+    "semiannual": "半年度报告",
+    "q1": "一季度报告",
+    "q3": "三季度报告",
+    "forecast": "业绩预告",
+    "express": "业绩快报",
+    "inquiry": "问询函回复",
+}
+
+
 def context_header(
     *,
     title: str,
     publisher: str,
-    published: date,
     section: str | None = None,
     symbol: str | None = None,
     period: str | None = None,
+    report_type: str | None = None,
 ) -> str:
-    """块头：说明这一块属于哪篇文档。
+    """块头：说明这一块属于哪篇文档（公司、代码、标题、报告类型、期次、章节）。
 
-    用模板拼，不调模型（知识库设计 §2「便宜版 Contextual Retrieval」）。
+    用模板拼，不调模型（知识库设计 §2「便宜版 Contextual Retrieval」）。不放发布日：日期里的数字
+    会让「10月份 CPI」命中 10 月发布的 9 月数据；时间范围交给 `since` / `until` 过滤。
     """
 
-    parts = [publisher, symbol or "", title, period or "", published.isoformat(), section or ""]
+    label = REPORT_TYPE_LABELS.get(report_type or "", "")
+    parts = [publisher, symbol or "", title, label, period or "", section or ""]
     return "｜".join(part.strip() for part in parts if part and part.strip())
