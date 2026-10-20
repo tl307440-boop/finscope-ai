@@ -6,6 +6,7 @@
 import { authorizedFetch, readJson, timeoutSignal } from "./client"
 import { FetchFailure, getData, parseSection, unwrap, type Section, type SourceRef } from "./industryMarket"
 import { asBool, asList, asNumber, asRecord, asString, listOf } from "./json"
+import { ATTEMPT_TIMEOUTS_MS } from "./slotCache"
 
 export type IndexPeriod = "min" | "day" | "week" | "month"
 
@@ -308,43 +309,60 @@ export interface WatchOverview {
 
 type Refresh = () => Promise<string | null>
 
-/** 后端单个上游最长 25 秒（含重试），再留出聚合余量；超过就放弃，交给自动重试。 */
-const REQUEST_TIMEOUT_MS = 40_000
-
-function timed(): RequestInit {
-  return { signal: timeoutSignal(REQUEST_TIMEOUT_MS) }
+/**
+ * 每个请求都带总时限，默认取首次尝试的预算；`withRetry` 会把更短的重试预算传进来。
+ * 没有时限，卡住的连接会让页面无限转圈，自动重试也无从触发。
+ */
+function timed(timeoutMs: number): RequestInit {
+  return { signal: timeoutSignal(timeoutMs) }
 }
 
-export async function fetchMarket(): Promise<MarketOverview> {
-  return parseMarket(await getData("/api/v1/dashboard/market", timed()))
+const FIRST_ATTEMPT_MS: number = ATTEMPT_TIMEOUTS_MS[0]
+
+export async function fetchMarket(timeoutMs = FIRST_ATTEMPT_MS): Promise<MarketOverview> {
+  return parseMarket(await getData("/api/v1/dashboard/market", timed(timeoutMs)))
 }
 
-export async function fetchIndexBars(symbol: string, period: IndexPeriod): Promise<IndexBars> {
+export async function fetchIndexBars(
+  symbol: string,
+  period: IndexPeriod,
+  timeoutMs = FIRST_ATTEMPT_MS,
+): Promise<IndexBars> {
   const query = `symbol=${encodeURIComponent(symbol)}&period=${period}`
-  return parseIndexBars(await getData(`/api/v1/dashboard/index-bars?${query}`, timed()))
+  return parseIndexBars(await getData(`/api/v1/dashboard/index-bars?${query}`, timed(timeoutMs)))
 }
 
-export async function fetchMacro(): Promise<MacroOverview> {
-  return parseMacro(await getData("/api/v1/dashboard/macro", timed()))
+export async function fetchMacro(timeoutMs = FIRST_ATTEMPT_MS): Promise<MacroOverview> {
+  return parseMacro(await getData("/api/v1/dashboard/macro", timed(timeoutMs)))
 }
 
-export async function fetchBoards(): Promise<BoardsOverview> {
-  return parseBoards(await getData("/api/v1/dashboard/boards", timed()))
+export async function fetchBoards(timeoutMs = FIRST_ATTEMPT_MS): Promise<BoardsOverview> {
+  return parseBoards(await getData("/api/v1/dashboard/boards", timed(timeoutMs)))
 }
 
-export async function fetchStocks(): Promise<StocksOverview> {
-  return parseStocks(await getData("/api/v1/dashboard/stocks", timed()))
+export async function fetchStocks(timeoutMs = FIRST_ATTEMPT_MS): Promise<StocksOverview> {
+  return parseStocks(await getData("/api/v1/dashboard/stocks", timed(timeoutMs)))
 }
 
-export async function fetchAnnouncements(): Promise<AnnouncementsOverview> {
-  return parseAnnouncements(await getData("/api/v1/dashboard/announcements", timed()))
+export async function fetchAnnouncements(timeoutMs = FIRST_ATTEMPT_MS): Promise<AnnouncementsOverview> {
+  return parseAnnouncements(await getData("/api/v1/dashboard/announcements", timed(timeoutMs)))
 }
 
-export async function fetchWatch(groupId: string, token: string | null, refresh: Refresh): Promise<WatchOverview> {
+export async function fetchWatch(
+  groupId: string,
+  token: string | null,
+  refresh: Refresh,
+  timeoutMs = FIRST_ATTEMPT_MS,
+): Promise<WatchOverview> {
   const query = groupId ? `?group_id=${encodeURIComponent(groupId)}` : ""
   let response: Response
   try {
-    response = await authorizedFetch(`/api/v1/dashboard/watch${query}`, { method: "GET", ...timed() }, token, refresh)
+    response = await authorizedFetch(
+      `/api/v1/dashboard/watch${query}`,
+      { method: "GET", ...timed(timeoutMs) },
+      token,
+      refresh,
+    )
   } catch {
     throw new FetchFailure("网络连接失败，请稍后重试")
   }
