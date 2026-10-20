@@ -113,6 +113,12 @@ def test_dates_must_exist_in_evidence_at_the_written_precision() -> None:
     assert not check("2025年的读数是 3.1%。", book).ok
     assert not check("2026年9月2日的读数是 3.1%。", book).ok
     assert not check("2026-13-01 的读数是 3.1%。", book).ok  # 不存在的日期
+    # 数字和年月日之间带空格也按日期核对，不当成裸数字。
+    assert check("2026 年 9 月 1 日的读数是 3.1%。", book).ok
+    assert check("9 月的读数是 3.1%。", book).ok and check("9 月 1 日是 3.1%。", book).ok
+    assert check("2026 年 9 月读数 3.1%。", book).ok
+    assert not check("3 月的读数是 3.1%。", book).ok
+    assert not check("2026 年 9 月 2 日的读数是 3.1%。", book).ok
 
 
 def test_list_ordinals_and_nth_are_ignored_but_leading_decimals_are_not() -> None:

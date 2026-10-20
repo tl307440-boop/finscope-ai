@@ -2,7 +2,8 @@
 
 进程内 LRU，最多 256 条，存活 5 分钟；键为（工具名、规范化参数、实际时点）。
 `watchlist` 是用户自己的数据且随时会改，不缓存；`corpus_search` 的结果含用户私有文档，
-也不缓存；`unavailable` 可能马上就同步好了，也不缓存。
+也不缓存；`quote_table` 按本回合的来源编号核对，换个回合就不成立，不缓存；
+`unavailable` 可能马上就同步好了，也不缓存。
 缓存里的值是不可变的 `ToolResult`，所以不同用户、不同回合共用是安全的（缓存的都是公共数据）。
 """
 
@@ -16,7 +17,7 @@ from typing import Any
 
 from app.services.assistant.results import ToolResult
 
-NEVER_CACHED = frozenset({"watchlist", "corpus_search"})
+NEVER_CACHED = frozenset({"watchlist", "corpus_search", "quote_table"})
 CacheKey = tuple[str, str, str]
 
 

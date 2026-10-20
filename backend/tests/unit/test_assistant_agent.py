@@ -30,6 +30,7 @@ from app.services.assistant.results import Column, ToolResult
 from app.services.assistant.tools import CalcTool, ToolRegistry
 from app.services.assistant.tools.base import ToolContext
 from app.services.assistant.tools.macro import SERIES
+from app.services.assistant.tools.quote import QuoteTableTool
 from sqlalchemy import create_engine
 
 from assistant_fakes import (
@@ -235,6 +236,29 @@ def test_only_cited_sources_are_listed() -> None:
     seen = model.calls[1][0][-1]["content"]
     assert "[1] 调研纪要.pdf｜你上传的文档｜2026-09-30｜第 2 页" in seen
     assert "[2] 调研纪要.pdf" in seen and "原文：公司计划在 2027 年新增两条产线。" in seen
+
+
+def test_quote_table_becomes_a_table_block_and_a_bad_one_stays_with_the_model() -> None:
+    good = {"source": 1, "original": "三季度良率提升到 92%", "stance": "利好", "note": "良率到 92%"}
+    bad = {**good, "original": "良率大幅提升到 95%"}
+    model = FakeModel(
+        call(CORPUS),
+        call(("quote_table", {"rows": [bad]})),
+        call(("quote_table", {"rows": [good]})),
+        say("良率继续改善[1]。"),
+    )
+    result, events, _ = run(model, extra_tools=(FakeCorpus(), QuoteTableTool()))
+    assert result.text == "良率继续改善[1]。"
+    assert [block["type"] for block in result.blocks] == ["table"]  # 摘错的那次不出提示
+    assert result.blocks[0]["rows"][0]["original"] == "三季度良率提升到 92%"
+    told = model.calls[2][0][-1]["content"]
+    assert "原文不是来源 [1] 里的原话" in told
+    assert [s["n"] for s in result.sources] == [1]
+    assert [e["status"] for e in events if e["type"] == "step" and e["status"] != "running"] == [
+        "ok",
+        "unavailable",
+        "ok",
+    ]
 
 
 def test_step_budget_forces_a_final_answer_without_tools() -> None:

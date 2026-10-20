@@ -26,6 +26,7 @@ from app.services.assistant.tools.market import (
     InstrumentSearchTool,
     PriceBarsTool,
 )
+from app.services.assistant.tools.quote import QuoteTableTool
 
 logger = logging.getLogger(__name__)
 MAX_ARGUMENT_CHARS = 4000
@@ -125,7 +126,7 @@ class ToolRegistry:
 def default_registry(
     cache: ToolCache | None = None, *, corpus_min_rank: float | None = None
 ) -> ToolRegistry:
-    """`corpus_min_rank` 为 None 时不开放语料检索。"""
+    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。"""
 
     tools: list[Tool] = [
         BoardStrengthTool(),
@@ -139,7 +140,7 @@ def default_registry(
         WatchlistTool(),
     ]
     if corpus_min_rank is not None:
-        tools.append(CorpusSearchTool(min_rank=corpus_min_rank))
+        tools.extend((CorpusSearchTool(min_rank=corpus_min_rank), QuoteTableTool()))
     return ToolRegistry(tools, cache)
 
 

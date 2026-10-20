@@ -57,6 +57,7 @@ STEP_LABELS = {
     "watchlist": "读我的自选",
     "calc": "计算",
     "corpus_search": "检索资料",
+    "quote_table": "整理原文摘录",
 }
 
 Emit = Callable[[dict[str, Any]], None]

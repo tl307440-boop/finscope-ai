@@ -58,6 +58,8 @@ class ToolResult:
     assumptions: tuple[tuple[str, str], ...] = ()
     # 检索类工具的原文片段；片段里的数字和日期只对引用了它的句子放行（见 `grounding.py`）。
     passages: tuple[Passage, ...] = ()
+    # 模型整理的原文摘录表（`quote_table`）：内容已核对过，但它是模型写的，不能反过来放行叙述。
+    excerpt: bool = False
 
     @property
     def ok(self) -> bool:

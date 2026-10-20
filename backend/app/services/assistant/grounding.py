@@ -14,6 +14,7 @@
    放行，免得假设数字被写成事实。
 7. 检索到的原文片段（来源 [n]）里的数字和日期，只对写了 `[n]` 的句子放行：
    数字是真的、却挂错了出处，照样拦（知识库设计 §7「按引用核对」）。
+8. 模型写的东西（情景假设的名字、`quote_table` 摘录表的标题和文字）不进第 3–5 条的放行范围。
 
 返回 `GroundingResult`；`unmatched` 只用于排错和给改写请求，不展示给用户。
 """
@@ -45,12 +46,14 @@ _HYPOTHETICAL = re.compile(r"假设|假定|假如|如果|倘若|情景|(?<!倘)�
 
 # 日期按精度从长到短依次处理，处理过的片段替换成空格，避免被后面的规则重复匹配。
 _DATE_FULL_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
-_DATE_FULL_CN = re.compile(r"(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日")
-_DATE_YM_CN = re.compile(r"(\d{4})年\s*(\d{1,2})月(?!\d{1,2}日)")
+# 模型常在数字和「年 / 月 / 日」之间加空格（「9 月」），同样算日期。
+_S = r"[ \t\u3000]*"
+_DATE_FULL_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年\s*(\d{{1,2}}){_S}月\s*(\d{{1,2}}){_S}日")
+_DATE_YM_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年\s*(\d{{1,2}}){_S}月(?!{_S}\d{{1,2}}{_S}日)")
 _DATE_YM_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})(?![\d-])")
-_DATE_MD_CN = re.compile(r"(?<!\d)(\d{1,2})月\s*(\d{1,2})日")
-_DATE_Y_CN = re.compile(r"(?<!\d)(\d{4})[ \t\u3000]*年")
-_DATE_M_CN = re.compile(r"(?<!\d)(\d{1,2})月(?!\d)")
+_DATE_MD_CN = re.compile(rf"(?<!\d)(\d{{1,2}}){_S}月\s*(\d{{1,2}}){_S}日")
+_DATE_Y_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年")
+_DATE_M_CN = re.compile(rf"(?<!\d)(\d{{1,2}}){_S}月(?!\d)")
 _DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (_DATE_FULL_DASH, "ymd"),
     (_DATE_FULL_CN, "ymd"),
@@ -299,7 +302,7 @@ def _identifiers(book: EvidenceBook) -> frozenset[str]:
     """证据表里文字列出现过的数字串（证券代码、报告期标签等），不是数值。"""
 
     found: set[str] = set()
-    for item in book:
+    for item in book.facts():
         keys = [
             column.key for column in item.result.columns if column.kind == "text" and column.visible
         ]

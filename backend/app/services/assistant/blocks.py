@@ -15,6 +15,8 @@ from app.services.assistant.results import Column, ToolResult
 
 # 工具名 → 不出数据块（只在没数据时出提示）。
 QUIET_TOOLS = frozenset({"calc", "instrument_search", "corpus_search"})
+# 失败只说明模型摘抄错了，原因回给模型改，不给读者出提示。
+SILENT_FAILURES = frozenset({"quote_table"})
 MIN_CHART_POINTS = 3
 
 
@@ -24,6 +26,8 @@ def notice_block(level: str, code: str, message: str) -> dict[str, Any]:
 
 def blocks_for(evidence_id: str, result: ToolResult) -> list[dict[str, Any]]:
     if result.status == "unavailable":
+        if result.tool in SILENT_FAILURES:
+            return []
         return [
             notice_block("warning", "UNAVAILABLE", f"{result.title}：{result.reason or '没有数据'}")
         ]

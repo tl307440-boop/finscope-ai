@@ -71,7 +71,7 @@ class EvidenceBook:
         """事实证据里数字列的值。叙述里的数字必须能在这里找到。"""
 
         found: list[Decimal] = []
-        for item in self._facts():
+        for item in self.facts():
             found.extend(_numeric_values(item.result))
         return found
 
@@ -93,7 +93,7 @@ class EvidenceBook:
         """日期列里的日期，加上每条证据的 as_of。叙述里的日期按这个放行。"""
 
         found: set[date] = set()
-        for item in self._facts():
+        for item in self.facts():
             found.add(item.result.as_of)
             keys = [column.key for column in item.result.columns if column.kind == "date"]
             for row in item.result.rows:
@@ -107,14 +107,17 @@ class EvidenceBook:
         """证据标题、列名、来源拼成的文字。序列名里的数字（「10年期」「沪深300」）按这里放行。"""
 
         parts: list[str] = []
-        for item in self._facts():
+        for item in self.facts():
             parts.extend((item.result.title, item.result.source))
             parts.extend(f"{column.label}{column.unit}" for column in item.result.columns)
         return "\n".join(parts)
 
-    def _facts(self) -> Iterator[Evidence]:
-        # 假设证据不参与事实放行：它的假设名（模型自己起的）也不能当序列名放行数字。
-        return (item for item in self._items if not item.result.hypothetical)
+    def facts(self) -> Iterator[Evidence]:
+        """能放行叙述的证据。假设证据、摘录表的名字和文字是模型写的，不能当事实或序列名。"""
+
+        return (
+            item for item in self._items if not item.result.hypothetical and not item.result.excerpt
+        )
 
 
 def _numeric_values(result: ToolResult) -> list[Decimal]:
@@ -246,6 +249,12 @@ MAX_CELL_CHARS = 120
 
 def _clean(text: str, limit: int = MAX_CELL_CHARS) -> str:
     return text.translate(_INERT)[:limit]
+
+
+def as_shown(text: str) -> str:
+    """原文在资料文本里显示成的样子（不截断）；核对模型摘抄的原文时两边都按这个比。"""
+
+    return text.translate(_INERT)
 
 
 def _attr(text: str) -> str:
