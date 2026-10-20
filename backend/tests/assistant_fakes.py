@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any
 
 from app.services.assistant.llm_tools import ModelReply, ToolCall
-from app.services.assistant.results import Column, ToolResult
+from app.services.assistant.results import Column, Passage, ToolResult
 from app.services.assistant.tools.base import ToolContext
 from pydantic import BaseModel
 
@@ -44,6 +44,51 @@ class FakeSeries:
             source="FRED",
             primary="value",
         )
+
+
+class CorpusArgs(BaseModel):
+    keywords_zh: list[str]
+
+
+class FakeCorpus:
+    """假的 `corpus_search`：永远返回同两段原文（用户上传的调研纪要）。"""
+
+    name = "corpus_search"
+    description = "假的语料检索"
+    args_model = CorpusArgs
+
+    def run(self, ctx: ToolContext, args: Any) -> ToolResult:
+        return ToolResult(
+            tool="corpus_search",
+            title="良率",
+            columns=(),
+            rows=(),
+            as_of=date(2026, 9, 30),
+            source="本系统语料库",
+            passages=(
+                Passage(
+                    key="chunk-a",
+                    title="调研纪要.pdf",
+                    publisher="你上传的文档",
+                    corpus_kind="user",
+                    published=date(2026, 9, 30),
+                    content="管理层表示，三季度良率提升到 92%，产能利用率维持高位。",
+                    page_start=2,
+                    page_end=2,
+                ),
+                Passage(
+                    key="chunk-b",
+                    title="调研纪要.pdf",
+                    publisher="你上传的文档",
+                    corpus_kind="user",
+                    published=date(2026, 9, 30),
+                    content="公司计划在 2027 年新增两条产线。",
+                ),
+            ),
+        )
+
+
+CORPUS = ("corpus_search", {"keywords_zh": ["良率"]})
 
 
 class FakeModel:

@@ -173,6 +173,7 @@ class TurnService:
                 as_of=turn.as_of,
                 model=turn.model,
                 grounding=turn.grounding,
+                sources=turn.sources,
             )
         )
 

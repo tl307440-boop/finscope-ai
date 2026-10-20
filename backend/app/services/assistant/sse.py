@@ -72,16 +72,20 @@ def replay_events(
     as_of: date | None = None,
     model: str | None = None,
     grounding: str | None = None,
+    sources: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[str]:
     """把一条已经定稿的回答还原成事件序列；同一回答每次还原的字节完全相同。
 
-    旧回合（没有步骤和块）与 1a 的输出逐字节一致。
+    旧回合（没有步骤、块和来源）与 1a 的输出逐字节一致。来源排在正文之前，
+    正文里的 [n] 一出来就能画成角标。
     """
 
     if status == "failed":
         return tail_events(status)
     lines = [encode({"type": "step", **step}) for step in steps or ()]
     lines.extend(encode({"type": "block", "block": block}) for block in blocks or ())
+    if sources:
+        lines.append(encode({"type": "sources", "sources": list(sources)}))
     lines.extend(delta_events(text, size))
     lines.append(done_event(status, as_of=as_of, model=model, grounding=grounding))
     return lines

@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 from app.services.assistant.evidence import EvidenceBook
 from app.services.assistant.grounding import Grounder, check
-from app.services.assistant.results import Column, ToolResult
+from app.services.assistant.results import Column, Passage, ToolResult
 
 AS_OF = date(2026, 10, 17)
 
@@ -113,6 +113,12 @@ def test_dates_must_exist_in_evidence_at_the_written_precision() -> None:
     assert not check("2025年的读数是 3.1%。", book).ok
     assert not check("2026年9月2日的读数是 3.1%。", book).ok
     assert not check("2026-13-01 的读数是 3.1%。", book).ok  # 不存在的日期
+    # 数字和年月日之间带空格也按日期核对，不当成裸数字。
+    assert check("2026 年 9 月 1 日的读数是 3.1%。", book).ok
+    assert check("9 月的读数是 3.1%。", book).ok and check("9 月 1 日是 3.1%。", book).ok
+    assert check("2026 年 9 月读数 3.1%。", book).ok
+    assert not check("3 月的读数是 3.1%。", book).ok
+    assert not check("2026 年 9 月 2 日的读数是 3.1%。", book).ok
 
 
 def test_list_ordinals_and_nth_are_ignored_but_leading_decimals_are_not() -> None:
@@ -231,6 +237,148 @@ def test_no_numbers_passes_even_without_evidence() -> None:
 def test_unmatched_are_deduplicated_and_in_text_order() -> None:
     result = check("先是 7，再是 8，又是 7。", _cpi())
     assert result.unmatched == ("7", "8")
+
+
+def _scenario_book() -> EvidenceBook:
+    """「若预期市盈率从 30 倍降到 20 倍」：两个假设和它们算出的 -33.3333%。"""
+
+    book = _cpi()
+    book.add(
+        ToolResult(
+            tool="calc",
+            title="计算：涨跌幅（情景假设）",
+            columns=(Column("value", "结果", "%", "number"),),
+            rows=({"value": "-33.3333"},),
+            as_of=date(2026, 10, 19),
+            source="计算（基于 假设「当前市盈率30倍」、假设「压缩后市盈率」）",
+            hypothetical=True,
+            assumptions=(("压缩后市盈率", "20"), ("当前市盈率30倍", "30")),
+        )
+    )
+    return book
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "若预期市盈率从 30 倍降到 20 倍，股价对应下跌 33.3%。",
+        "假设市盈率压缩到 20 倍，跌幅约 33.33%。",
+        "如果估值回到 20 倍，对应 -33.3333%。",
+        "在这个情景下，30 倍到 20 倍意味着下跌 33.3%。",
+        "倘若压缩到 20 倍，CPI 同比仍是 3.1%。",
+    ],
+)
+def test_hypothetical_numbers_pass_only_in_marked_sentences(text: str) -> None:
+    assert check(text, _scenario_book()).ok
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "预期市盈率从 30 倍降到 20 倍，股价下跌 33.3%。",
+        "股价下跌 33.3%。",
+        "当前市盈率 30 倍。",  # 假设名里的数字不能当序列名放行
+        "若干机构给出 20 倍估值。",  # 「若干」不是假设
+    ],
+)
+def test_hypothetical_numbers_are_rejected_as_facts(text: str) -> None:
+    assert not check(text, _scenario_book()).ok
+
+
+def test_hypothetical_evidence_does_not_widen_dates() -> None:
+    # 只有假设的计算以今天为截止日；今天不是任何事实资料的日期，不能借它放行。
+    assert not check("2026-10-19 若市盈率为 20 倍。", _scenario_book()).ok
+    assert check("2026-10-17 若市盈率为 20 倍。", _scenario_book()).ok
+
+
+def test_marker_does_not_let_unrelated_numbers_through() -> None:
+    result = check("若市盈率为 20 倍，利润增长 15%。", _scenario_book())
+    assert not result.ok and result.unmatched == ("15%",)
+
+
+def _passage(key: str, content: str) -> Passage:
+    return Passage(
+        key=key,
+        title="2026年前三季度业绩预告",
+        publisher="你上传的文档",
+        corpus_kind="user",
+        published=date(2026, 10, 16),
+        content=content,
+    )
+
+
+def _cited_book() -> EvidenceBook:
+    book = _cpi()
+    book.add(
+        ToolResult(
+            tool="corpus_search",
+            title="业绩预告",
+            columns=(),
+            rows=(),
+            as_of=date(2026, 10, 16),
+            source="本系统语料库",
+            passages=(
+                _passage("a", "预计2026年前三季度归母净利润12.5亿元至13亿元，同比增长30%。"),
+                _passage("b", "公司于10月12日召开董事会，审议通过议案共5项。"),
+            ),
+        )
+    )
+    return book
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "公司预计前三季度归母净利润 12.5 亿元至 13 亿元，同比增长 30%[1]。",
+        "预告覆盖 2026 年前三季度[1]。",
+        "董事会在 10月12日 召开，审议了 5 项议案[2]。",
+        "利润区间 12.5 亿元至 13 亿元[1]，董事会审议 5 项议案[2]。",
+        "预告显示利润增长 30%[1]，美国 CPI 同比为 3.1%。",  # 数据工具的数字照常放行
+    ],
+)
+def test_numbers_from_a_cited_passage_pass(text: str) -> None:
+    assert check(text, _cited_book()).ok
+
+
+@pytest.mark.parametrize(
+    ("text", "unmatched"),
+    [
+        ("预计净利润 12.5 亿元。", ("12.5",)),  # 没写出处
+        ("预计净利润 12.5 亿元[2]。", ("12.5",)),  # 挂错出处
+        ("审议通过 5 项议案[1]。", ("5",)),
+        ("董事会在 10月12日 召开[1]。", ("10月12日",)),
+        ("董事会在 10月12日 召开。", ("10月12日",)),
+    ],
+)
+def test_numbers_from_passages_need_the_right_citation(
+    text: str, unmatched: tuple[str, ...]
+) -> None:
+    result = check(text, _cited_book())
+    assert not result.ok and result.unmatched == unmatched
+
+
+def test_citation_numbers_must_exist() -> None:
+    result = check("利润增长 30%[3]。", _cited_book())
+    assert result.bad_citations == (3,)
+    assert check("没有资料[1]。", _cpi()).bad_citations == (1,)
+
+
+def test_same_passage_keeps_one_number_across_searches() -> None:
+    book = _cited_book()
+    again = book.add(
+        ToolResult(
+            tool="corpus_search",
+            title="再查一次",
+            columns=(),
+            rows=(),
+            as_of=date(2026, 10, 16),
+            source="本系统语料库",
+            passages=(_passage("c", "新的一段。"), _passage("a", "（同一段）")),
+        )
+    )
+    assert again.sources == (3, 1)
+    assert book.source_numbers() == frozenset({1, 2, 3})
+    assert book.source(1) is not None and "12.5" in book.source(1).content  # type: ignore[union-attr]
 
 
 def test_grounder_can_be_reused_across_sentences() -> None:

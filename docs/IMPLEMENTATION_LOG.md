@@ -1916,3 +1916,93 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 
 - 来源 / `[n]` 引用与语料检索（3a）；网页检索（3b）。
 - 窄屏下的排版、真实模型回答的措辞和排版，需要部署后在真实环境里看。
+
+## 2026-10-20 ASSISTANT-3A0 情景假设：`calc` 可以带假设数字，假设只能写在标明假设的句子里；提示词 v3
+
+分支 `feat/assistant-3a0-assumptions`。知识库设计见 `finscopeAI_deploy/AI助手知识库设计.md`（新），规格 §1 的分期按它改成 3a-0 / 3a-1 / 3a-2 / 3a-3 / 3c / 4 / 3b / 5，这条是 3a-0。
+
+### 为什么
+
+参考问答里大量是「若估值从 30 倍压到 20 倍会怎样」「降息 25 个基点对应什么」这类情景推演。原来的核对只认资料里的数字，模型给的假设数字一律被拦，答不了；如果直接放开，假设数字又可能被写成事实。
+
+### 做了什么
+
+- **`calc` 的假设输入**（`calc.py`）：每个输入要么引用资料（`evidence` + `column` [+ `row`]），要么是假设（`assume` + `label`），由校验器保证二选一；两种写法放在同一个对象里，不用联合类型，生成给模型的 schema 里没有 `anyOf`。假设值限制在 ±1e12 以内。用到假设的结果标为 `ToolResult.hypothetical`，并带上 `assumptions`（假设名, 值）；连环计算会把上游的假设一起带上（去重）。标题加「（情景假设）」，来源只写假设名，不写数字。
+- **核对规则**（`grounding.py`、`evidence.py`）：假设证据的数字（结果和假设值）单独放在一个池里，只有句子里出现「假设 / 假定 / 假如 / 如果 / 倘若 / 若 / 情景」之一时才放行；「若干」不算。假设证据不进事实数字、日期和序列名的放行范围，所以模型给假设起个带数字的名字（如「当前市盈率30倍」），也不能借「序列名」放行「当前市盈率 30 倍」；只用假设算出的结果截止日是今天，今天也不会因此被放行。
+- **给模型的资料文本**：假设证据多一行「（情景假设，不是事实；只能写在带「假设 / 若 / 如果」的句子里。假设：…）」，假设名照样做了防注入处理。
+- **页面上的标注**（`blocks.py`）：每次假设计算出一条 `info` 提示（`code = ASSUMPTION`）：「情景假设（不是查到的数据）：假设回落幅度 = 10；算得 313」。前端已经支持 `info` 级提示，归在数据块那一组，不需要改前端。
+- **提示词 v3**（`prompts/assistant_v3.txt`，由 v2 改名，`PROMPT_VERSION=assistant_v3`）：回答形状改为「结论 → 依据 → 情景（只在问到影响或推演时）→ 还需要核实（不写数字、不猜内容）」；说明假设数字用 `calc` 的 `assume` 给出、只能写在带「假设 / 若 / 如果」的句子里；「不预测」改为「情景推演只说明在这个假设下会算出什么，不说哪个情景会发生」。
+
+### 变更文件
+
+- 后端：`app/services/assistant/{calc,evidence,grounding,blocks,results,agent,responder}.py`、`app/services/assistant/tools/__init__.py`（`calc` 工具说明）、`app/prompts/assistant_v3.txt`。
+- 测试：`test_assistant_calc.py` +7（假设结果、与资料混用、连环传递、二选一校验 7 种非法写法、越界、schema 扁平）；`test_assistant_grounding.py` +4 组（标明假设的 5 种写法放行、当事实写的 4 种被拦、日期不被假设放宽、标了假设也不放行无关数字）；`test_assistant_evidence_blocks.py` +2；`test_assistant_agent.py` +2（整条回合：标明假设的回答完整通过并出提示块；把假设结果当事实写会被拦下改写）；提示词版本号断言改为 v3。
+- 文档：规格 §1 分期表与状态行、§6 提示词版本、§7 `calc`、§8 第 5 条；知识库设计 §7、§11（`quote_table` 挪到 3a-1：逐字核对要用检索片段）。
+- 没有接口、数据库、配置或前端变化。
+
+### 验证
+
+- 后端：`ruff check`、`ruff format --check`、`mypy app` 通过；`pytest tests/unit` 全部通过；助手的 38 个集成测试在一次性 `pgvector/pgvector:pg16` 测试库（端口 55432，跑完已停掉）上全部通过。
+- 变异检查：让假设池不看句子里有没有「若」，4 个新用例失败；让假设证据的标题 / 来源进序列名，「当前市盈率 30 倍」那条失败；均已还原并确认无残留。
+- 写端到端用例时发现，假数据里本来有 320.1，按「≥100 允许取整」的现有规则「320」对得上事实，所以用例改用不和任何事实重合的 313。这说明假设结果恰好接近某个事实数字时，句子不写「若」也能过——它确实等于资料里的数，这是现有取整规则的结果，不是漏洞。
+- 全量单测里 `test_filing_report.py::test_rules_report_uses_only_stored_sample_numbers` 偶发失败一次，重跑通过：报告正文里还有别的随机内容偶尔带出「999」，触发 `"999" not in body`。这是原有的不稳定用例，与这次改动无关，没有在这个分支里修。
+
+### 没有做的
+
+- 没有用真实模型试过：模型会不会主动用 `assume`、会不会在情景句里写「若」，要部署后看。
+- `quote_table`、来源与 `[n]`、按引用核对放在 3a-1。
+
+## 2026-10-20 ASSISTANT-3A1 语料底座：用户文档进语料库、`corpus_search`、来源编号与按引用核对、`quote_table`、检索评测集
+
+同一分支 `feat/assistant-3a0-assumptions`，按知识库设计 §11 的 3a-1 分五步提交。总开关 `CORPUS_ENABLED`（默认关），关着时助手行为与 3a-0 完全相同。
+
+### 做了什么
+
+- **语料表**（迁移 `20261020_0030_corpus`）：`corpus_sources / corpus_documents / corpus_chunks / corpus_fetch_runs`。文档带 `kind`（filing / official / reference / user）、版本与内容哈希（同 URL 内容变了记新版本，检索只看最新版本）、`owner_user_id`（约束：`kind = user` 当且仅当有上传者）；用户文档副本通过 `user_document_id` 挂在「我的文档」上，原文件删除时级联删除。预置一个 `user_upload` 来源。
+- **全文检索**（`repositories/corpus.py`、`services/corpus_text.py`）：中文写成二字词串进 `simple` 配置，**全部保留**（旧的 `document_chunks` 索引只留前 32 个词，长块后半段查不到）；英文用 `english` 配置（词形还原）。权重：标题 A、块头 B、正文 D。每个关键词一个 `plainto_tsquery`（词内同时出现），关键词之间任一命中。先过滤（最新版本、本人可见、`published_at <= as_of` 不前视、类别 / 代码 / 报告类型 / 期次 / 发布方 / 时间窗），再按 `ts_rank_cd × 半衰期衰减`（公告与官方文本 30 天，其余不衰减）排序，同一文档最多 2 块，取前 8，低于 `CORPUS_MIN_RANK` 的不给。
+- **块头**：模板拼「发布方｜代码｜标题｜报告类型｜期次｜章节」，不调模型。**不放发布日**：评测里「10月份 CPI」因为块头里的 `2026-10-15` 命中了 9 月数据；时间范围交给 `since` / `until`。报告类型写中文（「业绩预告」），所以标题叫「业绩预亏公告」的也能被「业绩预告」查到。
+- **用户文档接入**（`services/corpus_ingest.py`、`document_index.py`）：「我的文档」解析成功后按语料库自己的分块参数（目标 280 / 上限 360 / 重叠 40 词）另写一份副本，只对上传者可见；写副本失败只记日志，不影响原有的文档检索。已有上传用 `python -m app.scripts.corpus_user_backfill` 补，可重复运行。
+- **`corpus_search` 工具**（`tools/corpus.py`）：中英文关键词各最多 8 个（英文来源必须给英文关键词，中文关键词查不到英文文档）、类别 / 代码 / 报告类型 / 期次 / 发布方 / 时间窗过滤。结果的截止日取最新一篇的发布日，不用今天。含私有文档，不进工具缓存；不出数据块，只在过程里列一步「检索资料」。
+- **来源编号**（`evidence.py`）：检索到的片段按出现顺序编成 [1]、[2]…，全回合统一，同一片段重复检索不换号。给模型的资料是「[n] 标题｜发布方｜日期｜第 x 页｜章节」加「原文：…」（单段最多 2400 字，照样做防注入处理）。
+- **`sources` 事件与保存**（`agent.py`、`sse.py`、`repositories/chat.py`）：一句话通过核对、且引用了新的 [n]，先推 `sources`（整表）再推这句的 `delta`，角标出现时来源已经在了。来源存进 `chat_messages.sources`，消息接口带回，同一个 `client_message_id` 重发时按「步骤 → 块 → 来源 → 正文」重放。前端第 2 期已经支持这个事件，不用改。
+- **按引用核对**（`grounding.py` 第 7、8 条）：片段里的数字和日期只对写了它的 `[n]` 的句子放行，数字是真的、出处挂错照样拦；`[n]` 不存在也拦。模型写的东西（情景假设的名字、摘录表的标题和文字）不进日期 / 序列名 / 标识符的放行范围。
+- **`quote_table`**（`tools/quote.py`）：模型给每行「来源 n、原文、倾向、解读」，服务端核对原文确是来源 [n] 片段的原话（NFKC 归一、按资料文本里的显示方式转换、去掉空白后比较子串），解读按「引用了 [n] 的句子」核对数字和日期，标题也核对；一行不过关整张表不出，原因只回给模型（不给读者出提示），模型可以改了再调。通过的表作为普通 `table` 块推出（列：来源、原文、倾向、解读）。
+- **日期写法**：数字和「年 / 月 / 日」之间带空格（「9 月」「2026 年 9 月 1 日」）也按日期核对。原来只认「2026 年」，「9 月」会被当成裸数字 9 拦下。
+- **评测集**（`tests/eval/corpus_eval.json`、`services/corpus_eval.py`、`tests/integration/test_corpus_eval.py`）：18 篇合成文档（仿写的美联储声明 / 纪要 / 讲话 / 预测摘要 / 褐皮书，仿写的统计局 CPI / PPI / GDP，虚构公司 T0000x 的业绩预告 / 快报 / 问询函回复，两篇参考资料，一份用户 a 的私有纪要）；54 题：42 题能答（其中 21 题是中文问英文语料），12 题应当拒答（库里没有、被过滤条件排除、不前视、别的用户查私有文档）。题目的关键词固定写好，评测只量检索，进 CI。指标：Recall@5、拒答率、私有文档泄露（必须为 0）。
+- **真实模型冒烟**（`app/scripts/assistant_corpus_smoke.py`，不进 CI）：同一套语料和题目，交给配置的模型自己出关键词、写回答，统计调了检索的比例、引用命中期望文档的比例、引用了期望以外文档的比例、核对全部通过的比例、该拒答时没引用资料的比例、摘录表通过率。会往库里写评测数据（结束时删掉），必须加 `--test-db` 才跑。
+
+### 与规格 / 设计的差异
+
+- 没有默认 90 天的时间窗：时效靠半衰期衰减，模型要限时间就给 `since` / `until`。默认窗会让「半年前的问询函」这类问题查不到。
+- 没有可信度系数（设计 §6 的「× 可信度」）：目前只有用户文档一类，等公告和官方文本进来、评测显示需要时再加。
+- `PoliteClient` 挪到 3a-2：只有抓取用得到。
+- `quote_table` 没有做成规格 §9 里单独的 `quote_table` 块类型，而是推普通的 `table` 块，前端不用改；原文与译文并排、原文可展开的样式以后要再做。
+- 逐字比较是「去掉空白」而不是「合并空白」：PDF 抽出来的中文常在字之间夹空格或换行。
+- 块头不放发布日（见上）。
+
+### 变更文件
+
+- 迁移：`alembic/versions/20261020_0030_corpus.py`。
+- 后端：`repositories/corpus.py`（新）、`repositories/chat.py`；`services/corpus_text.py`、`corpus_ingest.py`、`corpus_eval.py`（新）、`document_index.py`、`chat_reply.py`；`services/assistant/{agent,evidence,grounding,blocks,results,sse,turns,responder,tool_cache}.py`、`tools/{__init__,corpus,quote}.py`（后两个新）；`prompts/assistant_v3.txt`（检索与 `quote_table` 的用法、`[n]` 引用规则）；`core/config.py`、`main.py`；脚本 `scripts/corpus_user_backfill.py`、`scripts/assistant_corpus_smoke.py`（新）。
+- 测试：`test_corpus_repository.py`、`test_corpus_eval.py`、`test_corpus_text.py`、`test_assistant_tools_corpus.py`（新）；`test_document_search.py`、`test_assistant_agent_turns.py`、`test_assistant_{agent,grounding,evidence_blocks,sse}.py` 增补；`assistant_fakes.py` 加假的检索工具。
+- 配置与文档：`.env.example`（`CORPUS_ENABLED`、`CORPUS_MIN_RANK`）、`docs/API.md`（`sources` 事件、`quote_table`）、规格状态行、知识库设计 §11。
+- 前端没有变化。
+
+### 验证
+
+- 后端：`ruff check`、`ruff format --check`、`mypy app` 通过；`pytest tests/unit` 全部通过；语料、文档检索、助手、对话相关的集成测试在一次性 `pgvector/pgvector:pg16` 测试库（端口 55432）上全部通过，迁移降级再升级通过。
+- 检索评测：改块头之前 Recall@5 = 0.988、拒答率 = 0.917（漏的两题就是上面块头的两个问题）；改后两项都是 1.000，泄露 0。评测集是自己写的、关键词也是自己给的，满分只说明检索链路没有退步，不说明真实问题上的效果；CI 下限设为 0.9。
+- 变异检查：检索的可见性条件改成 `OR true`，私有文档用例失败；`_identifiers` 改回扫描全部证据，摘录表用例失败（见下）；均已还原。
+- 写 `quote_table` 用例时发现一个漏洞并修掉：标识符放行（证据表文字列里出现过的数字串，本来是给证券代码用的）扫的是**全部**证据，所以摘录表的解读里写了「2.9」，叙述里不引用 [1] 也能写 2.9。改为只扫事实证据（假设证据、摘录表除外），情景假设的文字列也一并排除。
+
+### 上线步骤
+
+1. 迁移到 `20261020_0030`；
+2. 跑一次 `python -m app.scripts.corpus_user_backfill`（容器里是 `--root /app/data/uploads`）；
+3. 设 `CORPUS_ENABLED=true` 并重启（这个开关不在运行时设置里）。
+
+### 没有做的
+
+- 真实模型冒烟没有跑：本机没有配模型。上线前用测试库跑一次 `assistant_corpus_smoke.py --test-db`，看模型给的关键词能不能查到、引用挂没挂对、会不会主动用 `quote_table`，结果补在这里。
+- 前端来源清单不显示页码（接口已经给了 `page_start` / `page_end`）。
+- 公告、美联储、统计局的抓取在 3a-2 / 3a-3；那之前语料库里只有用户自己的文档。

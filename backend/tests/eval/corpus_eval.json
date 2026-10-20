@@ -1,0 +1,273 @@
+{
+  "note": "语料检索评测集（知识库设计 §9）。文档全部是为测试编写的合成文本：美联储、统计局的内容是仿写，不是原文；公司是虚构的（代码 T0000x）。题目的关键词按「守规矩的模型」会给的写法固定下来，评测只量检索，不量模型。",
+  "as_of": "2026-10-20T04:00:00+00:00",
+  "documents": [
+    {
+      "id": "fomc-2026-09",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Federal Reserve issues FOMC statement",
+      "doc_type": "statement",
+      "published_at": "2026-09-17T18:00:00+00:00",
+      "pages": [
+        "Recent indicators suggest that growth of economic activity moderated in the first half of the year. Job gains have slowed, and the unemployment rate has edged up but remains low. Inflation has moved up and remains somewhat elevated.\n\nThe Committee seeks to achieve maximum employment and inflation at the rate of 2 percent over the longer run. Uncertainty about the economic outlook remains elevated. The Committee is attentive to the risks to both sides of its dual mandate and judges that downside risks to employment have risen.\n\nIn support of its goals and in light of the shift in the balance of risks, the Committee decided to lower the target range for the federal funds rate by 1/4 percentage point to 4 to 4-1/4 percent. The Committee will continue reducing its holdings of Treasury securities and agency debt and agency mortgage-backed securities.\n\nVoting against this action was one member, who preferred to lower the target range for the federal funds rate by 1/2 percentage point at this meeting."
+      ]
+    },
+    {
+      "id": "fomc-2026-07",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Federal Reserve issues FOMC statement",
+      "doc_type": "statement",
+      "published_at": "2026-07-29T18:00:00+00:00",
+      "pages": [
+        "Although swings in net exports continue to affect the data, recent indicators suggest that growth of economic activity moderated. The unemployment rate remains low, and labor market conditions remain solid. Inflation remains somewhat elevated.\n\nUncertainty about the economic outlook remains elevated. The Committee is attentive to the risks to both sides of its dual mandate. In support of its goals, the Committee decided to maintain the target range for the federal funds rate at 4-1/4 to 4-1/2 percent.\n\nIn considering the extent and timing of additional adjustments to the target range, the Committee will carefully assess incoming data, the evolving outlook, and the balance of risks."
+      ]
+    },
+    {
+      "id": "minutes-2026-07",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Minutes of the Federal Open Market Committee, July 2026",
+      "doc_type": "minutes",
+      "published_at": "2026-08-19T18:00:00+00:00",
+      "pages": [
+        "Participants generally noted that higher tariffs had become more evident in the prices of some goods, but their overall effects on economic activity and inflation remained to be seen. Several participants observed that the pass-through of tariffs to consumer prices could take longer than anticipated.\n\nWith regard to the labor market, participants judged that conditions remained solid, although a few participants saw downside risks to employment as having increased. Several participants noted that low hiring rates could leave the labor market vulnerable to adverse shocks.\n\nParticipants discussed the Committee's balance sheet. The manager reported that reserves remained abundant and that the reduction in securities holdings was proceeding smoothly."
+      ]
+    },
+    {
+      "id": "jackson-hole-2026",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Speech by Chair Powell on the economic outlook and monetary policy framework",
+      "doc_type": "speech",
+      "published_at": "2026-08-22T14:00:00+00:00",
+      "pages": [
+        "The labor market appears to be in balance, but it is a curious kind of balance that results from a marked slowing in both the supply of and demand for workers. This unusual situation suggests that downside risks to employment are rising.\n\nThe effects of tariffs on consumer prices are now clearly visible. A reasonable base case is that the effects will be relatively short lived, a one-time shift in the price level. But it is also possible that the upward pressure on prices could spark a more lasting inflation dynamic.\n\nWith policy in restrictive territory, the baseline outlook and the shifting balance of risks may warrant adjusting our policy stance. Monetary policy is not on a preset course."
+      ]
+    },
+    {
+      "id": "sep-2026-09",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Summary of Economic Projections, September 2026",
+      "doc_type": "projections",
+      "published_at": "2026-09-17T18:00:00+00:00",
+      "pages": [
+        "Economic projections of Federal Reserve Board members and Federal Reserve Bank presidents. The median projection for real GDP growth in 2026 is 1.6 percent. The median projection for the unemployment rate at the end of 2026 is 4.5 percent. The median projection for PCE inflation in 2026 is 3.0 percent, and for core PCE inflation 3.1 percent.\n\nThe median projection for the federal funds rate at the end of 2026 is 3.6 percent, implying additional reductions in the target range later this year. The median longer-run projection for the federal funds rate is 3.0 percent."
+      ]
+    },
+    {
+      "id": "beige-book-2026-09",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Beige Book: Summary of Commentary on Current Economic Conditions",
+      "doc_type": "report",
+      "published_at": "2026-09-03T18:00:00+00:00",
+      "pages": [
+        "Most of the twelve Federal Reserve Districts reported little or no change in economic activity since the previous report. Consumer spending was flat to declining in most Districts, as wages failed to keep pace with rising prices for many households.\n\nPrices rose in all Districts, with many contacts citing tariffs as the reason for higher input costs. Several firms reported passing tariff-related cost increases through to their customers, while others absorbed part of the increase to protect market share.\n\nEmployment levels were largely unchanged; employers were hesitant to hire because of weaker demand and elevated uncertainty."
+      ]
+    },
+    {
+      "id": "slr-speech-2026",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Speech by Governor on bank capital and the supplementary leverage ratio",
+      "doc_type": "speech",
+      "published_at": "2026-06-25T15:00:00+00:00",
+      "pages": [
+        "Today I will discuss our proposal to modify the enhanced supplementary leverage ratio for the largest banks. The leverage ratio was designed as a backstop to risk-based capital requirements. When it becomes the binding constraint, it can discourage banks from intermediating in the Treasury market.\n\nThe proposal would recalibrate the requirement so that it serves as a backstop rather than a binding constraint, while keeping overall capital in the banking system strong."
+      ]
+    },
+    {
+      "id": "fomc-2025-12",
+      "kind": "official",
+      "publisher": "美联储",
+      "title": "Federal Reserve issues FOMC statement",
+      "doc_type": "statement",
+      "published_at": "2025-12-10T19:00:00+00:00",
+      "pages": [
+        "Recent indicators suggest that economic activity has continued to expand at a solid pace. Inflation has made progress toward the Committee's 2 percent objective but remains somewhat elevated. The Committee decided to maintain the target range for the federal funds rate."
+      ]
+    },
+    {
+      "id": "nbs-cpi-2026-09",
+      "kind": "official",
+      "publisher": "国家统计局",
+      "title": "2026年9月份居民消费价格同比下降0.3%",
+      "doc_type": "release",
+      "published_at": "2026-10-15T09:30:00+08:00",
+      "pages": [
+        "2026年9月份，全国居民消费价格同比下降0.3%。其中，城市下降0.2%，农村下降0.5%；食品价格下降4.4%，非食品价格上涨0.7%。1—9月平均，全国居民消费价格比上年同期下降0.1%。\n\n9月份，全国居民消费价格环比持平。扣除食品和能源价格的核心CPI同比上涨1.0%，涨幅连续第五个月扩大。食品中，猪肉价格下降17.0%，鲜菜价格下降13.7%。"
+      ]
+    },
+    {
+      "id": "nbs-ppi-2026-09",
+      "kind": "official",
+      "publisher": "国家统计局",
+      "title": "2026年9月份工业生产者出厂价格同比下降2.3%",
+      "doc_type": "release",
+      "published_at": "2026-10-15T09:30:00+08:00",
+      "pages": [
+        "2026年9月份，全国工业生产者出厂价格同比下降2.3%，降幅比上月收窄0.6个百分点；环比持平。工业生产者购进价格同比下降3.1%。\n\n反内卷综合整治深入推进，煤炭、钢铁、光伏等行业价格降幅收窄。"
+      ]
+    },
+    {
+      "id": "nbs-gdp-2026-q3",
+      "kind": "official",
+      "publisher": "国家统计局",
+      "title": "2026年前三季度国民经济运行情况",
+      "doc_type": "release",
+      "published_at": "2026-10-20T10:00:00+08:00",
+      "pages": [
+        "初步核算，前三季度国内生产总值同比增长5.2%。分季度看，一季度同比增长5.4%，二季度增长5.2%，三季度增长4.8%。\n\n前三季度，社会消费品零售总额同比增长4.5%；全国固定资产投资同比下降0.5%，其中房地产开发投资下降13.9%。"
+      ]
+    },
+    {
+      "id": "t1-forecast-q3",
+      "kind": "filing",
+      "publisher": "示例新材",
+      "title": "示例新材：2026年前三季度业绩预告",
+      "doc_type": "announcement",
+      "symbol": "T00001",
+      "period": "2026Q3",
+      "report_type": "forecast",
+      "published_at": "2026-10-12T18:30:00+08:00",
+      "pages": [
+        "一、本期业绩预计情况\n预计2026年前三季度归属于上市公司股东的净利润为1.2亿元至1.5亿元，同比增长35%至60%。\n\n二、业绩变动原因说明\n报告期内，公司新产线投产，产品良率持续提升，高端产品出货量同比增加；同时原材料采购成本有所下降，毛利率改善。"
+      ]
+    },
+    {
+      "id": "t2-express-h1",
+      "kind": "filing",
+      "publisher": "示例电子",
+      "title": "示例电子：2026年半年度业绩快报",
+      "doc_type": "announcement",
+      "symbol": "T00002",
+      "period": "2026H1",
+      "report_type": "express",
+      "published_at": "2026-07-28T19:00:00+08:00",
+      "pages": [
+        "一、2026年半年度主要财务数据\n营业收入23.4亿元，同比增长12.1%；归属于上市公司股东的净利润1.1亿元，同比下降18.5%。\n\n二、经营业绩说明\n收入增长主要来自消费电子客户订单回暖；净利润下降主要原因是计提存货跌价准备，以及汇兑损失增加。"
+      ]
+    },
+    {
+      "id": "t3-forecast-q3",
+      "kind": "filing",
+      "publisher": "示例医药",
+      "title": "示例医药：2026年前三季度业绩预亏公告",
+      "doc_type": "announcement",
+      "symbol": "T00003",
+      "period": "2026Q3",
+      "report_type": "forecast",
+      "published_at": "2026-10-14T18:00:00+08:00",
+      "pages": [
+        "一、本期业绩预计情况\n预计2026年前三季度归属于上市公司股东的净利润亏损8000万元至1.1亿元，上年同期盈利5200万元。\n\n二、业绩预亏的主要原因\n公司对前期收购的子公司计提商誉减值准备；创新药临床试验推进，研发投入同比大幅增加。"
+      ]
+    },
+    {
+      "id": "t1-inquiry",
+      "kind": "filing",
+      "publisher": "示例新材",
+      "title": "示例新材：关于上海证券交易所问询函的回复公告",
+      "doc_type": "announcement",
+      "symbol": "T00001",
+      "period": "2026H1",
+      "report_type": "inquiry",
+      "published_at": "2026-09-05T18:00:00+08:00",
+      "pages": [
+        "问题一：关于应收账款。报告期末公司应收账款余额较期初大幅增长，请说明原因及坏账准备计提是否充分。\n回复：应收账款增长主要因为四季度集中交付的大客户订单尚在信用期内，账龄均在一年以内，坏账准备计提充分。\n\n问题二：关于客户集中度。公司前五大客户销售额占比为68%，请说明是否存在对单一客户的重大依赖。\n回复：前五大客户均为合作多年的行业龙头，单一客户占比不超过25%。"
+      ]
+    },
+    {
+      "id": "ref-pcr",
+      "kind": "reference",
+      "publisher": "本系统参考资料",
+      "title": "期权认沽认购比（PCR）怎么看",
+      "doc_type": "reference",
+      "published_at": "2026-03-01T10:00:00+08:00",
+      "pages": [
+        "认沽认购比（PCR）是认沽期权成交量（或持仓量）与认购期权成交量（或持仓量）的比值。PCR 高于 1 说明买入认沽保护的需求更多，通常被看作市场情绪偏谨慎；处于历史极高位置时，也常被当作反向指标。\n\n使用时要区分成交量 PCR 与持仓量 PCR，并结合标的指数的位置一起看，不宜单独作为买卖依据。"
+      ]
+    },
+    {
+      "id": "ref-dot-plot",
+      "kind": "reference",
+      "publisher": "本系统参考资料",
+      "title": "美联储点阵图怎么读",
+      "doc_type": "reference",
+      "published_at": "2026-02-10T10:00:00+08:00",
+      "pages": [
+        "点阵图是美联储经济预测摘要里的一张图，每个点代表一位与会官员对年末联邦基金利率的判断。市场通常看中位数的变化：中位数下移意味着官员预期的降息次数增加。\n\n点阵图不是承诺，官员的判断会随数据变化；不同年份的点越分散，说明分歧越大。"
+      ]
+    },
+    {
+      "id": "user-a-notes",
+      "kind": "user",
+      "owner": "a",
+      "publisher": "你上传的文档",
+      "title": "示例新材调研纪要.pdf",
+      "doc_type": "upload",
+      "published_at": "2026-09-30T12:00:00+08:00",
+      "pages": [
+        "调研时间：2026年9月下旬。管理层表示，三季度产品良率提升到92%，新产线产能利用率维持高位。公司计划在2027年新增两条产线，资本开支以自有资金为主。\n\n关于海外客户，管理层称认证进展顺利，预计明年开始小批量供货。"
+      ]
+    }
+  ],
+  "questions": [
+    {"id": "en-01", "asker": "a", "q": "美联储9月议息会议降息了多少？", "keywords_en": ["lower the target range", "federal funds rate"], "expect": ["fomc-2026-09"]},
+    {"id": "en-02", "asker": "a", "q": "9月FOMC声明怎么描述通胀？", "keywords_en": ["inflation somewhat elevated"], "since": "2026-09-01", "expect": ["fomc-2026-09"]},
+    {"id": "en-03", "asker": "a", "q": "9月会议有没有委员投反对票？", "keywords_en": ["voting against", "dissent"], "expect": ["fomc-2026-09"]},
+    {"id": "en-04", "asker": "a", "q": "7月议息会议为什么维持利率不变？", "keywords_en": ["maintain the target range"], "until": "2026-07-31", "since": "2026-07-01", "expect": ["fomc-2026-07"]},
+    {"id": "en-05", "asker": "a", "q": "FOMC会议纪要里怎么讨论关税？", "keywords_en": ["tariffs", "goods prices"], "expect": ["minutes-2026-07", "jackson-hole-2026", "beige-book-2026-09"]},
+    {"id": "en-06", "asker": "a", "q": "鲍威尔在杰克逊霍尔讲话里怎么说风险平衡？", "keywords_en": ["shifting balance of risks", "policy stance"], "expect": ["jackson-hole-2026"]},
+    {"id": "en-07", "asker": "a", "q": "鲍威尔怎么看现在的劳动力市场？", "keywords_en": ["labor market", "supply and demand for workers"], "expect": ["jackson-hole-2026"]},
+    {"id": "en-08", "asker": "a", "q": "9月点阵图中位数预测年底利率是多少？", "keywords_en": ["median projection federal funds rate"], "expect": ["sep-2026-09"]},
+    {"id": "en-09", "asker": "a", "q": "美联储对今年失业率的预测是多少？", "keywords_en": ["projection unemployment rate"], "expect": ["sep-2026-09"]},
+    {"id": "en-10", "asker": "a", "q": "最新褐皮书说消费支出怎么样？", "keywords_en": ["consumer spending"], "expect": ["beige-book-2026-09"]},
+    {"id": "en-11", "asker": "a", "q": "褐皮书里企业有没有把关税成本转嫁给客户？", "keywords_en": ["tariff cost increases", "passing through to customers"], "expect": ["beige-book-2026-09"]},
+    {"id": "en-12", "asker": "a", "q": "美联储关于补充杠杆率的改革讲了什么？", "keywords_en": ["supplementary leverage ratio"], "expect": ["slr-speech-2026"]},
+    {"id": "en-13", "asker": "a", "q": "美联储缩表现在是什么安排？", "keywords_en": ["reducing holdings of Treasury securities", "balance sheet"], "expect": ["fomc-2026-09", "minutes-2026-07"]},
+    {"id": "en-14", "asker": "a", "q": "8月以来美联储怎么评估就业的下行风险？", "keywords_en": ["downside risks to employment"], "since": "2026-08-01", "expect": ["fomc-2026-09", "minutes-2026-07", "jackson-hole-2026"]},
+    {"id": "en-15", "asker": "a", "q": "美联储关于通胀的最新表述是什么？", "keywords_en": ["inflation"], "expect": ["fomc-2026-09"]},
+    {"id": "en-16", "asker": "a", "q": "鲍威尔怎么看关税对通胀是一次性的还是持续的？", "keywords_en": ["tariffs inflation", "one-time shift in the price level"], "expect": ["jackson-hole-2026"]},
+    {"id": "en-17", "asker": "a", "q": "What did the Fed say about the labor market in July?", "keywords_en": ["labor market conditions"], "until": "2026-07-31", "expect": ["fomc-2026-07"]},
+    {"id": "en-18", "asker": "a", "q": "美联储长期中性利率预测是多少？", "keywords_en": ["longer-run projection federal funds rate"], "expect": ["sep-2026-09"]},
+    {"id": "en-19", "asker": "a", "q": "褐皮书里招聘情况怎么样？", "keywords_en": ["hesitant to hire", "employment levels"], "expect": ["beige-book-2026-09"]},
+    {"id": "en-21", "asker": "a", "q": "9月声明对经济活动怎么描述？", "keywords_en": ["growth of economic activity moderated"], "since": "2026-09-01", "expect": ["fomc-2026-09"]},
+    {"id": "en-22", "asker": "a", "q": "鲍威尔说货币政策有没有预设路径？", "keywords_en": ["preset course"], "expect": ["jackson-hole-2026"]},
+    {"id": "en-20", "asker": "a", "q": "美联储点阵图显示今年还会降息吗？", "keywords_zh": ["点阵图"], "keywords_en": ["federal funds rate projection", "additional reductions"], "expect": ["sep-2026-09", "ref-dot-plot"]},
+    {"id": "zh-01", "asker": "a", "q": "9月CPI同比是多少？", "keywords_zh": ["居民消费价格"], "kind": "official", "expect": ["nbs-cpi-2026-09"]},
+    {"id": "zh-02", "asker": "a", "q": "核心CPI涨幅怎么样？", "keywords_zh": ["核心CPI"], "expect": ["nbs-cpi-2026-09"]},
+    {"id": "zh-03", "asker": "a", "q": "9月PPI降幅收窄了吗？", "keywords_zh": ["工业生产者出厂价格"], "expect": ["nbs-ppi-2026-09"]},
+    {"id": "zh-04", "asker": "a", "q": "三季度GDP增速多少？", "keywords_zh": ["国内生产总值"], "expect": ["nbs-gdp-2026-q3"]},
+    {"id": "zh-05", "asker": "a", "q": "房地产投资降了多少？", "keywords_zh": ["房地产开发投资"], "expect": ["nbs-gdp-2026-q3"]},
+    {"id": "zh-06", "asker": "a", "q": "示例新材前三季度业绩预告怎么说？", "keywords_zh": ["业绩预告", "净利润"], "symbol": "T00001", "expect": ["t1-forecast-q3"]},
+    {"id": "zh-07", "asker": "a", "q": "示例新材业绩增长的原因是什么？", "keywords_zh": ["业绩变动原因", "良率"], "symbol": "T00001", "report_type": "forecast", "expect": ["t1-forecast-q3"]},
+    {"id": "zh-08", "asker": "a", "q": "示例电子上半年营收多少？", "keywords_zh": ["营业收入"], "symbol": "T00002", "expect": ["t2-express-h1"]},
+    {"id": "zh-09", "asker": "a", "q": "示例电子净利润为什么下降？", "keywords_zh": ["净利润下降", "存货跌价准备"], "symbol": "T00002", "expect": ["t2-express-h1"]},
+    {"id": "zh-10", "asker": "a", "q": "哪家公司因为商誉减值预亏？", "keywords_zh": ["商誉减值"], "kind": "filing", "expect": ["t3-forecast-q3"]},
+    {"id": "zh-11", "asker": "a", "q": "最近有哪些公司发了业绩预告？", "keywords_zh": ["业绩预告"], "report_type": "forecast", "expect": ["t1-forecast-q3", "t3-forecast-q3"]},
+    {"id": "zh-12", "asker": "a", "q": "示例新材问询函里应收账款怎么回复的？", "keywords_zh": ["应收账款"], "symbol": "T00001", "expect": ["t1-inquiry"]},
+    {"id": "zh-13", "asker": "a", "q": "示例新材客户集中度高不高？", "keywords_zh": ["前五大客户", "客户集中度"], "symbol": "T00001", "expect": ["t1-inquiry"]},
+    {"id": "zh-14", "asker": "a", "q": "PCR指标怎么看？", "keywords_zh": ["认沽认购比"], "keywords_en": ["PCR"], "expect": ["ref-pcr"]},
+    {"id": "zh-15", "asker": "a", "q": "点阵图怎么解读？", "keywords_zh": ["点阵图"], "expect": ["ref-dot-plot"]},
+    {"id": "zh-16", "asker": "a", "q": "我上传的调研纪要里良率怎么说？", "keywords_zh": ["良率"], "kind": "user", "expect": ["user-a-notes"]},
+    {"id": "zh-17", "asker": "a", "q": "示例新材明年扩产计划？", "keywords_zh": ["新增两条产线", "资本开支"], "expect": ["user-a-notes"]},
+    {"id": "zh-18", "asker": "a", "q": "示例医药研发投入情况？", "keywords_zh": ["研发投入"], "symbol": "T00003", "expect": ["t3-forecast-q3"]},
+    {"id": "zh-19", "asker": "a", "q": "猪肉价格跌了多少？", "keywords_zh": ["猪肉价格"], "expect": ["nbs-cpi-2026-09"]},
+    {"id": "zh-20", "asker": "a", "q": "光伏行业价格情况？", "keywords_zh": ["光伏"], "kind": "official", "expect": ["nbs-ppi-2026-09"]},
+    {"id": "no-01", "asker": "a", "q": "美联储10月会议做了什么决定？", "keywords_en": ["October meeting decision"], "expect": []},
+    {"id": "no-02", "asker": "a", "q": "欧洲央行最近降息了吗？", "keywords_zh": ["欧洲央行"], "keywords_en": ["European Central Bank", "ECB"], "expect": []},
+    {"id": "no-03", "asker": "a", "q": "示例新材去年年报怎么样？", "keywords_zh": ["年度报告"], "symbol": "T00001", "report_type": "annual", "expect": []},
+    {"id": "no-04", "asker": "a", "q": "贵州茅台业绩预告？", "keywords_zh": ["贵州茅台"], "expect": []},
+    {"id": "no-05", "asker": "a", "q": "日本央行加息了吗？", "keywords_zh": ["日本央行"], "keywords_en": ["Bank of Japan"], "expect": []},
+    {"id": "no-06", "asker": "b", "q": "（别的用户）调研纪要里良率怎么说？", "keywords_zh": ["良率", "调研纪要"], "kind": "user", "expect": [], "privacy": true},
+    {"id": "no-07", "asker": "b", "q": "（别的用户）示例新材扩产计划？", "keywords_zh": ["新增两条产线"], "expect": [], "privacy": true},
+    {"id": "no-08", "asker": "a", "q": "美国非农就业人数是多少？", "keywords_en": ["nonfarm payrolls"], "expect": []},
+    {"id": "no-09", "asker": "a", "q": "比特币ETF资金流入情况？", "keywords_zh": ["比特币"], "keywords_en": ["bitcoin ETF"], "expect": []},
+    {"id": "no-10", "asker": "a", "q": "示例电子三季度业绩预告？", "keywords_zh": ["业绩预告"], "symbol": "T00002", "expect": []},
+    {"id": "no-11", "asker": "a", "q": "（站在9月1日）9月FOMC降息了吗？", "keywords_en": ["voting against", "1/2 percentage point"], "as_of": "2026-09-01T00:00:00+00:00", "expect": []},
+    {"id": "no-12", "asker": "a", "q": "国家统计局10月CPI？", "keywords_zh": ["10月份居民消费价格"], "expect": []}
+  ]
+}

@@ -26,8 +26,8 @@ from typing import Any
 
 from app.services.assistant import fast_path
 from app.services.assistant.blocks import blocks_for, notice_block
-from app.services.assistant.evidence import render
-from app.services.assistant.grounding import Grounder, GroundingResult
+from app.services.assistant.evidence import render, source_payload
+from app.services.assistant.grounding import CITATION, Grounder, GroundingResult
 from app.services.assistant.llm_tools import ModelCallError, ModelReply, ToolCall, ToolModel
 from app.services.assistant.sentences import split_sentences
 from app.services.assistant.tools import ToolRegistry
@@ -36,7 +36,7 @@ from app.services.assistant.tools.macro import SERIES
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "assistant_v2"
+PROMPT_VERSION = "assistant_v3"
 MAX_PARALLEL = 3
 PLANNER_MAX_CALLS = 4
 MAX_ENTITIES = 8
@@ -56,6 +56,8 @@ STEP_LABELS = {
     "custom_indicator": "查自定义指标",
     "watchlist": "读我的自选",
     "calc": "计算",
+    "corpus_search": "检索资料",
+    "quote_table": "整理原文摘录",
 }
 
 Emit = Callable[[dict[str, Any]], None]
@@ -91,6 +93,8 @@ class AgentResult:
     model: str
     grounding: str  # full / partial / none
     trace: dict[str, Any]
+    # 正文里实际引用过的来源（前端 `parseSources` 的字段），按编号排序。
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ class _Turn:
     usage: dict[str, int] = field(default_factory=dict)
     unmatched: list[str] = field(default_factory=list)
     prefetched: list[str] = field(default_factory=list)
+    sources: list[dict[str, Any]] = field(default_factory=list)
     model_calls: int = 0
     counter: int = 0
     repaired: bool = False
@@ -388,9 +393,25 @@ class Agent:
             result = grounder.check(sentence)
             if not result.ok:
                 return result
+            self._cite(turn, sentence)
             turn.emit({"type": "delta", "delta": sentence})
             pushed.append(sentence)
         return None
+
+    @staticmethod
+    def _cite(turn: _Turn, sentence: str) -> None:
+        """句子引用了还没发过的来源：先发完整的来源清单，正文里的 [n] 一出来就能画成角标。"""
+
+        known = {int(item["n"]) for item in turn.sources}
+        added = False
+        for number in sorted({int(m) for m in CITATION.findall(sentence)} - known):
+            passage = turn.ctx.book.source(number)
+            if passage is not None:
+                turn.sources.append(source_payload(number, passage))
+                added = True
+        if added:
+            turn.sources.sort(key=lambda item: int(item["n"]))
+            turn.emit({"type": "sources", "sources": list(turn.sources)})
 
     def _rewrite(self, turn: _Turn, pushed: list[str], failed: GroundingResult) -> str | None:
         """改写一次：把已推出的前文和对不上的数字交给模型，要求接着往下写。"""
@@ -403,7 +424,8 @@ class Agent:
             + "、".join(problems)
             + "。\n已经展示给用户的前文如下（保持原样，不要重复）：\n"
             + ("".join(pushed).strip() or "（无）")
-            + "\n请从这里接着往下写，只能使用资料里出现过的数字和日期，不要写引用标记；"
+            + "\n请从这里接着往下写，只能使用资料里出现过的数字和日期；用到原文片段的内容时"
+            "在句末写它的编号 [n]，没有编号的资料不要写引用标记；"
             "资料里没有的结论就不要写。如果写不出可核对的内容，就简短说明已经查到了什么。"
         )
         try:
@@ -459,6 +481,7 @@ class Agent:
             model=self._model.model_name,
             grounding=grounding,
             trace=trace,
+            sources=list(turn.sources),
         )
 
 
@@ -475,6 +498,8 @@ def _trace_entry(number: int, evidence_id: str, outcome: Any) -> dict[str, Any]:
         "rows": len(result.rows),
         "truncated": result.truncated,
     }
+    if result.passages:
+        entry["passages"] = len(result.passages)
     if outcome.name == "instrument_search" and result.status != "unavailable":
         entry["entities"] = [
             {"symbol": row.get("symbol"), "name": row.get("name"), "market": row.get("market")}

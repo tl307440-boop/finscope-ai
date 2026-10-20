@@ -94,8 +94,11 @@ def create_app() -> FastAPI:
             fast_path=settings.assistant_fast_path,
         )
         # 数据工具共用一份结果缓存（工具 + 参数 + 时点，5 分钟）。只缓存公开行情与宏观数据，
-        # 自选和计算不进缓存，所以不会把一个用户的数据给到另一个用户。
-        app.state.assistant_registry = default_registry(ToolCache())
+        # 自选、语料检索和计算不进缓存，所以不会把一个用户的数据给到另一个用户。
+        app.state.assistant_registry = default_registry(
+            ToolCache(),
+            corpus_min_rank=settings.corpus_min_rank if settings.corpus_enabled else None,
+        )
         _bootstrap_admin(engine, settings)
         # 总览的上游（FRED / 东财 / 外盘 / 指数 / 板块 / 公告）冷启动要几十次跨境请求：
         # 后台预热并定期续命，用户打开总览时直接命中缓存。

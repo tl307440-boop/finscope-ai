@@ -18,6 +18,7 @@ from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
+from app.services.assistant.tools.corpus import CorpusSearchTool
 from app.services.assistant.tools.macro import MacroCompareTool, MacroSeriesTool
 from app.services.assistant.tools.market import (
     BoardStrengthTool,
@@ -25,6 +26,7 @@ from app.services.assistant.tools.market import (
     InstrumentSearchTool,
     PriceBarsTool,
 )
+from app.services.assistant.tools.quote import QuoteTableTool
 
 logger = logging.getLogger(__name__)
 MAX_ARGUMENT_CHARS = 4000
@@ -33,9 +35,10 @@ MAX_ARGUMENT_CHARS = 4000
 class CalcTool:
     name: ClassVar[str] = "calc"
     description: ClassVar[str] = (
-        "做算术：差值、涨跌幅、比值、平均、分位、换算。只能引用本回合已有资料里的数字"
-        "（资料编号 + 列 + 行），不接受直接写的数字；所有算术都用它，不要心算。"
-        "结果会登记成新的资料，之后可以引用。"
+        "做算术：差值、涨跌幅、比值、平均、分位、换算。事实数字只能引用本回合已有资料"
+        "（资料编号 + 列 + 行）；做情景分析时可以用 assume + label 给出假设的数字。"
+        "所有算术都用它，不要心算。结果会登记成新的资料，之后可以引用；"
+        "用到假设的结果只能写在带「假设 / 若 / 如果」的句子里。"
     )
     args_model: ClassVar[type[BaseModel]] = CalcArgs
 
@@ -120,21 +123,25 @@ class ToolRegistry:
         return ToolOutcome(name, args or {}, result, False, _millis(started))
 
 
-def default_registry(cache: ToolCache | None = None) -> ToolRegistry:
-    return ToolRegistry(
-        [
-            BoardStrengthTool(),
-            CalcTool(),
-            CustomIndicatorTool(),
-            FinancialMetricsTool(),
-            InstrumentSearchTool(),
-            MacroCompareTool(),
-            MacroSeriesTool(),
-            PriceBarsTool(),
-            WatchlistTool(),
-        ],
-        cache,
-    )
+def default_registry(
+    cache: ToolCache | None = None, *, corpus_min_rank: float | None = None
+) -> ToolRegistry:
+    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。"""
+
+    tools: list[Tool] = [
+        BoardStrengthTool(),
+        CalcTool(),
+        CustomIndicatorTool(),
+        FinancialMetricsTool(),
+        InstrumentSearchTool(),
+        MacroCompareTool(),
+        MacroSeriesTool(),
+        PriceBarsTool(),
+        WatchlistTool(),
+    ]
+    if corpus_min_rank is not None:
+        tools.extend((CorpusSearchTool(min_rank=corpus_min_rank), QuoteTableTool()))
+    return ToolRegistry(tools, cache)
 
 
 def _parse(raw: str) -> dict[str, Any] | str:

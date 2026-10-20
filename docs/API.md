@@ -165,11 +165,12 @@ SSE 响应头带 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`。每行 
 - `step`：`id`（`s1`…）、`label`、`status`（`running` / `ok` / `stale` / `unavailable`）。同一个 `id` 先 `running` 后变终态。
 - `block`：`block` 是服务端生成的渲染块，`type` 为 `line_chart`、`metric_cards`、`table` 或 `notice`。数据块在模型写叙述之前就推出，块里的数字来自数据库，不经过模型。
 - `delta`：**一句话通过核对后才推这一句**。每句里的数字、日期必须能在已查到的资料里找到，对不上的句子改写一次，仍不通过就隐藏后文，并给一个 `notice` 块（`code=NOT_GROUNDED`）。没有通过核对的文字不会出现在浏览器里。
+- `sources`：语料检索（`CORPUS_ENABLED`，默认关）开启后才会出现。叙述里一句话引用了原文片段 `[n]` 时，在这句的 `delta` **之前**推一次，`sources` 是到目前为止被引用过的全部来源（整表替换）：`n`、`kind`（`corpus`）、`corpus_kind`（`user` 等）、`publisher`、`title`、`published_at`、`url`（用户文档为空串）、`verified`，有页码时加 `page_start` / `page_end`。片段里的数字和日期只对写了它的编号的句子放行；编号不存在或挂错，这句同样被拦。语料里只有用户自己上传、已解析的文档，别人看不到。同一开关还开放 `quote_table`：模型把逐字摘抄的原文、倾向、解读整理成表，服务端核对每行原文确是来源 `[n]` 的原话（NFKC 归一、去掉空白后比较）、解读里的数字出自该片段，通过后作为普通 `table` 块推出（列：来源、原文、倾向、解读）；有一行不过关整张表都不出，也不给读者出提示。
 - `done`：多出 `as_of`（资料截止日）、`model`、`grounding`（`full` 全部通过 / `partial` 有句子被拦、后文已隐藏 / `none` 一句文字都没推，只给数据块）。`failed` 的收尾仍是 `error` 加 `done`，不带这些字段。
 
-旧前端只读 `delta` 与 `done`，忽略 `step` / `block`，照样能拿到正文和结束信号。
+旧前端只读 `delta` 与 `done`，忽略 `step` / `block` / `sources`，照样能拿到正文和结束信号。
 
-回合结束后这些内容与 `content` 一起存进回答行。`GET /api/v1/assistant/sessions/{sessionId}/messages` 的每条消息多出可选字段 `blocks`、`steps`、`as_of`、`grounding`、`sources`（目前恒为空，来源标注在后续期次）。没有这些内容的旧消息和用户消息**字段缺省**（接口统一不输出 `null`），前端按纯文本显示。同一个 `client_message_id` 重发时，已存的步骤、块、正文与结束信号按事件原样重放，不再调用模型。
+回合结束后这些内容与 `content` 一起存进回答行。`GET /api/v1/assistant/sessions/{sessionId}/messages` 的每条消息多出可选字段 `blocks`、`steps`、`as_of`、`grounding`、`sources`（被引用的来源，字段同上）。没有这些内容的旧消息和用户消息**字段缺省**（接口统一不输出 `null`），前端按纯文本显示。同一个 `client_message_id` 重发时，已存的步骤、块、来源、正文与结束信号按事件原样重放，不再调用模型。
 
 数据块在推送之前先追加写入回答行，所以回合中途断开或被取消，已推出的块也能从库里还原；取消后不再写叙述。回合总时长超过 `ASSISTANT_TURN_SECONDS`（默认 150 秒）时不再写叙述，只给已查到的数据并带 `NOT_GROUNDED` 提示；一条可用的数据都没查到就按 `failed` 处理。模型错误、超时、异常文本都不进响应和日志（日志只记异常类型）。
 

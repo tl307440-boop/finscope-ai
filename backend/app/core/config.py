@@ -164,6 +164,10 @@ class Settings(BaseSettings):
     assistant_fast_path: bool = True
     # 一个回合里所有模型调用的总时长上限（秒）；超了只给已查到的数据。
     assistant_turn_seconds: float = 150.0
+    # 语料检索（知识库设计 §6）：开了才把 corpus_search 交给模型。迁移 0030 和用户文档回补之后再开。
+    corpus_enabled: bool = False
+    # 最相关片段的分数低于它就当没查到，不拿低相关片段凑数；用评测集校准，0 表示有命中就给。
+    corpus_min_rank: float = 0.0
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from app.core.config import get_settings
@@ -8,14 +8,20 @@ from app.core.security import PasswordService
 from app.db.session import create_db_engine
 from app.main import create_app
 from app.repositories.accounts import AccountRepository
+from app.repositories.corpus import CorpusQuery, CorpusRepository
 from app.repositories.document_chunks import ChunkRepository
 from app.repositories.documents import DocumentRepository
-from app.services.document_index import _vectors, index_next_queued, search_owned_documents
+from app.services.document_index import (
+    _vectors,
+    backfill_corpus_mirrors,
+    index_next_queued,
+    search_owned_documents,
+)
 from app.services.pdf_chunks import chunk_pages
 from app.services.pdf_text import PageText
 from app.utils.time import utc_now
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from tests.unit.pdf_samples import build_text_pdf
 from tests.unit.test_pdf_upload import SCANNED_PDF
@@ -167,6 +173,64 @@ def test_search_returns_the_uploaded_document_and_page(tmp_path: Path) -> None:
     finally:
         _cleanup(username)
         _cleanup(other)
+
+
+@pytest.mark.integration
+def test_parsed_upload_is_mirrored_into_the_private_corpus(tmp_path: Path) -> None:
+    if not _ready():
+        pytest.skip("PostgreSQL 不可用")
+    username = f"t15m-{uuid4().hex[:8]}"
+    other = f"t15n-{uuid4().hex[:8]}"
+    _user(username)
+    _user(other)
+    pdf = build_text_pdf([" ".join(["alpha"] * 900), "Revenue locator page two"])
+    application = create_app()
+    application.state.upload_root = tmp_path
+    engine = create_db_engine(get_settings().database_url)
+    try:
+        with TestClient(application) as client:
+            token = client.post(
+                "/api/v1/auth/login",
+                json={"username": username, "password": "correct-password"},
+            ).json()["data"]["access_token"]
+            uploaded = client.post(
+                "/api/v1/documents",
+                headers={"Authorization": f"Bearer {token}"},
+                files={"file": ("locator.pdf", pdf, "application/pdf")},
+            )
+            document_id = uploaded.json()["data"]["document_id"]
+        index_next_queued(engine, tmp_path)
+        owner_id, other_id = (_user_id(engine, name) for name in (username, other))
+        corpus = CorpusRepository(engine)
+
+        def search(user_id: UUID) -> list[str]:
+            query = CorpusQuery(user_id=user_id, as_of=utc_now(), keywords_en=("revenue locator",))
+            return [f"{p.title}:{p.page_end}:{p.publisher}" for p in corpus.search(query)]
+
+        assert search(owner_id) == ["locator.pdf:2:你上传的文档"]
+        assert search(other_id) == []
+        # 回补：没有副本的已解析文件重新解析后补上，已有副本的跳过。
+        with engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM corpus_documents WHERE user_document_id = :id"),
+                {"id": document_id},
+            )
+        assert search(owner_id) == []
+        assert backfill_corpus_mirrors(engine, tmp_path) == (1, 0)
+        assert search(owner_id) == ["locator.pdf:2:你上传的文档"]
+        assert backfill_corpus_mirrors(engine, tmp_path) == (0, 0)
+    finally:
+        engine.dispose()
+        _cleanup(username)
+        _cleanup(other)
+
+
+def _user_id(engine: Engine, username: str) -> UUID:
+    with engine.connect() as connection:
+        value = connection.execute(
+            text("SELECT id FROM users WHERE username = :u"), {"u": username}
+        ).scalar_one()
+    return UUID(str(value))
 
 
 @pytest.mark.integration
