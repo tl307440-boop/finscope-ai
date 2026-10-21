@@ -3,7 +3,8 @@
     python -m app.scripts.corpus_official_backfill
     python -m app.scripts.corpus_official_backfill --source fed_speeches --limit 20
 
-RSS 和栏目页只有最近一批，不是全历史。需要 SEC_USER_AGENT 里有真实联系邮箱。
+RSS 和栏目页只有最近一批。调度器启动时，还没有正文的来源会自己补，不必手跑这个脚本。
+需要再补或加大篇数时再用它。SEC_USER_AGENT 里要有真实联系邮箱。
 """
 
 from __future__ import annotations

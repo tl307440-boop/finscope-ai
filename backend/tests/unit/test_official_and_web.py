@@ -158,5 +158,84 @@ def test_blocked_queries_are_not_searched() -> None:
     assert result.status == "unavailable" and called["n"] == 0
 
 
+def test_startup_fills_empty_official_sources_and_skips_a_placeholder_email() -> None:
+    from uuid import UUID
+
+    from app.core.config import Settings
+    from app.repositories.sync_jobs import JobSnapshot
+    from app.services.official_texts import catch_up_official_texts
+    from app.services.scheduler import ScheduledTask
+
+    class _Jobs:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        def enqueue(self, **kwargs: object) -> tuple[JobSnapshot, bool]:
+            self.keys.append(str(kwargs["dedupe_key"]))
+            assert kwargs["scope"] == {"source": "fed_speeches", "limit": "20"}  # type: ignore[index]
+            job = JobSnapshot(
+                id=uuid4(),
+                job_type="corpus_official",
+                provider_id=UUID(int=1),
+                scope={},
+                dedupe_key=str(kwargs["dedupe_key"]),
+                status="queued",
+                attempts=0,
+                max_attempts=3,
+                rows_written=0,
+                error_code=None,
+                error_summary=None,
+                progress_stage="queued",
+                requested_at=NOW,
+            )
+            return job, True
+
+    def tasks(_engine: object, _settings: object, now: datetime) -> list[ScheduledTask]:
+        return [
+            ScheduledTask(
+                task_name="sync_official_texts",
+                job_type="corpus_official",
+                dedupe_key=f"corpus-official:{code}:{now:%Y-%m-%dT%H}",
+                scope={"source": code},
+                provider_id=UUID(int=1),
+                failure_policy="test",
+            )
+            for code in ("fed_speeches", "nbs_release")
+        ]
+
+    jobs = _Jobs()
+    ready = Settings(sec_user_agent="FinScope ops@finscope.test")
+    queued = catch_up_official_texts(
+        None,  # type: ignore[arg-type]
+        ready,
+        missing=["fed_speeches"],
+        enqueuer=jobs,
+        list_tasks=tasks,
+    )
+    assert queued == 1
+    assert jobs.keys[0].startswith("corpus-official:fed_speeches:")
+    assert (
+        catch_up_official_texts(
+            None,  # type: ignore[arg-type]
+            Settings(),
+            missing=["fed_speeches"],
+            enqueuer=jobs,
+            list_tasks=tasks,
+        )
+        == 0
+    )
+    assert len(jobs.keys) == 1
+    assert (
+        catch_up_official_texts(
+            None,  # type: ignore[arg-type]
+            ready,
+            missing=[],
+            enqueuer=jobs,
+            list_tasks=tasks,
+        )
+        == 0
+    )
+
+
 def _ctx() -> ToolContext:
     return ToolContext(engine=None, user_id=uuid4(), now=NOW)  # type: ignore[arg-type]

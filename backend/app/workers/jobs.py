@@ -95,7 +95,9 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
     if job.job_type == "corpus_cninfo_scan":
         return sync_recent(engine, _text(job.scope, "mode"))
     if job.job_type == "corpus_official":
-        return sync_official(engine, _text(job.scope, "source"))
+        raw_limit = job.scope.get("limit")
+        limit = int(raw_limit) if isinstance(raw_limit, str) and raw_limit.isdigit() else 8
+        return sync_official(engine, _text(job.scope, "source"), limit=limit)
     if job.job_type == "hotspot_events":
         return asyncio.run(
             sync_hotspot_events(

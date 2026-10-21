@@ -8,12 +8,13 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urljoin
 from uuid import UUID
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.providers.errors import ProviderError
 from app.providers.polite import PoliteError, contact_email, live_client
 from app.repositories.corpus import (
@@ -165,6 +166,65 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         if written is not None:
             saved += 1
     return saved
+
+
+def empty_official_sources(engine: Engine) -> list[str]:
+    """还没有任何正文的官方来源。迁移没建出来的来源不算，避免启动时报错。"""
+
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                """
+                SELECT s.code FROM corpus_sources s
+                WHERE s.code = ANY(:codes)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM corpus_documents d WHERE d.source_id = s.id
+                  )
+                ORDER BY s.code
+                """
+            ),
+            {"codes": list(FEEDS)},
+        )
+    return [str(row[0]) for row in rows]
+
+
+def catch_up_official_texts(
+    engine: Engine,
+    settings: Settings,
+    *,
+    missing: list[str] | None = None,
+    enqueuer: Any = None,
+    list_tasks: Any = None,
+) -> int:
+    """调度器启动时，空着的官方来源马上补最近一批，不用等到下一个整点。
+
+    已经有正文的来源不重复登记，之后靠每小时的定时任务补新的。
+    没有真实联系邮箱时不登记。
+    """
+
+    from app.services.scheduler import build_official_text_tasks, enqueue_built
+
+    if not settings.scheduler_enable_official_texts:
+        return 0
+    if contact_email(settings.sec_user_agent) is None:
+        return 0
+    wanted = set(FEEDS if missing is None else missing)
+    if missing is None:
+        wanted = set(empty_official_sources(engine))
+    if not wanted:
+        return 0
+
+    def builder(current: Engine, active: Settings, now: datetime) -> list[Any]:
+        source = list_tasks or build_official_text_tasks
+        picked = []
+        for task in source(current, active, now):
+            if task.scope.get("source") not in wanted:
+                continue
+            task.scope["limit"] = "20"
+            picked.append(task)
+        return picked
+
+    return enqueue_built(engine, settings, builder, "sync_official_texts", enqueuer=enqueuer)
 
 
 _NBS_STAMP = re.compile(r"t(20\d{2})(\d{2})(\d{2})_")
