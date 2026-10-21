@@ -46,15 +46,24 @@ def bocha_hits(payload: bytes) -> tuple[SearchHit, ...]:
     )
 
 
-def brave_request(query: str) -> tuple[str, dict[str, str]]:
-    return f"{BRAVE_URL}?{urlencode({'q': query, 'count': '8'})}", {
+def brave_request(query: str, freshness: str | None = None) -> tuple[str, dict[str, str]]:
+    params = {"q": query, "count": "8"}
+    brave_freshness = {"oneDay": "pd", "oneWeek": "pw", "oneMonth": "pm", "oneYear": "py"}.get(
+        freshness or ""
+    )
+    if brave_freshness:
+        params["freshness"] = brave_freshness
+    return f"{BRAVE_URL}?{urlencode(params)}", {
         "Accept": "application/json",
         "X-Subscription-Token": "",
     }
 
 
-def bocha_body(query: str) -> bytes:
-    return json.dumps({"query": query, "count": 8, "summary": False}, ensure_ascii=False).encode()
+def bocha_body(query: str, freshness: str | None = None) -> bytes:
+    body: dict[str, Any] = {"query": query, "count": 8, "summary": False}
+    if freshness:
+        body["freshness"] = freshness
+    return json.dumps(body, ensure_ascii=False).encode()
 
 
 def _hit(item: Any, provider: str, title: Any, snippet: Any, when: Any) -> SearchHit:
