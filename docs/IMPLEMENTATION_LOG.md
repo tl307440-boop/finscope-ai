@@ -2403,3 +2403,11 @@ uff 通过。
 1. 部署后在「集成设置」填智谱密钥，点测试连接；看 `corpus_embed` 任务是否写入，再用同义说法问一条已入库的政策。
 2. 有密钥后跑 corpus 评测集，校准 `CORPUS_MIN_SIMILARITY`。
 3. 工信部、发改委继续找官方 RSS 或开放数据接口。
+
+## 2026-10-21 部署没跑起来：深交所解析器占用了 HTMLParser 的内部属性
+
+PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI 成功后才构建镜像。CI 失败后这次部署被标记为 skipped，服务器没有更新。
+
+失败的是 `tests/unit/test_policy_feeds.py::test_szse_list_ignores_pages_without_the_list_and_empty_lists`。GitHub 托管机的 Python 3.12 打了 2026 年的 HTMLParser 安全补丁（CVE-2026-15308），内部用实例属性 `_pending` 做缓冲；空字符串会走 `self._pending.append`。深交所解析器 `_SzseNews` 在 `super().__init__()` 之后把 `_pending` 写成了 None（自己用来记「还没配上日期的一条」）。本机的 Python 3.12.12 还没有这个补丁，`feed("")` 不碰 `_pending`，所以本地单测是绿的，CI 上才爆。非空页面一次送进去，长度不小于缓冲阈值，没走到 `append`，所以只有空页面这一条失败。
+
+修复：这个字段改名为 `_record`。并断言解析器自己的 `__dict__` 里如果有 `_pending`，它必须仍是列表。
