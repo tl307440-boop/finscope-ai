@@ -2040,3 +2040,60 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - 没有 Brave / 博查密钥就仍然答不了没有文字稿的访谈。密钥要用户自己申请。
 - 博查结果在书面确认前也不保存。
 - 证监会、交易所、IMF / BIS / ECB 仍是第二批。人民银行按 robots 不抓。
+
+## 2026-10-21 ASSISTANT-3A4 联网检索可靠性：服务出错不再说成「查不到」
+
+分支 `feat/assistant-web-reliability`。起因：用户问「马斯克前几天在推特上说了什么」，助手回答「查不到」，一周、一个月、中文、英文共查了 4 次，全是空。
+
+### 查到的原因（2026-10-21，在服务器后端容器里只读调用，没改任何东西）
+
+- 博查返回 **HTTP 403** `You do not have enough money or package quota`，即余额不足；Brave 没配密钥，而且从这台服务器直连 `api.search.brave.com` 15 秒超时，配了密钥也未必能用。
+- 代码只认 HTTP 200，403、401、429、超时都按「空结果」处理，工具只告诉模型「网上没有查到可用的结果」，模型就答「查不到」。
+- 用户给博查充值后，同样的问题已能查到（2026-10-18 起多家媒体的报道：马斯克称美债问题只能靠 AI 和机器人解决）。限定最近一周比不限时间更准；不限时间时前几条是 2025 年的旧闻。
+
+### 做了什么
+
+- **服务出错和没有结果分开**：新增 `SearchServiceError`。所有配置过的搜索服务都出错（密钥无效或额度不足、请求过多、服务故障、网络超时），或一个密钥都没有时，`web_search` 返回 `unavailable`，原因写明「联网检索服务暂时不可用（博查：密钥无效或额度不足），不是网上没有这条消息」，并要求模型如实告诉用户、不要说查不到、不要凭记忆作答。真的没有匹配时原因是「检索服务正常，但没有查到可用的结果」。原因文本不含密钥，长度在渲染截断的 200 字以内。日志只记提供方、状态码或异常类型，不记地址和密钥。
+- **每回合最多联网 2 次，由代码保证**：`ToolContext.web_searches` 计数，超过就返回「本回合已经联网检索 2 次，不要再查」。本回合搜索服务已经报错（`ToolContext.web_failure`）就不再重试，直接返回同一原因。
+- **时间范围由代码决定**：`infer_freshness(query)` 按检索词里的时间词推断（今天、刚刚 → 一天；前几天、本周、昨天 → 一周；最近、近期、本月 → 一个月；没有时间词不限）。`WebSearchArgs` 不再有 `freshness` 参数，模型多填的值被忽略。限定范围内为空时，沿用上一版的「自动改为不限时间再查」。
+- **提示词 v3 第 7 条和「结论」一条**：去掉「不要填 freshness」「只查一次」，改成保留时间词、最多两次；区分「检索服务出错」和「没有匹配结果」两种情况。版本号仍是 `assistant_v3`。
+- `_live_search` 拆出 `_ask`，并可注入 `httpx.Client`，离线测试用 `httpx.MockTransport`。
+
+### 变更文件
+
+`backend/app/providers/web_search.py`、`backend/app/services/assistant/tools/web.py`、`backend/app/services/assistant/tools/base.py`、`backend/app/prompts/assistant_v3.txt`、`backend/tests/unit/test_official_and_web.py`。无迁移，无新接口，无新依赖。
+
+### 用例
+
+`test_official_and_web.py` 新增 11 个测试函数（参数化展开后 18 个用例，原有 11 个，合计 29）：时间词推断 8 种检索词；模型填的 `freshness` 被忽略；403 额度错误给出服务问题的原因、不泄露密钥、原因不超过 200 字；博查失败后改用 Brave；服务正常返回空不算错误；超时与没有密钥；状态码说明；工具层服务出错后本回合不再重试，且渲染给模型的文本带「不是网上没有这条消息」；没有匹配结果与服务出错措辞不同；每回合最多 2 次、下一回合重新计数；走真实路径时由「前几天」得到一周范围，并把服务错误经注册表传出。
+
+### 验证（本机，Windows，uv 0.9.28 + Python 3.12，依赖按 `uv.lock`）
+
+| 命令 | 结果 |
+| --- | --- |
+| `uv run pytest tests/unit/test_official_and_web.py` | 29 passed |
+| `uv run pytest tests/unit`（连跑 3 次） | 931 passed ×3；另有一次 1 failed（见下，与本任务无关） |
+| `uv run ruff check .` | All checks passed |
+| `uv run ruff format --check .` | 434 files already formatted |
+| `uv run mypy app` | Success: no issues found in 273 source files |
+| 用假密钥直接请求真实的博查接口，经新的 `_live_search` | 博查返回 401，抛出 `SearchServiceError`，原因为「博查：密钥无效或额度不足」；日志只有 `provider=bocha status=401`；`infer_freshness("马斯克 推特 前几天 AI 机器人")` 为 `oneWeek` |
+
+### 没有验证的
+
+- `tests/integration`：本机没有 PostgreSQL，Docker Desktop 也没启动，`test_assistant_agent_turns.py` 15 个全部 skipped。交给 CI（ubuntu + pgvector）。
+- 带真实博查密钥的成功路径走新代码：没有做（密钥只在服务器上，不取出）。请求构造 `bocha_body`、`bocha_hits` 没变，`_ask` 只是把原有请求搬了位置，并有 MockTransport 测试；部署后要用同一段服务器诊断脚本复测，并在页面上问「马斯克前几天在推特上说了什么」。
+- 本地没有起应用或容器，本次改动只有工具层，没有页面变化。
+
+### 已知局限与阻塞
+
+- **BLOCKED：第二家搜索服务**。Brave 在阿里云这台服务器上连不通，目前只有博查可用。要备用，得找国内能直连的搜索服务，接入前先核条款和价格。
+- **NOT_IMPLEMENTED：搜索服务健康显示**。「运行状态」页还看不到博查余额不足或密钥失效，目前只能看后端日志里的 `web search failed`。
+- 服务出错的调用仍会计入当天的 `ASSISTANT_WEB_DAILY_LIMIT`。
+- 推特原文：通用搜索几乎只收录报道，不会有推文原文，回答只能是「据报道」并标未核实。不抓 x.com；要原文只能用 X 官方 API，那是付费服务，需要你确认。
+- **既有的不稳定测试（未改）**：`tests/unit/test_filing_report.py::test_rules_report_uses_only_stored_sample_numbers`。`_fact()` 用 `uuid4()` 做事实 id，报告正文带这些 id，随机 UUID 含 `999` 时 `assert "999" not in draft.body` 会变红，概率约 1%–2%。文件里已有注释说明对 `user_id` 做过同样的固定，这里漏了事实 id。
+
+### 下一项建议
+
+1. 合并部署后复测联网检索（服务器诊断脚本 + 页面实问一次）。
+2. 「运行状态」页加搜索服务健康：最近一次联网成功时间、最近的失败原因，博查余额低时提醒。
+3. 修 `test_filing_report.py` 的不稳定（固定事实 id），一行改动，单独提交。

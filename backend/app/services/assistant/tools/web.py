@@ -4,9 +4,10 @@
 会改由我们自己的抓取器取原文并入库，那部分可以长期引用。
 """
 
+import logging
 import threading
 from datetime import UTC, date
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 import httpx
@@ -16,11 +17,16 @@ from app.core.config import Settings, get_settings
 from app.providers.polite import PoliteError, contact_email, live_client
 from app.providers.web_search import (
     BOCHA_URL,
+    NO_KEY_REASON,
     SearchHit,
+    SearchServiceError,
     bocha_body,
     bocha_hits,
     brave_hits,
     brave_request,
+    describe_status,
+    infer_freshness,
+    service_down_reason,
 )
 from app.repositories.corpus import CorpusRepository
 from app.services.assistant.results import Column, Passage, ToolResult, unavailable
@@ -29,7 +35,15 @@ from app.services.assistant.tools.corpus import _passage
 from app.services.official_texts import FEEDS, OfficialFeed
 from app.services.runtime_settings import effective_settings
 
-_CJK = "\u4e00"  # 只要问题里有汉字就先走博查
+logger = logging.getLogger(__name__)
+
+# 每回合最多联网两次（中文一次、英文一次）。模型有时会按一周、一个月、中文、英文各查一遍。
+MAX_SEARCHES_PER_TURN = 2
+_TURN_LIMIT_REASON = (
+    f"本回合已经联网检索 {MAX_SEARCHES_PER_TURN} 次，不要再查，直接用已有的资料回答；"
+    "已有资料都没有结果时，如实说明网上没查到。"
+)
+_LABELS = {"bocha": "博查", "brave": "Brave"}
 _LOCK = threading.Lock()
 _USED: dict[str, tuple[date, int]] = {}
 # 只拦明显不能检索的内容。宏观、选举、政策问答不在这里，那些是投研问题。
@@ -41,14 +55,15 @@ _OFFICIAL = {
 
 
 class WebSearchArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # 旧版本的参数里有 freshness。现在由系统按检索词里的时间词决定，模型再填也直接忽略。
+    model_config = ConfigDict(extra="ignore")
 
     query: str = Field(
-        min_length=2, max_length=200, description="检索词。中文问题用中文，英文来源用英文"
-    )
-    freshness: Literal["oneDay", "oneWeek", "oneMonth", "oneYear"] | None = Field(
-        default=None,
-        description="不要填。限定时间后博查经常返回空；「前几天」「最近」写在 query 里",
+        min_length=2,
+        max_length=200,
+        description=(
+            "检索词，保留「前几天」「最近」「刚刚」这类时间词。中文问题用中文，英文来源用英文"
+        ),
     )
 
 
@@ -56,11 +71,12 @@ class WebSearchTool:
     name: ClassVar[str] = "web_search"
     description: ClassVar[str] = (
         "在网上检索近期访谈、新闻、讲话报道。只在语料库和公告里没有原文时使用。"
-        "不要填 freshness，把「前几天」「最近」留在检索词里，只查一次。"
-        "限定时间如果是空的，系统会自动改为不限时间再查一次。"
+        "检索词里的「前几天」「最近」「刚刚」会被系统换成发布时间范围，范围内没有结果时"
+        f"自动改为不限时间再查。每回合最多查 {MAX_SEARCHES_PER_TURN} 次，不要换词重复查。"
         "返回的是网页摘要，没有被系统核对。回答第一句就要给出判断并写 [n]，"
         "说明这是报道不是官方原文。资料上的日期早于用户说的范围也要作答，并写明发布日期。"
         "不要因为没有逐字稿就说无法判断。结果不会保存，刷新后需要重新查。"
+        "工具写明检索服务出错时，那是服务问题，不是网上没有这条消息。"
     )
     args_model: ClassVar[type[BaseModel]] = WebSearchArgs
 
@@ -71,26 +87,35 @@ class WebSearchTool:
     def run(self, ctx: ToolContext, args: Any) -> ToolResult:
         assert isinstance(args, WebSearchArgs)
         query = args.query.strip()
+        title = query[:40]
         if any(word in query for word in _BLOCKED):
-            return unavailable(self.name, query[:40], ctx.today_cn, "这个问题不能联网检索", "联网")
+            return unavailable(self.name, title, ctx.today_cn, "这个问题不能联网检索", "联网")
+        if ctx.web_failure is not None:  # 本回合服务已经报错，再查也一样
+            return unavailable(self.name, title, ctx.today_cn, ctx.web_failure, "联网")
+        if ctx.web_searches >= MAX_SEARCHES_PER_TURN:
+            return unavailable(self.name, title, ctx.today_cn, _TURN_LIMIT_REASON, "联网")
+        settings: Settings | None = None
         if self._search is None:
             settings = _settings(ctx)
             if not settings.assistant_web_search_enabled:
-                return unavailable(self.name, query[:40], ctx.today_cn, "联网检索没有开通", "联网")
+                return unavailable(self.name, title, ctx.today_cn, "联网检索没有开通", "联网")
             if not _allow(ctx.user_id, ctx.today_cn, settings.assistant_web_daily_limit):
-                return unavailable(
-                    self.name, query[:40], ctx.today_cn, "今天的联网次数已经用完", "联网"
-                )
-            hits, widened = _search_with_window(query, settings, args.freshness)
-        else:
-            hits = list(self._search(query))
-            widened = False
+                return unavailable(self.name, title, ctx.today_cn, "今天的联网次数已经用完", "联网")
+        ctx.web_searches += 1
+        try:
+            if settings is not None:
+                hits, widened = _search_with_window(query, settings, infer_freshness(query))
+            else:
+                hits, widened = list(self._search(query)), False
+        except SearchServiceError as exc:
+            ctx.web_failure = exc.reason
+            return unavailable(self.name, title, ctx.today_cn, exc.reason, "联网")
         usable = [
             hit for hit in hits if hit.url.startswith("https://") and hit.snippet and hit.title
         ]
         if not usable:
             return unavailable(
-                self.name, query[:40], ctx.today_cn, "网上没有查到可用的结果", "联网"
+                self.name, title, ctx.today_cn, "检索服务正常，但没有查到可用的结果", "联网"
             )
         passages: list[Passage] = []
         rows: list[dict[str, str | None]] = []
@@ -250,36 +275,57 @@ def _search_with_window(
     return list(search(query, settings, None)), True
 
 
-def _live_search(query: str, settings: Settings, freshness: str | None = None) -> list[SearchHit]:
+def _live_search(
+    query: str,
+    settings: Settings,
+    freshness: str | None = None,
+    client: httpx.Client | None = None,
+) -> list[SearchHit]:
+    """按语言排好两家的先后，第一家有响应就用它。
+
+    返回空列表表示「服务正常、没有匹配」；所有配置过的服务都出错（密钥、额度、网络）
+    或者一个密钥都没有时抛 `SearchServiceError`，调用方要把它和「没有结果」分开说。
+    """
+
     chinese = any("\u4e00" <= char <= "\u9fff" for char in query)
     order = (("bocha", settings.bocha_api_key), ("brave", settings.brave_api_key))
     if not chinese:
         order = (("brave", settings.brave_api_key), ("bocha", settings.bocha_api_key))
-    with httpx.Client(timeout=15) as client:
-        for name, key in order:
-            if not key.strip():
-                continue
+    configured = [(name, key.strip()) for name, key in order if key.strip()]
+    if not configured:
+        raise SearchServiceError(NO_KEY_REASON)
+    failures: list[tuple[str, str]] = []
+    http = client if client is not None else httpx.Client(timeout=15)
+    try:
+        for name, key in configured:
             try:
-                if name == "brave":
-                    url, headers = brave_request(query, freshness)
-                    headers = {**headers, "X-Subscription-Token": key.strip()}
-                    payload = client.get(url, headers=headers)
-                    if payload.status_code == 200:
-                        return [hit for hit in brave_hits(payload.content) if hit.url]
-                else:
-                    payload = client.post(
-                        BOCHA_URL,
-                        content=bocha_body(query, freshness),
-                        headers={
-                            "Authorization": f"Bearer {key.strip()}",
-                            "Content-Type": "application/json",
-                        },
-                    )
-                    if payload.status_code == 200:
-                        return [hit for hit in bocha_hits(payload.content) if hit.url]
-            except httpx.HTTPError:
+                response = _ask(http, name, key, query, freshness)
+            except httpx.HTTPError as exc:
+                logger.warning("web search failed: provider=%s error=%s", name, type(exc).__name__)
+                failures.append((_LABELS[name], "网络超时或连接失败"))
                 continue
-    return []
+            if response.status_code == 200:
+                parse = brave_hits if name == "brave" else bocha_hits
+                return [hit for hit in parse(response.content) if hit.url]
+            logger.warning("web search failed: provider=%s status=%s", name, response.status_code)
+            failures.append((_LABELS[name], describe_status(response.status_code)))
+    finally:
+        if client is None:
+            http.close()
+    raise SearchServiceError(service_down_reason(failures))
+
+
+def _ask(
+    client: httpx.Client, name: str, key: str, query: str, freshness: str | None
+) -> httpx.Response:
+    if name == "brave":
+        url, headers = brave_request(query, freshness)
+        return client.get(url, headers={**headers, "X-Subscription-Token": key})
+    return client.post(
+        BOCHA_URL,
+        content=bocha_body(query, freshness),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
 
 
 def _fetch_official(feed: OfficialFeed, url: str) -> str:
