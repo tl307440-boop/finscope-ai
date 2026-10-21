@@ -12,7 +12,9 @@ _BOM = b"\xef\xbb\xbf"
 class FeedItem:
     title: str
     url: str
-    published_at: datetime
+    # 只有列表本身不写日期的来源（证监会首页）才是 None：
+    # 发布时间以正文页元数据为准，正文也没有就丢弃。
+    published_at: datetime | None
 
 
 def parse_rss(payload: bytes) -> tuple[FeedItem, ...]:

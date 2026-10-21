@@ -65,6 +65,14 @@ def test_several_user_agent_lines_share_one_group() -> None:
     assert _allows(text, "/open")
 
 
+def test_a_leading_byte_order_mark_does_not_hide_the_first_group() -> None:
+    text = (
+        "\ufeffUser-agent: * \nAllow: /1\nSitemap:http://x.test/map.xml\nDisallow:/2016zhengce/\n"
+    )
+    assert not _allows(text, "/2016zhengce/a.htm")
+    assert _allows(text, "/zhengce/202610/content_1.htm")
+
+
 @pytest.mark.parametrize("path", ["/", "/index.html"])
 def test_disallow_everything(path: str) -> None:
     assert not _allows("User-agent: *\nDisallow: /\n", path)

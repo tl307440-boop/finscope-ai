@@ -2273,3 +2273,75 @@ uff 通过。
 3. CI 上确认集成测试（含 `test_corpus_repository.py` 和迁移 `0033`）与 corpus 评测集。
 4. 补查 gov.cn 当前的政策列表页和证监会新版站点；工信部、发改委要找官方 RSS 或开放数据接口，不绕过 robots 和 WAF。
 5. 修 `test_filing_report.py` 的不稳定（固定事实 id），一行改动，单独提交。
+
+## 2026-10-21 ASSISTANT-5B 政策语料：中国政府网「最新政策」、证监会要闻
+
+分支 `feat/assistant-data-tools`。接上一节「下一项建议」第 4 条，由用户选定「继续补政策来源」。本节同时更正上一节两处已过时的说法：
+
+- 「`BLOCKED` 国务院、证监会、工信部、发改委的政策列表」：国务院、证监会**已接入**（见下）；工信部、发改委仍是 `BLOCKED`，原因不变。
+- 「`test_filing_report.py` 的不稳定测试仍未修」：已在提交 `a1ee994` 修好，`_fact()` 的事实 id 改为由 accession、期间和数值算出的 `uuid5`，不再随机。
+
+### 探查（礼貌请求，间隔 2 秒以上，UA `FinScopeAI/1.0 (research prototype; +ops@finscope.test)`）
+
+- 中国政府网共 7 次请求（探查 6 次，写日志时为核实 robots 补 1 次）。`robots.txt` 只禁止 `/2016zhengce/`、`/premier/` 等旧目录和个别页面，不涉及 `/zhengce/`。「最新政策」栏目页面本身由脚本渲染，但它读的是同目录下的静态文件 `https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json`（当时 1106 条，新到旧，每条有 `TITLE`、`URL`、`DOCRELPUBTIME`）。只读这份 JSON、不执行脚本。正文页正文在 `id="UCAP-CONTENT"`，精确发布时间在 `<meta name="firstpublishedtime">`。`/zhengceku/` 返回 403，不用。
+- 证监会共 3 次请求。`robots.txt` 302 跳转到首页、返回的是 HTML：按 RFC 9309，跳转后拿到的内容里没有规则即视为不限制，现有 `PoliteClient` 本来就这样处理（401 / 403 / 5xx 和读取失败仍按禁止）。「要闻」栏目列表页停在 2021-12，不能用；当前要闻链接在首页（约 10 条，路径 `/csrc/c100028/c<数字>/content.shtml`），首页不写日期。正文在 `class="detail-news"`，发布时间在 `<meta name="PubDate">`。
+
+### 做了什么
+
+- 两个新来源登记在 `official_texts.FEEDS`，调度照旧按 `FEEDS` 自动登记，都 `respect_robots=True`：
+  - `gov_policy`（中国政府网，`kind=policy`）：读 JSON 最新 50 条，只收 `https://www.gov.cn/zhengce/` 下的链接。
+  - `csrc_news`（中国证监会，`kind=news`）：读首页，只收上面那个路径格式、带标题的 https 链接并去重。
+- 发布时间：`OfficialFeed` 新增 `time_meta`，`policy_lists.page_published_at` 从指定 `<meta>` 读上海时间、存为 UTC。列表有日期时，正文页时间落在同一个上海日历日才采用（更精确），否则保留列表日期；列表没有日期（证监会首页）时只认正文页时间，**正文页也没有就整篇跳过**，不猜日期。`FeedItem.published_at` 因此改为可空，只有证监会首页这一种来源会是空。
+- **修了 robots 解析的一个合规问题**（`app/providers/robots.py`）：政府网的 robots.txt 以 UTF-8 BOM 开头，原来的解析器认不出第一行 `User-agent: *`，整份规则被当成空的，结果连对方明确禁止的目录也判为允许。现在解析前去掉 BOM。这次要抓的 `/zhengce/` 本来就允许，接入本身不受影响；之前 `fetch_url` 和 `web_search` 读政府网页面时也走这段逻辑，同样被修正。
+- `web_search` 命中这两个站时按官方原文处理，但只限政策路径：政府网 `/zhengce/`、证监会 `/csrc/`；政府网新闻稿（`/xinwen/` 等）仍按未核实的报道摘要处理，不下载。
+- `documents` 技能：语料库内容加上「中国政府网最新政策、证监会要闻」；第 7 条改为：只收了这两个栏目的近期文章，更早的文件和各部委自己发的文件（工信部、发改委）没有收，查不到就走 `web_search` / `fetch_url`。
+
+### 变更文件
+
+- 新增：`backend/alembic/versions/20261023_0034_gov_csrc_sources.py`。
+- 修改：`backend/app/services/{policy_lists,official_texts,rss_feed}.py`、`backend/app/providers/robots.py`、`backend/app/repositories/corpus.py`（`GOV_POLICY_SOURCE`、`CSRC_NEWS_SOURCE`）、`backend/app/services/assistant/tools/web.py`、`backend/app/prompts/skills/documents.md`、`backend/tests/unit/{test_policy_feeds,test_official_and_web,test_robots}.py`。
+- 迁移：`20261023_0034` 接在 `20261022_0033` 之后，往 `corpus_sources` 插入 `gov_policy`（`government` / `json`，`www.gov.cn`）、`csrc_news`（`regulator` / `html`，`www.csrc.gov.cn`）两行，每小时，`robots_checked_at` 记 2026-10-21；downgrade 先删这两个来源的文档，再删来源。无新依赖。
+
+### 用例（新增 22 个）
+
+- `test_robots.py`（+1）：以 BOM 开头的文件，第一组规则照样生效（`/2016zhengce/` 禁止、`/zhengce/` 允许）。
+- `test_policy_feeds.py`（+20，政府网 robots 假件按真实文件带 BOM）：
+  - 迁移：UUID 与 `FEEDS` 一一对应（含 0034），0034 的链和 downgrade。
+  - 政府网列表：新到旧、只留 `/zhengce/`；不是 JSON 数组时没有条目（参数化 4）；只看最新 50 行。
+  - 证监会首页：只取要闻栏目链接、无日期、去重；改版后的首页没有条目。
+  - 页面时间：按指定 meta 读出上海时间并转 UTC，名字大小写不敏感，缺失或格式坏时为空（参数化）。
+  - `FEEDS` 登记：两源都读 robots、各带页面时间 meta。
+  - 同步：同一天时用正文页精确时间；正文页没有时间保留列表日期；robots 禁止 `/zhengce/` 时停止；证监会按正文页定日期、没有时间的文章跳过（robots 302 到首页视为允许，请求顺序 robots → 首页 → 首页）；证监会以后真放了 robots.txt 规则会被遵守。
+- `test_official_and_web.py`（+1）：政府网 `/zhengce/` 和证监会 `/csrc/` 页面按官方原文（已核实），政府网 `/xinwen/` 保持未核实摘要、不下载。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/unit` | 1250 passed |
+| `backend\.venv\Scripts\python.exe -m ruff check app tests alembic` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check app tests alembic` | 481 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 291 source files |
+| `alembic heads` | `20261023_0034 (head)`，单头 |
+| `alembic upgrade 20261022_0033:20261023_0034 --sql` 与对应 downgrade | SQL 渲染正常（插入两行 / 先删文档再删来源） |
+| 用新解析器读探查时下载到本地的真实页面（不联网，一次性脚本，已和探查文件一起删除） | 政府网 JSON 取 50 条，最新一条是 10 月 21 日《中办国办关于推动科技创新和产业创新深度融合的意见》；证监会首页取 11 条要闻；3 篇正文都抽出了正文和精确发布时间（如证监会《证券市场先行赔付指导意见》征求意见稿为北京时间 2026-10-19 19:03:25） |
+| 用 `RobotsRules` 判断真实的政府网 robots.txt（本地文件，不联网） | 修复前 `/2016zhengce/x.htm` 被判允许；修复后为禁止；`/zhengce/zuixin/ZUIXINZHENGCE.json` 和两篇正文路径为允许 |
+
+### 没有验证的
+
+- **没有对真实站点跑完整同步，没有写真实数据库**；迁移 `0034` 的真实升级交给 CI（ubuntu + PostgreSQL）。
+- 列表取 50 条，但每次同步每源最多存 8 篇（来源为空时的首次补跑是 20 篇），其余要等后续每小时的同步陆续补上；线上实际耗时和补齐所需时间没有观察过。
+
+### 已知局限与阻塞
+
+- `BLOCKED` 工信部（miit.gov.cn）：文件库列表靠 JS 渲染，没找到静态数据源。
+- `BLOCKED` 发改委（ndrc.gov.cn）：robots 返回 403（WAF），按规则当作禁止，没有绕过。
+- 政府网只收「最新政策」栏目，更早的文件不回补；证监会只收首页当前展示的约 10 条要闻，首页撤下之前没被同步到的文章会漏掉。
+- 两站都依赖当前的页面结构（JSON 字段名、首页链接格式、正文容器、meta 名）；改版后会取不到条目或跳过文章，不会写错数据。
+- `BLOCKED` 向量检索：用户已选外部嵌入 API 路线，**等用户选定服务商并提供密钥**后再做。
+
+### 下一项建议
+
+1. 用户提供嵌入 API 的服务商和密钥后，做官方文本与公告的向量化和混合检索，并跑 corpus 评测集对比 Recall@5。
+2. 部署后看政府网、证监会两源的首次同步结果（条数、`published_at`、正文长度），再用「中国半导体还有救吗」重问。
+3. 工信部、发改委继续找官方 RSS 或开放数据接口。

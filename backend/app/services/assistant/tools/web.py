@@ -57,7 +57,11 @@ _OFFICIAL = {
     "www.stats.gov.cn": "nbs_release",
     "www.szse.cn": "szse_news",
     "www.sse.com.cn": "sse_supervision",
+    "www.gov.cn": "gov_policy",
+    "www.csrc.gov.cn": "csrc_news",
 }
+# 这两个站上只有这些路径下的页面算对应来源的原文；政府网的新闻、服务页面照旧按网页摘要处理。
+_OFFICIAL_PATHS = {"gov_policy": "/zhengce/", "csrc_news": "/csrc/"}
 
 
 class WebSearchArgs(BaseModel):
@@ -180,7 +184,10 @@ class WebSearchTool:
         )
 
     def _official(self, ctx: ToolContext, hit: SearchHit) -> list[Passage]:
-        code = _OFFICIAL.get((urlsplit(hit.url).hostname or "").lower())
+        parts = urlsplit(hit.url)
+        code = _OFFICIAL.get((parts.hostname or "").lower())
+        if code is not None and not parts.path.startswith(_OFFICIAL_PATHS.get(code, "/")):
+            code = None
         feed = FEEDS.get(code or "")
         if (
             feed is None

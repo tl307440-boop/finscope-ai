@@ -268,6 +268,46 @@ def test_exchange_pages_from_search_are_taken_as_official_text_but_reposts_are_n
     assert [row["note"] for row in result.rows] == ["已改为官方原文", "已改为官方原文", "未核实"]
 
 
+def test_only_policy_pages_on_gov_cn_and_csrc_pages_count_as_official_text() -> None:
+    def search(_query: str) -> list[SearchHit]:
+        return [
+            SearchHit(
+                "国务院关于某行动计划的批复",
+                "https://www.gov.cn/zhengce/content/202610/content_7082737.htm",
+                "摘要不应被使用",
+                date(2026, 10, 8),
+                "博查",
+            ),
+            SearchHit(
+                "中国证监会召开专家座谈会",
+                "https://www.csrc.gov.cn/csrc/c100028/c7663814/content.shtml",
+                "摘要不应被使用",
+                date(2026, 10, 16),
+                "博查",
+            ),
+            SearchHit(
+                "政府网新闻稿",
+                "https://www.gov.cn/xinwen/2026-10/20/content_1.htm",
+                "新闻稿的摘要",
+                date(2026, 10, 20),
+                "博查",
+            ),
+        ]
+
+    fetched: list[str] = []
+
+    def fetch(url: str) -> str:
+        fetched.append(url)
+        return "现将有关事项通知如下，请认真贯彻落实。"
+
+    result = WebSearchTool(search=search, fetch_page=fetch).run(
+        _ctx(), WebSearchArgs(query="国务院 批复")
+    )
+    assert [passage.verified for passage in result.passages] == [True, True, False]
+    assert result.passages[2].content == "新闻稿的摘要"
+    assert all("/xinwen/" not in url for url in fetched)
+
+
 def test_blocked_queries_are_not_searched() -> None:
     called = {"n": 0}
 

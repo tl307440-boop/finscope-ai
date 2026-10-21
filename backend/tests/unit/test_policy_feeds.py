@@ -1,9 +1,11 @@
-"""深交所本所要闻、上交所监管动态：列表解析、正文容器、robots 处理、迁移与调度的一致性。
+"""深交所本所要闻、上交所监管动态、国务院最新政策、证监会要闻：列表解析、正文容器、发布时间、
+robots 处理、迁移与调度的一致性。
 
 夹具是按真实页面（2026-10-21 核对）的结构缩写的：只留结构和几条标题，正文是自拟的短句，
 不含整页的真实版权全文。全部离线，不联网。
 """
 
+import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -16,6 +18,8 @@ from app.core.config import Settings
 from app.providers.errors import ProviderError
 from app.providers.polite import Exchange, PoliteClient, user_agent_for
 from app.repositories.corpus import (
+    CSRC_NEWS_SOURCE,
+    GOV_POLICY_SOURCE,
     SSE_SUPERVISION_SOURCE,
     SZSE_NEWS_SOURCE,
     NewChunk,
@@ -25,9 +29,15 @@ from app.services import official_texts, scheduler
 from app.services.html_text import article_text
 from app.services.official_texts import FEEDS, parse_listing, sync_official
 from app.services.policy_lists import (
+    CSRC_HOME,
+    GOV_LIST_LIMIT,
+    GOV_POLICY_LIST,
     SSE_SUPERVISION_PAGE,
     SZSE_NEWS_PAGE,
     day_start_in_shanghai,
+    page_published_at,
+    parse_csrc_home_news,
+    parse_gov_policy_list,
     parse_sse_list,
     parse_szse_news_list,
 )
@@ -244,13 +254,17 @@ def test_feed_source_ids_are_unique_and_match_the_migrations() -> None:
     versions = Path(__file__).resolve().parents[2] / "alembic" / "versions"
     sql = "\n".join(
         path.read_text(encoding="utf-8")
-        for name in ("20261021_0032_official_sources.py", "20261022_0033_policy_sources.py")
+        for name in (
+            "20261021_0032_official_sources.py",
+            "20261022_0033_policy_sources.py",
+            "20261023_0034_gov_csrc_sources.py",
+        )
         for path in [versions / name]
     )
     rows = dict(re.findall(r"'(00000000-0000-4000-8000-[0-9a-f]{12})',\s*'([a-z_]+)'", sql))
     assert len({str(feed.source_id) for feed in FEEDS.values()}) == len(FEEDS)
     for code, feed in FEEDS.items():
-        assert rows.get(str(feed.source_id)) == code, f"{code} 的 UUID 不在 0032 / 0033 里"
+        assert rows.get(str(feed.source_id)) == code, f"{code} 的 UUID 不在 0032–0034 里"
         assert all(f"'{host}'" in sql for host in feed.hosts), f"{code} 的主机没有写进迁移"
     assert set(rows.values()) == set(FEEDS)  # 迁移里没有多出 FEEDS 里不存在的来源
 
@@ -268,6 +282,20 @@ def test_migration_0033_chains_after_0032_and_can_be_undone() -> None:
         if 'down_revision: str | None = "20261021_0032"' in path.read_text(encoding="utf-8")
     ]
     assert followers == ["20261022_0033_policy_sources.py"]
+
+
+def test_migration_0034_chains_after_0033_and_can_be_undone() -> None:
+    versions = Path(__file__).resolve().parents[2] / "alembic" / "versions"
+    source = (versions / "20261023_0034_gov_csrc_sources.py").read_text(encoding="utf-8")
+    assert 'revision: str = "20261023_0034"' in source
+    assert 'down_revision: str | None = "20261022_0033"' in source
+    assert "def downgrade" in source and "DELETE FROM corpus_sources" in source
+    followers = [
+        path.name
+        for path in versions.glob("*.py")
+        if 'down_revision: str | None = "20261022_0033"' in path.read_text(encoding="utf-8")
+    ]
+    assert followers == ["20261023_0034_gov_csrc_sources.py"]
 
 
 def test_the_scheduler_registers_every_feed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -499,3 +527,242 @@ def test_unknown_source_and_missing_contact_are_reported(
     with pytest.raises(ProviderError) as missing:
         sync_official(_engine(), "szse_news")
     assert missing.value.code == "DATA_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------- 国务院「最新政策」、证监会要闻
+GOV = "https://www.gov.cn"
+CSRC = "https://www.csrc.gov.cn"
+GOV_A = f"{GOV}/zhengce/202610/content_7083930.htm"
+GOV_B = f"{GOV}/zhengce/content/202610/content_7082737.htm"
+GOV_TITLE = "中办国办关于推动科技创新和产业创新深度融合的意见"
+
+
+def _gov_row(title: str, url: str, day: str) -> dict[str, str]:
+    return {"TITLE": title, "SUB_TITLE": "", "URL": url, "DOCRELPUBTIME": day}
+
+
+GOV_JSON = json.dumps(
+    [
+        _gov_row(GOV_TITLE, GOV_A, "2026-10-21"),
+        _gov_row("国务院关于某行动计划的批复", GOV_B, "2026-10-08"),
+        _gov_row("一条旧的新闻稿", f"{GOV}/xinwen/2020-01/05/content_1.htm", "2020-01-05"),
+        _gov_row("", f"{GOV}/zhengce/202610/content_2.htm", "2026-10-07"),
+        _gov_row("没有日期的条目", f"{GOV}/zhengce/202610/content_3.htm", ""),
+        "不是对象的一行",
+    ],
+    ensure_ascii=False,
+).encode()
+
+
+def _gov_article(published: str | None) -> bytes:
+    meta = f'<meta name="firstpublishedtime" content="{published}">' if published else ""
+    return (
+        f"<html><head>{meta}</head><body><div class='header'>中国政府网 导航</div>"
+        '<div class="pages_content" id="UCAP-CONTENT">'
+        "<p>为推动科技创新和产业创新深度融合，现提出如下意见。</p></div>"
+        "<div class='footer'>版权所有 中国政府网</div></body></html>"
+    ).encode()
+
+
+# 真实文件以 UTF-8 BOM 开头。
+GOV_ROBOTS = b"\xef\xbb\xbfUser-agent: * \nAllow: /1\nDisallow:/2016gov/\nDisallow:/premier/\n"
+CSRC_A = f"{CSRC}/csrc/c100028/c7665462/content.shtml"
+CSRC_B = f"{CSRC}/csrc/c100028/c7663814/content.shtml"
+CSRC_TITLE = "中国证监会就《证券市场先行赔付指导意见》公开征求意见"
+CSRC_HOME_PAGE = (
+    "<html><body>"
+    '<div class="nav"><a href="/csrc/c100028/common_list.shtml">证监会要闻</a></div><ul>'
+    f'<li><a href="/csrc/c100028/c7665462/content.shtml" target="_blank" >{CSRC_TITLE}</a></li>'
+    '<li><a href="/csrc/c100028/c7663814/content.shtml">中国证监会召开资本市场和金融形势'
+    "专家座谈会</a></li>"
+    f'<li><a href="/csrc/c100028/c7665462/content.shtml">{CSRC_TITLE}</a></li>'
+    '<li><a href="/csrc/c101928/c7665091/content.shtml">行政处罚决定书</a></li>'
+    '<li><a href="https://example.com/csrc/c100028/c1/content.shtml">外站链接</a></li>'
+    '<li><a href="/csrc/c100028/c7660000/content.shtml"> </a></li>'
+    "</ul></body></html>"
+).encode()
+
+
+def _csrc_article(published: str | None) -> bytes:
+    meta = f'<meta name="PubDate" content="{published}"/>' if published else ""
+    return (
+        f'<html><head><meta name="ColumnName" content="证监会要闻"/>{meta}</head><body>'
+        '<div class="content"><div class="detail-news">'
+        "<p>为进一步保护投资者合法权益，中国证监会起草了指导意见。</p></div></div>"
+        "<div class='foot'>网站地图</div></body></html>"
+    ).encode()
+
+
+class _RedirectingSite(_Site):
+    """在假站点上加几条重定向（地址 → 跳转目标）。"""
+
+    def __init__(self, pages: dict[str, tuple[int, bytes]], redirects: dict[str, str]) -> None:
+        super().__init__(pages)
+        self.redirects = redirects
+
+    def __call__(self, method: str, url: str, headers: object, content: object) -> Exchange:
+        if url in self.redirects:
+            self.requests.append(url)
+            return Exchange(302, {"location": self.redirects[url]}, b"")
+        return super().__call__(method, url, headers, content)
+
+
+def test_gov_list_reads_the_json_newest_first_and_keeps_only_policy_pages() -> None:
+    items = parse_gov_policy_list(GOV_JSON, GOV_POLICY_LIST)
+    assert [item.url for item in items] == [GOV_A, GOV_B]
+    assert items[0].title == GOV_TITLE
+    assert items[0].published_at == day_start_in_shanghai(datetime(2026, 10, 21).date())
+
+
+@pytest.mark.parametrize("payload", [b"", b"<html>not json</html>", b'{"TITLE": "x"}', b"\xff\xfe"])
+def test_gov_list_that_is_not_a_json_array_gives_no_items(payload: bytes) -> None:
+    assert parse_gov_policy_list(payload, GOV_POLICY_LIST) == ()
+
+
+def test_gov_list_only_looks_at_the_newest_rows() -> None:
+    rows = [
+        _gov_row(f"政策 {n}", f"{GOV}/zhengce/202610/content_{n}.htm", "2026-10-01")
+        for n in range(GOV_LIST_LIMIT + 30)
+    ]
+    items = parse_gov_policy_list(json.dumps(rows).encode(), GOV_POLICY_LIST)
+    assert len(items) == GOV_LIST_LIMIT and items[0].title == "政策 0"
+
+
+def test_csrc_home_gives_the_news_column_links_without_dates() -> None:
+    items = parse_csrc_home_news(CSRC_HOME_PAGE, CSRC_HOME)
+    assert [item.url for item in items] == [CSRC_A, CSRC_B]  # 去重；其他栏目、外站、空标题不要
+    assert items[0].title == CSRC_TITLE
+    assert all(item.published_at is None for item in items)
+    assert parse_csrc_home_news("<html><body>改版</body></html>".encode(), CSRC_HOME) == ()
+
+
+@pytest.mark.parametrize(
+    ("page", "expected"),
+    [
+        (_gov_article("2026-10-21-18:17:00"), datetime(2026, 10, 21, 10, 17, tzinfo=UTC)),
+        (_csrc_article("2026-10-19 19:03:25"), datetime(2026, 10, 19, 11, 3, 25, tzinfo=UTC)),
+        (_csrc_article("2026-10-19"), datetime(2026, 10, 18, 16, tzinfo=UTC)),
+        (_csrc_article("2026-13-40 10:00:00"), None),
+        (_csrc_article("待定"), None),
+        (_csrc_article(None), None),
+    ],
+)
+def test_page_time_is_read_from_the_named_meta_in_shanghai_time(
+    page: bytes, expected: datetime | None
+) -> None:
+    name = "firstpublishedtime" if b"firstpublishedtime" in page else "pubdate"  # 名字不分大小写
+    assert page_published_at(page, name) == expected
+
+
+def test_gov_and_csrc_feeds_are_registered_with_robots_and_page_times() -> None:
+    gov, csrc = FEEDS["gov_policy"], FEEDS["csrc_news"]
+    assert (gov.source_id, gov.hosts, gov.doc_type, gov.list_url) == (
+        GOV_POLICY_SOURCE,
+        frozenset({"www.gov.cn"}),
+        "policy",
+        GOV_POLICY_LIST,
+    )
+    assert (csrc.source_id, csrc.hosts, csrc.doc_type, csrc.list_url) == (
+        CSRC_NEWS_SOURCE,
+        frozenset({"www.csrc.gov.cn"}),
+        "news",
+        CSRC_HOME,
+    )
+    assert gov.respect_robots and csrc.respect_robots
+    assert (gov.time_meta, csrc.time_meta) == ("firstpublishedtime", "PubDate")
+
+
+def _gov_site(article_a: bytes, article_b: bytes) -> _Site:
+    return _Site(
+        {
+            f"{GOV}/robots.txt": (200, GOV_ROBOTS),
+            GOV_POLICY_LIST: (200, GOV_JSON),
+            GOV_A: (200, article_a),
+            GOV_B: (200, article_b),
+        }
+    )
+
+
+def test_gov_sync_takes_the_exact_time_from_the_page_when_it_is_the_same_day(
+    wire: Callable[[_Site, _Repo], None],
+) -> None:
+    # 第二篇的页面时间和列表日期对不上：信列表的日期，不信页面。
+    site = _gov_site(_gov_article("2026-10-21-18:17:00"), _gov_article("2026-09-30-10:00:00"))
+    repo = _Repo()
+    wire(site, repo)
+    assert sync_official(_engine(), "gov_policy") == 2
+    assert site.requests[:2] == [f"{GOV}/robots.txt", GOV_POLICY_LIST]
+    first, second = (document for document, _ in repo.saved)
+    assert (first.source_id, first.kind, first.doc_type) == (
+        GOV_POLICY_SOURCE,
+        "official",
+        "policy",
+    )
+    assert first.published_at == datetime(2026, 10, 21, 10, 17, tzinfo=UTC)
+    assert second.published_at == day_start_in_shanghai(datetime(2026, 10, 8).date())
+    assert "科技创新和产业创新深度融合" in repo.saved[0][1][0].content
+    assert "版权所有" not in repo.saved[0][1][0].content
+
+
+def test_gov_sync_without_page_time_keeps_the_list_date(
+    wire: Callable[[_Site, _Repo], None],
+) -> None:
+    site, repo = _gov_site(_gov_article(None), _gov_article(None)), _Repo()
+    wire(site, repo)
+    assert sync_official(_engine(), "gov_policy") == 2
+    assert repo.saved[0][0].published_at == day_start_in_shanghai(datetime(2026, 10, 21).date())
+
+
+def test_gov_sync_stops_when_robots_forbids_the_policy_section(
+    wire: Callable[[_Site, _Repo], None],
+) -> None:
+    site = _gov_site(_gov_article(None), _gov_article(None))
+    site.pages[f"{GOV}/robots.txt"] = (200, b"\xef\xbb\xbfUser-agent: *\nDisallow: /zhengce/\n")
+    wire(site, _Repo())
+    with pytest.raises(ProviderError) as caught:
+        sync_official(_engine(), "gov_policy")
+    assert caught.value.code == "UPSTREAM_BLOCKED"
+    assert site.requests == [f"{GOV}/robots.txt"]
+
+
+def _csrc_site(article_a: bytes, article_b: bytes) -> _RedirectingSite:
+    # 证监会没有 robots.txt：请求会跳到首页，首页 HTML 里没有任何规则，等于不限制。
+    return _RedirectingSite(
+        {CSRC_HOME: (200, CSRC_HOME_PAGE), CSRC_A: (200, article_a), CSRC_B: (200, article_b)},
+        {f"{CSRC}/robots.txt": CSRC_HOME},
+    )
+
+
+def test_csrc_sync_dates_articles_by_their_page_and_skips_undated_ones(
+    wire: Callable[[_Site, _Repo], None],
+) -> None:
+    site = _csrc_site(_csrc_article("2026-10-19 19:03:25"), _csrc_article(None))
+    repo = _Repo()
+    wire(site, repo)
+    assert sync_official(_engine(), "csrc_news") == 1
+    assert site.requests[:3] == [f"{CSRC}/robots.txt", CSRC_HOME, CSRC_HOME]
+    document, chunks = repo.saved[0]
+    assert (document.source_id, document.doc_type, document.canonical_url) == (
+        CSRC_NEWS_SOURCE,
+        "news",
+        CSRC_A,
+    )
+    assert document.published_at == datetime(2026, 10, 19, 11, 3, 25, tzinfo=UTC)
+    assert "保护投资者合法权益" in chunks[0].content and "网站地图" not in chunks[0].content
+    assert CSRC_B in site.requests  # 读过正文，但正文页没有发布时间，所以没有入库
+
+
+def test_csrc_sync_honours_a_real_robots_file_if_one_appears(
+    wire: Callable[[_Site, _Repo], None],
+) -> None:
+    site = _Site(
+        {
+            f"{CSRC}/robots.txt": (200, b"User-agent: *\nDisallow: /csrc/c100028/\n"),
+            CSRC_HOME: (200, CSRC_HOME_PAGE),
+            CSRC_A: (200, _csrc_article("2026-10-19 19:03:25")),
+        }
+    )
+    repo = _Repo()
+    wire(site, repo)
+    assert sync_official(_engine(), "csrc_news") == 0  # 首页可读，要闻正文路径被禁止，逐篇跳过
+    assert CSRC_A not in site.requests and repo.saved == []

@@ -29,7 +29,9 @@ class RobotsRules:
         groups: list[_Group] = []
         current: _Group | None = None
         collecting_agents = False
-        for raw in text[:MAX_ROBOTS_BYTES].splitlines():
+        # 有的站点（如中国政府网）文件以 BOM 开头，不去掉的话第一行 User-agent 认不出来，
+        # 整份规则失效。
+        for raw in text[:MAX_ROBOTS_BYTES].removeprefix("\ufeff").splitlines():
             line = raw.split("#", 1)[0].strip()
             if ":" not in line:
                 continue
