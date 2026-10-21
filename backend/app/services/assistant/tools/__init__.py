@@ -18,9 +18,13 @@ from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
+from app.services.assistant.tools.board_detail import BoardDetailTool
 from app.services.assistant.tools.boards import IndustryBoardTool
 from app.services.assistant.tools.corpus import CorpusSearchTool
+from app.services.assistant.tools.events import HotspotEventsTool
+from app.services.assistant.tools.fetch import FetchUrlTool
 from app.services.assistant.tools.filings import FilingFetchTool
+from app.services.assistant.tools.flash import NewsFlashTool
 from app.services.assistant.tools.macro import MacroCompareTool, MacroSeriesTool
 from app.services.assistant.tools.market import (
     BoardStrengthTool,
@@ -29,6 +33,8 @@ from app.services.assistant.tools.market import (
     PriceBarsTool,
 )
 from app.services.assistant.tools.quote import QuoteTableTool
+from app.services.assistant.tools.reports import ResearchReportsTool
+from app.services.assistant.tools.sentiment import MarketSentimentTool
 from app.services.assistant.tools.web import WebSearchTool
 
 logger = logging.getLogger(__name__)
@@ -137,15 +143,21 @@ def default_registry(
     """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。"""
 
     tools: list[Tool] = [
+        BoardDetailTool(),
         BoardStrengthTool(),
         CalcTool(),
         CustomIndicatorTool(),
+        FetchUrlTool(),
         FinancialMetricsTool(),
+        HotspotEventsTool(),
         IndustryBoardTool(),
         InstrumentSearchTool(),
         MacroCompareTool(),
         MacroSeriesTool(),
+        MarketSentimentTool(),
+        NewsFlashTool(),
         PriceBarsTool(),
+        ResearchReportsTool(),
         WatchlistTool(),
         WebSearchTool(),
     ]

@@ -143,6 +143,16 @@ MANAGED: tuple[ManagedKey, ...] = (
         "https://open.bochaai.com/",
     ),
     ManagedKey(
+        "BAIDU_QIANFAN_API_KEY",
+        "baidu_qianfan_api_key",
+        "百度千帆 AI 搜索 API 密钥",
+        "大模型",
+        True,
+        "text",
+        "中文网页的第二选择，博查失败或额度用完时使用。结果同样不保存。",
+        "https://console.bce.baidu.com/qianfan/",
+    ),
+    ManagedKey(
         "ALLOW_REGISTRATION",
         "allow_registration",
         "开放注册",

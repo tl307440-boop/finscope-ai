@@ -28,6 +28,7 @@ from app.db.session import create_db_engine
 from app.repositories.accounts import AccountRepository
 from app.services.accounts import bootstrap_admin
 from app.services.assistant.limits import AssistantLimiter
+from app.services.assistant.loop_bridge import bind_main_loop
 from app.services.assistant.orchestrator import TurnRunner
 from app.services.assistant.tool_cache import ToolCache
 from app.services.assistant.tools import default_registry
@@ -77,6 +78,8 @@ def create_app() -> FastAPI:
             window_seconds=settings.login_failure_window_seconds,
         )
         # 助手：回合在后台线程池里跑，限流状态放进程内（每日额度查库）。
+        # 工具是同步的，行情服务是异步的：登记主事件循环，让工具把协程放回这里执行。
+        bind_main_loop(asyncio.get_running_loop())
         assistant_runner = TurnRunner(
             workers=settings.assistant_workers,
             heartbeat_seconds=settings.assistant_heartbeat_seconds,
@@ -120,6 +123,7 @@ def create_app() -> FastAPI:
                 await asyncio.gather(task, return_exceptions=True)
         await close_gateways()
         assistant_runner.shutdown()
+        bind_main_loop(None)
         engine.dispose()
 
     app = FastAPI(

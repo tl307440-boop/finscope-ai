@@ -69,6 +69,12 @@ STEP_LABELS = {
     "corpus_search": "检索资料",
     "filing_fetch": "读取公告",
     "web_search": "联网检索",
+    "news_flash": "查实时快讯",
+    "fetch_url": "读取网页",
+    "board_detail": "查板块详情",
+    "research_reports": "查研报列表",
+    "market_sentiment": "查市场热度",
+    "hotspot_events": "查披露事件",
     "quote_table": "整理原文摘录",
 }
 

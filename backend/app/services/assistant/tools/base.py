@@ -29,6 +29,9 @@ class ToolContext:
     web_searches: int = 0
     # 本回合搜索服务报过错（密钥、额度、网络）时的原因。有了它，本回合不再重试。
     web_failure: str | None = None
+    # 本回合已经查过实时新闻标题、读过网页的次数；上限同样在代码里卡。
+    news_calls: int = 0
+    page_fetches: int = 0
 
     @property
     def today_cn(self) -> date:

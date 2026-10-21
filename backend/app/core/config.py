@@ -179,6 +179,8 @@ class Settings(BaseSettings):
     assistant_web_search_enabled: bool = False
     brave_api_key: str = ""
     bocha_api_key: str = ""
+    # 百度千帆 AI 搜索（中文网页的第二选择）。密钥只在服务端使用。
+    baidu_qianfan_api_key: str = ""
     assistant_web_daily_limit: int = 30
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300

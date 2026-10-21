@@ -18,6 +18,7 @@ from app.providers.polite import PoliteError, contact_email, live_client
 from app.providers.web_search import (
     BOCHA_URL,
     NO_KEY_REASON,
+    QIANFAN_URL,
     SearchHit,
     SearchServiceError,
     bocha_body,
@@ -26,6 +27,9 @@ from app.providers.web_search import (
     brave_request,
     describe_status,
     infer_freshness,
+    qianfan_body,
+    qianfan_failure,
+    qianfan_hits,
     service_down_reason,
 )
 from app.repositories.corpus import CorpusRepository
@@ -43,7 +47,7 @@ _TURN_LIMIT_REASON = (
     f"本回合已经联网检索 {MAX_SEARCHES_PER_TURN} 次，不要再查，直接用已有的资料回答；"
     "已有资料都没有结果时，如实说明网上没查到。"
 )
-_LABELS = {"bocha": "博查", "brave": "Brave"}
+_LABELS = {"bocha": "博查", "brave": "Brave", "baidu": "百度"}
 _LOCK = threading.Lock()
 _USED: dict[str, tuple[date, int]] = {}
 # 只拦明显不能检索的内容。宏观、选举、政策问答不在这里，那些是投研问题。
@@ -51,6 +55,8 @@ _BLOCKED = ("儿童色情", "自制炸弹", "制作炸药")
 _OFFICIAL = {
     "www.federalreserve.gov": "fed_press",
     "www.stats.gov.cn": "nbs_release",
+    "www.szse.cn": "szse_news",
+    "www.sse.com.cn": "sse_supervision",
 }
 
 
@@ -281,16 +287,17 @@ def _live_search(
     freshness: str | None = None,
     client: httpx.Client | None = None,
 ) -> list[SearchHit]:
-    """按语言排好两家的先后，第一家有响应就用它。
+    """按语言排好各家的先后，第一家有响应就用它。
 
     返回空列表表示「服务正常、没有匹配」；所有配置过的服务都出错（密钥、额度、网络）
     或者一个密钥都没有时抛 `SearchServiceError`，调用方要把它和「没有结果」分开说。
     """
 
     chinese = any("\u4e00" <= char <= "\u9fff" for char in query)
-    order = (("bocha", settings.bocha_api_key), ("brave", settings.brave_api_key))
-    if not chinese:
-        order = (("brave", settings.brave_api_key), ("bocha", settings.bocha_api_key))
+    bocha = ("bocha", settings.bocha_api_key)
+    baidu = ("baidu", settings.baidu_qianfan_api_key)
+    brave = ("brave", settings.brave_api_key)
+    order = (bocha, baidu, brave) if chinese else (brave, bocha, baidu)
     configured = [(name, key.strip()) for name, key in order if key.strip()]
     if not configured:
         raise SearchServiceError(NO_KEY_REASON)
@@ -305,7 +312,12 @@ def _live_search(
                 failures.append((_LABELS[name], "网络超时或连接失败"))
                 continue
             if response.status_code == 200:
-                parse = brave_hits if name == "brave" else bocha_hits
+                problem = qianfan_failure(response.content) if name == "baidu" else None
+                if problem is not None:
+                    logger.warning("web search failed: provider=%s detail=%s", name, problem)
+                    failures.append((_LABELS[name], problem))
+                    continue
+                parse = {"brave": brave_hits, "bocha": bocha_hits, "baidu": qianfan_hits}[name]
                 return [hit for hit in parse(response.content) if hit.url]
             logger.warning("web search failed: provider=%s status=%s", name, response.status_code)
             failures.append((_LABELS[name], describe_status(response.status_code)))
@@ -322,8 +334,8 @@ def _ask(
         url, headers = brave_request(query, freshness)
         return client.get(url, headers={**headers, "X-Subscription-Token": key})
     return client.post(
-        BOCHA_URL,
-        content=bocha_body(query, freshness),
+        QIANFAN_URL if name == "baidu" else BOCHA_URL,
+        content=(qianfan_body if name == "baidu" else bocha_body)(query, freshness),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
 
@@ -334,5 +346,5 @@ def _fetch_official(feed: OfficialFeed, url: str) -> str:
     email = contact_email(get_settings().sec_user_agent)
     if email is None:
         return ""
-    data = live_client(email, feed.hosts).get(url)
+    data = live_client(email, feed.hosts).get(url, respect_robots=feed.respect_robots)
     return article_text(data, element_id=feed.element_id, css_class=feed.css_class)

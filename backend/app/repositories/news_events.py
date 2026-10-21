@@ -1,10 +1,10 @@
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.db.models.industry import Industry
@@ -138,6 +138,25 @@ class NewsEventRepository:
             ).all()
             return [_record(row) for row in rows]
 
+    def search(
+        self, *, start: datetime, end: datetime, keyword: str | None, limit: int
+    ) -> tuple[list[NewsEventRecord], int]:
+        """按公布时间区间和标题关键词查询，新的在前；返回（前 limit 条，命中总数）。"""
+
+        with Session(self.engine) as session:
+            statement = select(NewsEvent).where(
+                NewsEvent.published_at >= start, NewsEvent.published_at <= end
+            )
+            if keyword:
+                statement = statement.where(
+                    NewsEvent.title.ilike(f"%{_escape_like(keyword)}%", escape="\\")
+                )
+            total = session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+            rows = session.scalars(
+                statement.order_by(NewsEvent.published_at.desc(), NewsEvent.title).limit(limit)
+            ).all()
+            return [_record(row) for row in rows], int(total)
+
     def industry_exists(self, industry_id: UUID) -> bool:
         with Session(self.engine) as session:
             return session.get(Industry, industry_id) is not None
@@ -163,6 +182,16 @@ class NewsEventRepository:
             return True
 
 
+def _escape_like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _utc(value: datetime) -> datetime:
+    """库里存 UTC；个别驱动（SQLite）会丢掉时区，按 UTC 补回，不让无时区的时间流到上层。"""
+
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _record(row: NewsEvent) -> NewsEventRecord:
     return NewsEventRecord(
         id=row.id,
@@ -172,8 +201,8 @@ def _record(row: NewsEvent) -> NewsEventRecord:
         source_label=source_label(row.source_name),
         event_type=row.event_type,
         event_type_label=event_type_label(row.event_type),
-        published_at=row.published_at,
-        captured_at=row.captured_at,
+        published_at=_utc(row.published_at),
+        captured_at=_utc(row.captured_at),
         usage_rights=row.usage_rights,
         quality_flag=row.quality_flag,
         industry_id=row.industry_id,

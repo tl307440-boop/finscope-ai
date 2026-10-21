@@ -1,7 +1,7 @@
-"""联网检索的两家适配器（知识库设计 §5.5）。
+"""联网检索的三家适配器（知识库设计 §5.5）。
 
 只解析当次响应。调用方不得把结果写入语料库或回答记录。
-中文问题优先博查，英文问题优先 Brave；一家没有密钥或失败就换另一家。
+中文问题优先博查、其次百度千帆，英文问题优先 Brave；一家没有密钥或失败就换下一家。
 """
 
 import json
@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 BOCHA_URL = "https://api.bochaai.com/v1/web-search"
+QIANFAN_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
 
 # 检索词里出现这些词，就按对应范围限定发布时间。先匹配短的范围：「今天」比「最近」更具体。
 _WINDOWS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -132,6 +133,36 @@ def bocha_hits(payload: bytes) -> tuple[SearchHit, ...]:
         _hit(item, "博查", item.get("name"), item.get("snippet"), item.get("datePublished"))
         for item in _list(pages.get("value"))
     )
+
+
+def qianfan_hits(payload: bytes) -> tuple[SearchHit, ...]:
+    return tuple(
+        _hit(item, "百度", item.get("title"), item.get("content"), item.get("date"))
+        for item in _list(_loads(payload).get("references"))
+    )
+
+
+def qianfan_failure(payload: bytes) -> str | None:
+    """千帆出错时 HTTP 状态可能仍是 200，错误放在 `code`；有结果列表就不算出错。"""
+
+    document = _loads(payload)
+    if "references" in document or document.get("code") in (None, 0, "0"):
+        return None
+    return f"返回错误码 {_str(str(document.get('code')))[:20]}"
+
+
+def qianfan_body(query: str, freshness: str | None = None) -> bytes:
+    body: dict[str, Any] = {
+        "messages": [{"role": "user", "content": query}],
+        "search_source": "baidu_search_v2",
+        "resource_type_filter": [{"type": "web", "top_k": 8}],
+    }
+    recency = {"oneDay": "day", "oneWeek": "week", "oneMonth": "month", "oneYear": "year"}.get(
+        freshness or ""
+    )
+    if recency:
+        body["search_recency_filter"] = recency
+    return json.dumps(body, ensure_ascii=False).encode()
 
 
 def brave_request(query: str, freshness: str | None = None) -> tuple[str, dict[str, str]]:

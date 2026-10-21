@@ -6,23 +6,20 @@
 """
 
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.repositories.board_market import BoardMarketRepository, StoredSnapshot
-from app.repositories.macro import decimal_text
 from app.services.assistant.results import Column, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext, effective_as_of
+from app.services.assistant.tools.fmt import count, plain, yi
 
 MAX_QUERIES = 4
 PER_QUERY = 4
 MAX_ROWS = 12
 STALE_DAYS = 10  # 与日线一致：长假（国庆约 8 天不开市）不算过期
 SOURCE = "东方财富行业 / 概念板块（本系统每日快照）"
-_YI = Decimal(100_000_000)
-_CENT = Decimal("0.01")
 _KIND_NAMES = {"industry": "行业", "concept": "概念"}
 
 
@@ -122,26 +119,16 @@ def _row(item: StoredSnapshot) -> dict[str, str | None]:
         "name": item.node.name,
         "kind": _KIND_NAMES.get(item.node.kind, item.node.kind),
         "trade_date": item.trade_date.isoformat(),
-        "change_pct": _text(quote.change_pct),
-        "change_5d_pct": _text(quote.change_5d_pct),
-        "change_60d_pct": _text(quote.change_60d_pct),
-        "change_ytd_pct": _text(quote.change_ytd_pct),
-        "pe_ttm": _text(quote.pe_ttm),
-        "turnover_pct": _text(quote.turnover_pct),
-        "main_net_inflow": _yi(quote.main_net_inflow),
-        "main_net_inflow_5d": _yi(quote.main_net_inflow_5d),
-        "advancers": None if quote.advancers is None else str(quote.advancers),
-        "decliners": None if quote.decliners is None else str(quote.decliners),
+        "change_pct": plain(quote.change_pct),
+        "change_5d_pct": plain(quote.change_5d_pct),
+        "change_60d_pct": plain(quote.change_60d_pct),
+        "change_ytd_pct": plain(quote.change_ytd_pct),
+        "pe_ttm": plain(quote.pe_ttm),
+        "turnover_pct": plain(quote.turnover_pct),
+        "main_net_inflow": yi(quote.main_net_inflow),
+        "main_net_inflow_5d": yi(quote.main_net_inflow_5d),
+        "advancers": count(quote.advancers),
+        "decliners": count(quote.decliners),
         "leader_name": quote.leader_name,
-        "leader_change_pct": _text(quote.leader_change_pct),
+        "leader_change_pct": plain(quote.leader_change_pct),
     }
-
-
-def _text(value: Decimal | None) -> str | None:
-    return None if value is None else decimal_text(value)
-
-
-def _yi(value: Decimal | None) -> str | None:
-    if value is None:
-        return None
-    return decimal_text((value / _YI).quantize(_CENT, rounding=ROUND_HALF_UP))

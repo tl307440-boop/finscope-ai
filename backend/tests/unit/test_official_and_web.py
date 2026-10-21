@@ -225,6 +225,49 @@ def test_an_official_page_from_search_is_fetched_instead_of_the_snippet() -> Non
     assert result.rows[0]["note"] == "已改为官方原文"
 
 
+def test_exchange_pages_from_search_are_taken_as_official_text_but_reposts_are_not() -> None:
+    def search(_query: str) -> list[SearchHit]:
+        return [
+            SearchHit(
+                "深交所召开上市公司座谈会",
+                "https://www.szse.cn/aboutus/trends/news/t20261019_1.html",
+                "摘要不应被使用",
+                date(2026, 10, 19),
+                "博查",
+            ),
+            SearchHit(
+                "上交所发布监管动态",
+                "https://www.sse.com.cn/disclosure/credibility/supervision/dynamic/c/c_1.shtml",
+                "摘要同样不应被使用",
+                date(2026, 10, 18),
+                "博查",
+            ),
+            SearchHit(
+                "某报转载深交所座谈会",
+                "https://news.example/szse",
+                "转载的摘要",
+                date(2026, 10, 19),
+                "博查",
+            ),
+        ]
+
+    pages = {"count": 0}
+
+    def fetch(_url: str) -> str:
+        pages["count"] += 1
+        return "交易所召开座谈会，听取上市公司意见建议。"
+
+    result = WebSearchTool(search=search, fetch_page=fetch).run(
+        _ctx(), WebSearchArgs(query="交易所 座谈会")
+    )
+    szse, sse, repost = result.passages
+    assert (szse.verified, sse.verified, repost.verified) == (True, True, False)
+    assert "听取上市公司意见建议" in szse.content and "摘要" not in szse.content
+    assert repost.content == "转载的摘要"
+    assert pages["count"] == 2  # 转载页不去下载
+    assert [row["note"] for row in result.rows] == ["已改为官方原文", "已改为官方原文", "未核实"]
+
+
 def test_blocked_queries_are_not_searched() -> None:
     called = {"n": 0}
 
