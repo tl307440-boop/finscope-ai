@@ -4,6 +4,10 @@ from dataclasses import dataclass
 
 import httpx
 
+from app.core.config import get_settings
+from app.providers.corpus_embedding import INDEXED_DIMS, EmbeddingConfig, embed_texts
+from app.providers.errors import ProviderError
+
 TIMEOUT = httpx.Timeout(10.0)
 
 
@@ -27,6 +31,8 @@ def probe(key: str, value: str, *, sec_user_agent: str, llm_base_url: str) -> Pr
             return _llm(llm_base_url, value)
         if key == "LLM_API_BASE_URL":
             return _llm(value, "")
+        if key == "CORPUS_EMBEDDING_API_KEY":
+            return _zhipu_embedding(value)
     except httpx.TimeoutException:
         return ProbeResult(False, "连接超时，请检查网络或稍后再试")
     except httpx.HTTPError:
@@ -71,6 +77,23 @@ def _sec(user_agent: str) -> ProbeResult:
     if response.status_code in {403, 429}:
         return ProbeResult(False, "SEC 暂时拒绝了请求，请换一个带真实邮箱的标识或稍后再试")
     return ProbeResult(False, f"SEC 返回 HTTP {response.status_code}")
+
+
+def _zhipu_embedding(api_key: str) -> ProbeResult:
+    """向量化两个字，费用可以忽略；同时核对返回的维度是不是索引要的 1024。"""
+
+    config = EmbeddingConfig(
+        base_url=get_settings().corpus_embedding_api_base_url.strip().rstrip("/"),
+        api_key=api_key,
+        model="embedding-3",
+        dims=INDEXED_DIMS["embedding-3"],
+    )
+    with httpx.Client(timeout=TIMEOUT) as client:
+        try:
+            embed_texts(config, ["测试"], client=client)
+        except ProviderError as exc:
+            return ProbeResult(False, exc.message)
+    return ProbeResult(True, "智谱接受了这个密钥，向量维度正确")
 
 
 def _llm(base_url: str, api_key: str) -> ProbeResult:

@@ -3,8 +3,9 @@
  * AI 智能投研助手（效果图 8）。
  *
  * 所有内容都来自后端真实返回，界面不会补一段假的分析正文：
- *  - GET  /api/v1/assistant/sessions                          问答列表（取最近一条，没有就新建）
- *  - POST /api/v1/assistant/sessions                          新建问答
+ *  - GET  /api/v1/assistant/sessions                          问答记录（按最近提问倒序，默认打开第一条）
+ *  - POST /api/v1/assistant/sessions                          新建问答（点「新对话」后发第一问时才建）
+ *  - PATCH / DELETE /api/v1/assistant/sessions/{id}           改名 / 删除（连同消息；生成中返回 409）
  *  - GET  /api/v1/assistant/sessions/{id}/messages            历史消息（role/content/completion_status）
  *  - POST /api/v1/assistant/sessions/{id}/messages            提问，SSE 回传；读 data: 行里的 delta / done，
  *                                                             以及 step / block（步骤与服务端生成的图表、表格、提示，
@@ -31,6 +32,13 @@ import {
   type NoticeBlock,
   type ReplyExtras,
 } from "../api/assistantBlocks"
+import {
+  parseSession,
+  parseSessions,
+  removeSession,
+  upsertSession,
+  type SessionSummary,
+} from "../api/assistantSessions"
 import { emptyReplyText, failureText, parseSseLine, parseTurn } from "../api/assistantStream"
 import { asNumber, asString, dataOf, formatMoment, listOf } from "../api/json"
 import { newUuid } from "../api/uuid"
@@ -43,6 +51,7 @@ import MarkdownText from "../components/assistant/MarkdownText.vue"
 import ReplyBlocks from "../components/assistant/ReplyBlocks.vue"
 import ReplySources from "../components/assistant/ReplySources.vue"
 import ReplySteps from "../components/assistant/ReplySteps.vue"
+import SessionList from "../components/assistant/SessionList.vue"
 import PanelCard from "../components/ui/PanelCard.vue"
 import SourceFooter from "../components/ui/SourceFooter.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
@@ -123,6 +132,10 @@ const message = ref("")
 const question = ref("")
 const sessionId = ref("")
 const sessionTitle = ref("")
+const sessions = ref<SessionSummary[]>([])
+const sessionsPhase = ref<"loading" | "ready" | "error">("loading")
+const sessionsMessage = ref("")
+const sessionActionError = ref("")
 const turns = ref<Turn[]>([])
 const sending = ref(false)
 const streaming = ref(false)
@@ -170,9 +183,52 @@ async function createSession(): Promise<void> {
     session.accessToken,
     refreshToken,
   )
-  const createdBody = dataOf(await readJson(created))
-  sessionId.value = asString(createdBody?.id) ?? ""
-  sessionTitle.value = asString(createdBody?.title) ?? "研究问答"
+  const item = parseSession(dataOf(await readJson(created)))
+  if (!created.ok || !item) {
+    throw new Error("create session failed")
+  }
+  sessionId.value = item.id
+  sessionTitle.value = item.title
+  sessions.value = upsertSession(sessions.value, item)
+}
+
+async function loadSessions(): Promise<SessionSummary[]> {
+  sessionsPhase.value = "loading"
+  try {
+    const listed = await authorizedFetch(
+      "/api/v1/assistant/sessions",
+      { method: "GET" },
+      session.accessToken,
+      refreshToken,
+    )
+    if (!listed.ok) {
+      throw new Error("list sessions failed")
+    }
+    sessions.value = parseSessions(await readJson(listed))
+    sessionsPhase.value = "ready"
+  } catch {
+    sessionsMessage.value = "问答记录读不出来，请稍后重试"
+    sessionsPhase.value = "error"
+  }
+  return sessions.value
+}
+
+/** 回答结束后刷新：后端会用第一问改标题、更新最近提问时间。失败不打扰当前对话。 */
+async function refreshSessions(): Promise<void> {
+  try {
+    const listed = await authorizedFetch(
+      "/api/v1/assistant/sessions",
+      { method: "GET" },
+      session.accessToken,
+      refreshToken,
+    )
+    if (listed.ok) {
+      sessions.value = parseSessions(await readJson(listed))
+      sessionTitle.value = sessions.value.find((item) => item.id === sessionId.value)?.title ?? sessionTitle.value
+    }
+  } catch {
+    // 列表下次打开页面再刷新。
+  }
 }
 
 async function load(): Promise<void> {
@@ -183,21 +239,17 @@ async function load(): Promise<void> {
     return
   }
   try {
-    const listed = await authorizedFetch(
-      "/api/v1/assistant/sessions",
-      { method: "GET" },
-      session.accessToken,
-      refreshToken,
-    )
-    const first = listOf(dataOf(await readJson(listed))?.sessions)[0] ?? null
-    const existing = asString(first?.id)
-    if (existing) {
-      sessionId.value = existing
-      sessionTitle.value = asString(first?.title) ?? "研究问答"
+    const listed = await loadSessions()
+    const first = listed[0]
+    if (first) {
+      sessionId.value = first.id
+      sessionTitle.value = first.title
+      await loadMessages()
     } else {
-      await createSession()
+      sessionId.value = ""
+      sessionTitle.value = ""
+      turns.value = []
     }
-    await loadMessages()
     phase.value = "ready"
   } catch {
     message.value = "网络连接失败，请稍后重试"
@@ -205,17 +257,97 @@ async function load(): Promise<void> {
   }
 }
 
-/** 新对话：后端新建一条问答记录，旧记录保留在服务器上。 */
-async function startNew(): Promise<void> {
+/** 新对话：先清空界面，发第一问时才在后端新建，不会留下一堆空的问答记录。 */
+function startNew(): void {
   if (sending.value || !session.accessToken) {
     return
   }
+  sessionId.value = ""
+  sessionTitle.value = ""
+  turns.value = []
+  errorText.value = ""
+  sessionActionError.value = ""
+  void nextTick(() => composerEl.value?.focus())
+}
+
+/** 切换会话：每段对话的历史与模型上下文互相独立。生成中不许切换。 */
+async function selectSession(id: string): Promise<void> {
+  if (sending.value || id === sessionId.value) {
+    return
+  }
+  const target = sessions.value.find((item) => item.id === id)
+  if (!target) {
+    return
+  }
+  sessionId.value = target.id
+  sessionTitle.value = target.title
+  turns.value = []
+  errorText.value = ""
+  sessionActionError.value = ""
+  phase.value = "loading"
   try {
-    await createSession()
-    turns.value = []
-    errorText.value = ""
+    await loadMessages()
+    phase.value = "ready"
   } catch {
-    errorText.value = "新建对话失败，请稍后重试"
+    message.value = "这段对话读不出来，请稍后重试"
+    phase.value = "error"
+  }
+}
+
+async function renameSession(id: string, title: string): Promise<void> {
+  sessionActionError.value = ""
+  try {
+    const response = await authorizedFetch(
+      `/api/v1/assistant/sessions/${id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+      session.accessToken,
+      refreshToken,
+    )
+    const item = parseSession(dataOf(await readJson(response)))
+    if (!response.ok || !item) {
+      sessionActionError.value = "改名失败，请稍后重试"
+      return
+    }
+    sessions.value = sessions.value.map((existing) => (existing.id === id ? { ...existing, title: item.title } : existing))
+    if (id === sessionId.value) {
+      sessionTitle.value = item.title
+    }
+  } catch {
+    sessionActionError.value = "网络连接失败，没有改名"
+  }
+}
+
+async function deleteSession(id: string): Promise<void> {
+  if (sending.value) {
+    return
+  }
+  sessionActionError.value = ""
+  try {
+    const response = await authorizedFetch(
+      `/api/v1/assistant/sessions/${id}`,
+      { method: "DELETE" },
+      session.accessToken,
+      refreshToken,
+    )
+    if (!response.ok && response.status !== 404) {
+      sessionActionError.value = await failureText(response)
+      return
+    }
+    sessions.value = removeSession(sessions.value, id)
+    if (id === sessionId.value) {
+      const next = sessions.value[0]
+      if (next) {
+        await selectSession(next.id)
+      } else {
+        startNew()
+      }
+    }
+  } catch {
+    sessionActionError.value = "网络连接失败，没有删除"
   }
 }
 
@@ -263,7 +395,7 @@ function useExample(text: string): void {
 /** 提问：POST 拿 SSE，逐段把 delta 追加到临时气泡。 */
 async function ask(): Promise<void> {
   const text = question.value.trim()
-  if (!text || !sessionId.value || !session.accessToken || sending.value) {
+  if (!text || !session.accessToken || sending.value) {
     if (!text) {
       errorText.value = "请输入问题"
     }
@@ -272,8 +404,17 @@ async function ask(): Promise<void> {
   // 先生成 ID 再置发送状态：HTTP 访问时 crypto.randomUUID 不存在，newUuid 有降级实现。
   const clientMessageId = newUuid()
   sending.value = true
-  streaming.value = true
   errorText.value = ""
+  if (!sessionId.value) {
+    try {
+      await createSession()
+    } catch {
+      errorText.value = "新建对话失败，问题没有发出"
+      sending.value = false
+      return
+    }
+  }
+  streaming.value = true
   activeClientId.value = clientMessageId
   turns.value = [
     ...turns.value,
@@ -315,6 +456,7 @@ async function ask(): Promise<void> {
     }
     await readStream(response)
     await loadMessages()
+    void refreshSessions()
   } catch {
     errorText.value = "网络连接失败，问题没有发出"
     turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
@@ -728,7 +870,6 @@ onMounted(() => {
     >
       <template #actions>
         <StatusPill :text="modelLabel" :tone="modelTone" dot />
-        <el-button :disabled="phase !== 'ready' || sending" @click="startNew">新对话</el-button>
       </template>
     </PageHeader>
 
@@ -739,6 +880,24 @@ onMounted(() => {
           <span v-if="phase === 'ready' && turns.length" class="muted">共 {{ turns.length }} 条消息</span>
         </template>
 
+        <div class="chat-layout">
+        <aside class="session-pane">
+          <SessionList
+            :sessions="sessions"
+            :active-id="sessionId"
+            :phase="sessionsPhase"
+            :message="sessionsMessage"
+            :action-error="sessionActionError"
+            :locked="sending"
+            @select="selectSession"
+            @create="startNew"
+            @rename="renameSession"
+            @remove="deleteSession"
+            @retry="load"
+          />
+        </aside>
+
+        <div class="chat-main">
         <StateBlock v-if="phase === 'loading'" state="loading" :rows="4" />
         <StateBlock v-else-if="phase === 'error'" state="error" :message="message" @retry="load" />
 
@@ -871,6 +1030,8 @@ onMounted(() => {
             </div>
           </form>
         </div>
+        </div>
+        </div>
       </PanelCard>
 
       <PanelCard title="研究上下文" info="可在提问时参考的已入库数据；模型接入后才会被自动引用">
@@ -988,6 +1149,36 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.chat-layout {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 14px;
+}
+
+.session-pane {
+  max-height: 700px;
+  overflow-y: auto;
+  padding: 12px 12px 12px 0;
+  border-right: 1px solid var(--line);
+}
+
+.chat-main {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .chat-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-pane {
+    max-height: 240px;
+    padding: 8px 0;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+}
+
 .chat {
   display: flex;
   flex-direction: column;

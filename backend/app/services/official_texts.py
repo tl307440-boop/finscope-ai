@@ -1,12 +1,18 @@
-"""美联储与国家统计局的公开文本（知识库设计 §5.2）。
+"""官方公开文本：美联储、国家统计局、国务院、证监会，以及深交所、上交所的栏目（知识库设计 §5.2）。
 
-美联储走官方 RSS，统计局走数据发布栏目的第一页。正文只从白名单主机下载。
-RSS 里没有发布时间的条目丢掉。访谈如果官方没有文字稿，这里不会有，要靠联网检索。
+美联储走官方 RSS，国务院走「最新政策」页背后的静态 JSON，证监会读首页上的要闻链接，
+统计局和两家交易所走栏目列表页的第一页。正文只从白名单主机下载。
+列表和正文页都没有发布时间的条目丢掉。访谈如果官方没有文字稿，这里不会有，要靠联网检索。
+
+新接入的来源（`respect_robots=True`）抓每一页之前先读对方的 robots.txt：列表页被禁止就停止这个来源
+（`UPSTREAM_BLOCKED`，和 403 / 429 一样不再重试同一轮），某篇正文的路径被禁止只跳过那一篇。
+需要执行 JS 才有列表、robots.txt 读不到的站点（工信部、发改委）不接入，
+见 `docs/IMPLEMENTATION_LOG.md`。
 """
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urljoin
@@ -18,17 +24,37 @@ from app.core.config import Settings, get_settings
 from app.providers.errors import ProviderError
 from app.providers.polite import PoliteError, contact_email, live_client
 from app.repositories.corpus import (
+    CSRC_NEWS_SOURCE,
     FED_PRESS_SOURCE,
     FED_SPEECHES_SOURCE,
     FED_TESTIMONY_SOURCE,
+    GOV_POLICY_SOURCE,
     NBS_RELEASE_SOURCE,
+    SSE_SUPERVISION_SOURCE,
+    SZSE_NEWS_SOURCE,
     CorpusRepository,
 )
 from app.services.cninfo_filings import store_filing
 from app.services.filing_meta import FilingHit
 from app.services.html_text import article_text
 from app.services.pdf_text import PageText
+from app.services.policy_lists import (
+    CSRC_HOME,
+    CSRC_HOSTS,
+    GOV_HOSTS,
+    GOV_POLICY_LIST,
+    SSE_HOSTS,
+    SSE_SUPERVISION_PAGE,
+    SZSE_HOSTS,
+    SZSE_NEWS_PAGE,
+    page_published_at,
+    parse_csrc_home_news,
+    parse_gov_policy_list,
+    parse_sse_list,
+    parse_szse_news_list,
+)
 from app.services.rss_feed import FeedItem, parse_rss
+from app.utils.market_time import SHANGHAI
 
 FED_HOSTS = frozenset({"www.federalreserve.gov"})
 NBS_HOSTS = frozenset({"www.stats.gov.cn"})
@@ -46,7 +72,9 @@ class OfficialFeed:
     doc_type: str
     element_id: str | None = None
     css_class: str | None = None
-    listing: str = "rss"  # rss | nbs
+    listing: str = "rss"  # rss | nbs | szse_news | sse_list | gov_json | csrc_home
+    respect_robots: bool = False  # 新来源一律为 True：抓取前先读 robots.txt
+    time_meta: str | None = None  # 正文页里写精确发布时间的 `<meta name>`
 
 
 FEEDS: dict[str, OfficialFeed] = {
@@ -89,8 +117,72 @@ FEEDS: dict[str, OfficialFeed] = {
             css_class="txt-content",
             listing="nbs",
         ),
+        OfficialFeed(
+            "szse_news",
+            SZSE_NEWS_SOURCE,
+            "深圳证券交易所",
+            SZSE_NEWS_PAGE,
+            SZSE_HOSTS,
+            "news",
+            element_id="desContent",
+            listing="szse_news",
+            respect_robots=True,
+        ),
+        OfficialFeed(
+            "sse_supervision",
+            SSE_SUPERVISION_SOURCE,
+            "上海证券交易所",
+            SSE_SUPERVISION_PAGE,
+            SSE_HOSTS,
+            "news",
+            css_class="allZoom",
+            listing="sse_list",
+            respect_robots=True,
+        ),
+        OfficialFeed(
+            "gov_policy",
+            GOV_POLICY_SOURCE,
+            "中国政府网",
+            GOV_POLICY_LIST,
+            GOV_HOSTS,
+            "policy",
+            element_id="UCAP-CONTENT",
+            listing="gov_json",
+            respect_robots=True,
+            time_meta="firstpublishedtime",
+        ),
+        OfficialFeed(
+            "csrc_news",
+            CSRC_NEWS_SOURCE,
+            "中国证监会",
+            CSRC_HOME,
+            CSRC_HOSTS,
+            "news",
+            css_class="detail-news",
+            listing="csrc_home",
+            respect_robots=True,
+            time_meta="PubDate",
+        ),
     )
 }
+
+
+def parse_listing(feed: OfficialFeed, payload: bytes) -> tuple[FeedItem, ...]:
+    """按来源的列表形态解析第一页；形态不认识就当没有条目。"""
+
+    if feed.listing == "rss":
+        return parse_rss(payload)
+    if feed.listing == "nbs":
+        return parse_nbs_list(payload, feed.list_url)
+    if feed.listing == "szse_news":
+        return parse_szse_news_list(payload, feed.list_url)
+    if feed.listing == "sse_list":
+        return parse_sse_list(payload, feed.list_url)
+    if feed.listing == "gov_json":
+        return parse_gov_policy_list(payload, feed.list_url)
+    if feed.listing == "csrc_home":
+        return parse_csrc_home_news(payload, feed.list_url)
+    return ()
 
 
 def parse_nbs_list(payload: bytes, page_url: str) -> tuple[FeedItem, ...]:
@@ -122,10 +214,13 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         raise ProviderError(code="DATA_UNAVAILABLE", message=_NO_CONTACT, status_code=503)
     client = live_client(email, feed.hosts)
     try:
-        listing = client.get(feed.list_url)
+        listing = client.get(feed.list_url, respect_robots=feed.respect_robots)
     except PoliteError as exc:
+        if exc.code == "ROBOTS":
+            # 列表页被 robots.txt 禁止：和 403 / 429 一样，停止这个来源。
+            raise ProviderError(code="UPSTREAM_BLOCKED", message=str(exc), status_code=403) from exc
         raise ProviderError(code=exc.code, message=str(exc), status_code=503) from exc
-    items = parse_rss(listing) if feed.listing == "rss" else parse_nbs_list(listing, feed.list_url)
+    items = parse_listing(feed, listing)
     repo = CorpusRepository(engine)
     saved = 0
     for item in items:
@@ -134,13 +229,16 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         if repo.latest_passages(source_id=feed.source_id, url=item.url, limit=1):
             continue
         try:
-            body = client.get(item.url)
+            body = client.get(item.url, respect_robots=feed.respect_robots)
         except PoliteError as exc:
             if exc.code == "BLOCKED":
                 raise ProviderError(
                     code="UPSTREAM_BLOCKED", message=str(exc), status_code=403
                 ) from exc
-            continue
+            continue  # 含 ROBOTS：只是这一篇的路径被禁止，跳过它，不影响其他篇
+        published = _published(feed, item, body)
+        if published is None:
+            continue  # 列表和正文都没有发布时间：不用抓取时间顶替
         text = article_text(body, element_id=feed.element_id, css_class=feed.css_class)
         if not text.strip():
             continue
@@ -148,7 +246,7 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
             code="",
             title=item.title,
             url=item.url,
-            published_at=item.published_at,
+            published_at=published,
             report_type="",
             period=None,
         )
@@ -166,6 +264,21 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         if written is not None:
             saved += 1
     return saved
+
+
+def _published(feed: OfficialFeed, item: FeedItem, body: bytes) -> datetime | None:
+    """正文页元数据的时间更精确：列表没写日期、或和列表是同一天（上海）时用它；对不上就信列表。"""
+
+    exact = page_published_at(body, feed.time_meta) if feed.time_meta else None
+    if exact is None:
+        return item.published_at
+    if item.published_at is None or _local_day(exact) == _local_day(item.published_at):
+        return exact
+    return item.published_at
+
+
+def _local_day(moment: datetime) -> date:
+    return moment.astimezone(SHANGHAI).date()
 
 
 def empty_official_sources(engine: Engine) -> list[str]:

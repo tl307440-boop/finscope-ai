@@ -27,6 +27,7 @@ from app.services.assistant.agent import (
 )
 from app.services.assistant.llm_tools import OpenAIToolModel, supports_tools
 from app.services.assistant.orchestrator import Emit
+from app.services.assistant.skills import SkillBook, read_skills
 from app.services.assistant.tools import ToolRegistry
 from app.services.assistant.tools.base import ToolContext
 from app.services.assistant.turns import AssistantConfig, Reply, TurnInput
@@ -36,9 +37,10 @@ from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "assistant_v3.txt").read_text(
+SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "assistant_v4.txt").read_text(
     encoding="utf-8"
 )
+SKILLS = read_skills()
 HISTORY_TURNS = 3  # 最近 3 个回合 = 6 条消息
 HISTORY_ANSWER_CHARS = 1200
 
@@ -103,6 +105,7 @@ class AssistantResponder:
                 ),
                 tools_supported=supports_tools(model, settings.llm_api_base_url),
                 system_prompt=SYSTEM_PROMPT,
+                skills=SkillBook(SKILLS, self._registry.names),
             )
             result = agent.run(request, ctx, emit, cancelled)
         return Reply(

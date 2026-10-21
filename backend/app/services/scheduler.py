@@ -54,6 +54,7 @@ from app.core.exceptions import AppError
 from app.db.models.document import Document
 from app.db.models.provider import DataProvider
 from app.providers.akshare_bars import DAILY_TARGETS, AdjustmentCode, target_for
+from app.providers.corpus_embedding import embedding_config
 from app.providers.polite import contact_email
 from app.repositories.instruments import InstrumentRepository
 from app.repositories.macro import MacroRepository
@@ -63,6 +64,7 @@ from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
 from app.repositories.universe import UniverseRepository
 from app.services.china_macro import china_series_catalog
 from app.services.data_sync import bars_window
+from app.services.official_texts import FEEDS
 from app.services.pdf_upload import default_parser_version, parse_document_identity
 from app.services.runtime_settings import effective_settings
 from app.services.sync_queue import dedupe_key_for
@@ -238,6 +240,16 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 trigger=CronTrigger(minute=15, timezone=zone),
                 builder=build_official_text_tasks,
                 failure_policy="403/429 停止该来源，不换身份重试",
+            )
+        )
+    if settings.scheduler_enable_corpus_embed:
+        triggers.append(
+            TriggerRegistration(
+                job_id="embed_corpus_chunks",
+                task_name="embed_corpus_chunks",
+                trigger=CronTrigger(minute="*/10", timezone=zone),
+                builder=build_corpus_embed_tasks,
+                failure_policy=EMBED_FAILURE_POLICY,
             )
         )
     if settings.scheduler_enable_financial_metrics:
@@ -812,7 +824,7 @@ def _cninfo_tasks(
 def build_official_text_tasks(
     engine: Engine, settings: Settings, now: datetime
 ) -> list[ScheduledTask]:
-    """每小时抓美联储 RSS 和国家统计局数据发布栏目的新正文。"""
+    """每小时抓 `official_texts.FEEDS` 里每个官方来源（美联储、统计局、两家交易所栏目）的新正文。"""
 
     local = now.astimezone(_SHANGHAI)
     email = contact_email(settings.sec_user_agent)
@@ -828,7 +840,35 @@ def build_official_text_tasks(
             failure_policy="403/429 停止该来源，不换身份重试",
             unavailable_reason=reason,
         )
-        for code in ("fed_speeches", "fed_press", "fed_testimony", "nbs_release")
+        for code in FEEDS
+    ]
+
+
+EMBED_FAILURE_POLICY = "密钥、余额、限流或超时本轮停止，下一轮再试；被拒的块记原因跳过"
+
+
+def build_corpus_embed_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """每 10 分钟给还没有向量的语料块补向量（智谱 embedding-3）。
+
+    没开语料检索或没配密钥时不登记：这是功能关着，不是故障，也不产生费用。
+    """
+
+    if not settings.corpus_enabled or embedding_config(settings) is None:
+        return []
+    local = now.astimezone(_SHANGHAI)
+    slot = local.replace(minute=local.minute - local.minute % 10)
+    return [
+        ScheduledTask(
+            task_name="embed_corpus_chunks",
+            job_type="corpus_embed",
+            dedupe_key=f"corpus-embed:{slot.strftime('%Y-%m-%dT%H:%M')}",
+            scope={"limit": str(settings.corpus_embed_per_run)},
+            provider_id=_provider_id(engine, code="zhipu_embedding", name="智谱向量"),
+            failure_policy=EMBED_FAILURE_POLICY,
+            max_attempts=1,
+        )
     ]
 
 

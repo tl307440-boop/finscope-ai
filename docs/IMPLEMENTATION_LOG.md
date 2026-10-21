@@ -1650,7 +1650,8 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - 易方达 588080 在 2025-10-17 除息，合约单位 10000 → 10097；PCR 用成交张数，不受影响。
 - 数据本来就在：上交所接口返回全部标的，这两只此前已入库（同样与官方 CP_RATE 对账，0 行待审），只是没有分组使用。
 - 代码：custom_analysis_rules.OPTION_GROUPS 加 star50；前端 PCR_GROUPS 加「科创50」；接口分组校验正则本来就放行。
-- 测试：规则（两只加总、缺一只整天丢弃、其他标的不混入）、服务（正常 / 缺一只降级 / 无股指期权篮子）、API（含 CSV：kind=index 返回 404）、前端（标签切换请求 star50、只有一张卡）。后端 pytest tests 693 通过、1 跳过；前端 itest 286 通过；ue-tsc、uff 通过。
+- 测试：规则（两只加总、缺一只整天丢弃、其他标的不混入）、服务（正常 / 缺一只降级 / 无股指期权篮子）、API（含 CSV：kind=index 返回 404）、前端（标签切换请求 star50、只有一张卡）。后端 pytest tests 693 通过、1 跳过；前端 itest 286 通过；ue-tsc、
+uff 通过。
 - 局限：上市不足 5 年（约 3.4 年），样本不足 750 个交易日前不给分位。
 ## 2026-10-18 CHINA-MACRO-CATCHUP 中国宏观新增序列部署后为空：启动补跑与种子文件进镜像
 
@@ -2097,3 +2098,308 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 1. 合并部署后复测联网检索（服务器诊断脚本 + 页面实问一次）。
 2. 「运行状态」页加搜索服务健康：最近一次联网成功时间、最近的失败原因，博查余额低时提醒。
 3. 修 `test_filing_report.py` 的不稳定（固定事实 id），一行改动，单独提交。
+
+## 2026-10-21 ASSISTANT-4 技能按需加载、板块行情工具、calc 列名、DSML 泄漏、会话列表
+
+分支 `feat/assistant-skills`。起因：用户贴了服务器上两轮关于半导体的问答，反馈助手「限制太死」「不太聪明」，并要求历史记录隔离、按问题按需调用工具（渐进式披露）。参考了 [ai-image-master](https://github.com/2799662352/ai-image-master)（MIT）的「Skills Markdown 按需加载」思路；它是 Electron + LangGraph，技术栈不同，没有拷代码。
+
+### 查到的原因（只看用户贴的问答，没有登录服务器）
+
+- **DSML 泄漏**：DeepSeek 偶尔不走结构化 `tool_calls`，把调用写进正文（`<｜DSML｜invoke name=…>`）。强制写回答那一轮里模型照样写调用，按句核对拦掉带数字的句子，改写后正文前面仍带着这段标记，用户看到的是乱码。
+- **calc 认不出列名**：资料表显示的是「label(unit)」，`calc` 只认内部 key；财务指标又是长表（一列指标名、一列数值），模型写「营业收入」对不上，算不出来就只好回避数字。
+- **库里有数据但没有工具**：东财行业 / 概念板块每日快照 `board_daily_snapshots` 已在库里，助手没有工具能查，问「半导体板块怎么样」只能答宏观。
+- **提示词规则太多、太死**：v3 把每类问题的做法都写进系统提示词，模型倾向于保守地只复述数据。
+- **前端只打开最近一个会话**：后端早就按会话取历史（`responder.recent_turns`），但界面没有会话列表，看起来像所有问答混在一起。
+
+### 做了什么
+
+- **技能按需加载（渐进式披露）**：新增 `app/services/assistant/skills.py` 和 `app/prompts/skills/*.md`（industry、company、valuation、macro、documents、news、scenario、watchlist 8 个）。每个技能文件头部写 name / title / summary / tools，正文是这类问题的做法。回合开始只给核心工具（calc、financial_metrics、instrument_search、macro_series、price_bars）加 `load_skill`；模型加载技能后，正文进入上下文，对应工具开放。只加载技能的轮次不计步数（每回合最多 2 轮），`load_skill` 不占并行 3 个的名额；未知技能列出可用目录，重复加载会提示；模型直接调用还没开放的白名单工具照常执行并开放。工具全部不在注册表里的技能会被去掉。trace 记录本回合加载的技能。
+- **提示词 v4**：`assistant_v4.txt` 更短，要求像分析师一样先给倾向性结论、可以做定性的行业分析、追问时深入而不是重复；底线不变：数字和日期只能来自资料、`[n]` 引用、stale / unavailable 如实说、不给买卖指令。v3 文件保留。`PROMPT_VERSION = "assistant_v4"`。
+- **板块行情工具 `industry_board`**：`BoardMarketRepository.search_latest` 在最近一个快照日里按名称模糊匹配（LIKE 转义，完全同名优先）。一次 1–4 个关键词，可限定行业或概念，每个词最多 4 条、合计最多 12 条；超过 10 天标 stale。主力净流入用 Decimal 换算成亿元，保留两位、四舍五入。来源写明「东方财富行业 / 概念板块（本系统每日快照）」。
+- **calc 列名**：`CellRef` 可以写 key、表头名或「表头名(单位)」（忽略空格、全角括号、大小写），新增 `match` 按文本 / 日期列筛行；长表里把指标名当行筛选词。找不到列时报错信息列出可用的数字列。`calc` 失败不再在回答下方显示提示（与 `quote_table` 一样）。
+- **DSML 解析**：`llm_tools.split_dsml` 把正文里的 DSML 调用解析成 `ToolCall` 并从正文里去掉；没有结构化调用时用它代替。强制写回答那一轮如果模型还在调用工具，带「不要再调用工具」再催一次。`MAX_TOKENS` 由 1200 调到 1800。
+- **会话列表（历史记录隔离）**：
+  - 后端：`PATCH /api/v1/assistant/sessions/{id}` 改名（1–80 字，压掉多余空白，不改 updated_at）；`DELETE /api/v1/assistant/sessions/{id}` 删除（只能删自己的，别人的返回 404；有未过期的 streaming 回答时返回 409 `SESSION_BUSY`；消息由外键 `ON DELETE CASCADE` 一起删）。会话列表按 `updated_at` 倒序，返回 `created_at` / `updated_at`。迁移 `20261015_0011` 里 `chat_messages.session_id` 已是 `ON DELETE CASCADE`，**不需要新迁移**。
+  - 前端：`AssistantView.vue` 左侧加会话列表（窄屏移到上方，限高可滚动），按今天 / 昨天 / 近 7 天 / 更早分组。切换会话加载各自的消息；「新对话」只清空界面，发第一问时才建会话，不留空记录；改名在原位编辑；删除要再点「确认删除」，409 时显示后端原因；删的是当前会话就切到下一条，没有了就回到新对话。生成中不能切换、改名、删除、新建。列表有 loading / empty / error（可重试）三种状态。回答结束后刷新列表，拿到后端用第一问改过的标题。页头重复的「新对话」按钮去掉。
+
+### 变更文件
+
+- 后端：`app/services/assistant/{agent,llm_tools,calc,blocks,responder,skills}.py`、`app/services/assistant/tools/{__init__,boards}.py`、`app/repositories/{board_market,chat}.py`、`app/api/v1/assistant.py`、`app/prompts/assistant_v4.txt`、`app/prompts/skills/*.md`（8 个）。
+- 后端测试：新增 `tests/unit/test_assistant_skills.py`、`test_assistant_tools_boards.py`、`test_assistant_sessions_api.py`；修改 `test_assistant_llm_tools.py`、`test_assistant_calc.py`、`test_assistant_agent.py`、`tests/integration/test_assistant_agent_turns.py`、`tests/integration/test_chat_sessions.py`。
+- 前端：新增 `src/api/assistantSessions.ts`、`src/components/assistant/SessionList.vue`、`tests/unit/assistantSessions.test.ts`；修改 `src/views/AssistantView.vue`。
+- 无迁移，无新依赖，无新的外部数据源（板块数据是已有的每日快照）。
+
+### 用例
+
+- `test_assistant_skills.py`（19）：技能文件能解析、与注册表一致、所有工具都能经核心或技能拿到；第一轮只给核心工具和 `load_skill`；加载后开放工具；技能轮次不计步数且最多 2 轮；未知技能、重复加载；未加载就直接调用；`load_skill` 不占并行名额；DSML 时再催一次；calc 失败不显示提示。
+- `test_assistant_tools_boards.py`（8）：多个关键词合并去重、亿元按 Decimal 四舍五入、行业 / 概念筛选和 as_of 传到仓库、旧快照标 stale、没有匹配返回 unavailable 并给提示、非法参数被拒（参数化 3 个）。
+- `test_assistant_sessions_api.py`（8）：列表按 updated_at 倒序并带时间、改名压空白并返回会话、空标题 / 全空白 / 81 字返回 422、改名或删除别人的会话返回 404、删除成功、生成中删除返回 409。
+- `test_assistant_calc.py`（35，其中新增按表头名、「表头名(单位)」、`match` 筛行、长表、找不到列的报错）；`test_assistant_llm_tools.py`（29，新增 4 个 DSML 用例：写进正文的调用变成 `ToolCall` 且不进正文、双竖线变体、调用前后的文字保留且被截断的参数丢掉、没有 invoke 的标记也从回答里去掉）。
+- 集成 `test_chat_sessions.py::test_rename_order_and_delete_with_messages`：两个会话按活动排序、改名压空白、别人改名返回 None、生成中删除抛 `SessionBusy`、回答结束后删除成功且该会话的 `chat_messages` 为 0。
+- 前端 `assistantSessions.test.ts`（11）：解析与排序、缺 updated_at 回退 created_at、upsert / remove、标题校验、按日分组；组件的切换、生成中锁住、原位改名（空标题不提交、压空白后提交）、删除二次确认与取消、loading / empty / error 与重试、显示操作失败原因。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/integration/test_chat_sessions.py tests/unit` | 978 passed, 2 skipped（2 个是 `test_chat_sessions.py`，本机没有 PostgreSQL） |
+| 同上，只跑本轮相关的 6 个单测文件 + 2 个集成文件 | 单测全部通过；集成 `test_assistant_agent_turns.py` 15 个、`test_chat_sessions.py` 2 个全部 skipped |
+| `backend\.venv\Scripts\python.exe -m ruff check .` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check .` | 447 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 275 source files |
+| `docker run --rm -v frontend:/app -v /app/node_modules -w /app node:22-alpine sh -c "npm ci; npx vitest run; npm run typecheck"` | vitest：55 个文件、361 个用例全部通过（新增 11 个）；`vue-tsc --noEmit` 无错误 |
+
+### 没有验证的
+
+- **没有部署到服务器复测**：用户贴的两轮半导体问答没有在服务器上用新代码重问。
+- **没有用真实模型跑**：技能加载、DSML 解析、v4 提示词的效果只用假模型按剧本验证过；DeepSeek 真实输出的 DSML 格式是照用户贴的样子写的，可能还有别的变体。
+- **集成测试**：本机没有 PostgreSQL，`test_chat_sessions.py`（含新增的改名 / 删除 / 级联用例）和 `test_assistant_agent_turns.py` 全部 skipped，交给 CI（ubuntu + pgvector）。
+- **页面没有在浏览器里点过**：会话列表只有组件测试和类型检查，没有起前后端实际操作，也没有截图。
+
+### 已知局限与阻塞
+
+- 技能是否加载由模型决定；模型不加载时只能用核心工具（直接调用没开放的工具也能用，但它看不到那份做法说明）。
+- `industry_board` 只有东财的每日快照，没有盘中数据，也没有成分股列表；快照任务没跑时会标 stale / unavailable。
+- 会话列表一次取全部，没有分页和搜索；会话多了以后要加。
+- 删除是硬删除，不可恢复（界面已二次确认）。
+- 既有的不稳定测试 `test_filing_report.py::test_rules_report_uses_only_stored_sample_numbers` 仍未修。
+
+### 下一项建议
+
+1. 部署后用用户原来的两个半导体问题在页面上重问，看 trace 里加载了哪些技能、是否还有 DSML 漏出来，必要时补 DSML 变体。
+2. CI 上确认集成测试（改名 / 删除 / 级联）通过。
+3. 会话列表加分页或按标题搜索。
+
+# 2026-10-21 ASSISTANT-5 实时数据工具、官方政策来源与检索新鲜度衰减
+
+分支 `feat/assistant-data-tools`。起因：用户拿「中国半导体还有救吗」问助手，回答偏空泛，只有宏观和板块行情。排查后判断主要是**取不到数据**，不是模型不会答：研报、板块成分、涨停和人气榜这些库里或已有服务里本来就有的数据没有对应工具；最近的新闻、政策没有实时来源；联网检索只有一条路。参考开源做法（先把数据接成白名单工具，再谈检索），没有拷贝外部代码。
+
+范围由用户逐项确认：接已有数据、扩充官方政策语料、`fetch_url`、检索新鲜度衰减、第二个搜索服务（百度千帆）；研报只存元数据，不存正文；快讯只实时取、不入库。向量检索（bge-m3）因服务器内存不够标为 `BLOCKED`，见「已知局限与阻塞」。
+
+### 做了什么
+
+**一、把已有数据接成工具**（都是只读白名单工具；能按 `as_of` 回看的才接受 `as_of`，只有实时数据的工具遇到过去的日期直接拒绝，不把今天的数据当历史数据给）
+
+- `research_reports`：东方财富研报列表，只给元数据（日期、机构、评级、标题、作者、链接），不抓正文。按行业（先查二级行业，按板块编号）或个股（6 位代码）；`days` 7–180（默认 60），行业最多 3 个板块、总共最多 15 条，`published_at <= as_of`；某个板块失败时其余照常给，并标 stale 说明哪个失败。
+- `board_detail`：一个板块的概览（位置、估值分位、超额收益）、成分股（按市值排，`top` 3–30）、下属细分行业；板块名或 `BKxxxx` 都行，没有的名字如实告知。只有实时数据。
+- `market_sentiment`：`limit_up`（涨停池汇总：家数、封板率、行业分布、连板梯队）、`limit_up_stocks`（涨停个股，按连板数、封板时间排序）、`surveys`（机构调研）、`hot`（东财人气榜、同花顺热股、热门行业与概念，每个榜单最多 10 条）。涨停两个视图可以按 `as_of` 回看，调研和人气榜只有实时。缺某个数就写缺，不补；某个榜单失败时点名说明，其余照给。
+- `hotspot_events`：在本系统已有的披露事件表里（已跟踪公司的巨潮公告、SEC 披露）按关键词查，`days` 1–30（默认 7），`top` 5–40，`published_at` 按上海日历日对齐 `as_of`；`NewsEventRepository.search` 新增（`ILIKE` 通配符转义、总数与分页分开计）。覆盖范围有限，查不到时写明「只覆盖系统跟踪的公司」。
+
+**二、实时语料**
+
+- `news_flash`：东方财富 7x24 快讯加新闻搜索标题，只取标题、发布时间、链接，不入库、不抓正文。`keyword` 2–20 字，`hours` 1–168（默认 72），`top` 5–30；每回合最多 3 次；只有实时数据。每条登记成**未核实**片段（`verified=False`，`corpus_kind="web"`），回答里用到它的数字必须在同一句末写 `[n]` 才放行。
+- `fetch_url`：读白名单站点的网页正文——官方 10 个（`gov.cn`、`sse.com.cn`、`szse.cn`、`bse.cn`、`cninfo.com.cn`、`federalreserve.gov`、`sec.gov`、`treasury.gov`、`bls.gov`、`bea.gov`）、媒体 7 个（`eastmoney.com`、`stcn.com`、`cnstock.com`、`cs.com.cn`、`yicai.com`、`xinhuanet.com`、`news.cn`）。只收 https（http 升级）、不收带账号口令或非 443 端口的地址、禁内网地址；先读对方 `robots.txt`（读不到按禁止），跳转必须留在同一后缀内，请求带联系邮箱的 UA；每回合最多 3 页；不读 PDF；官方页给前 6000 字、媒体页只给开头 1500 字，**都不入库**。读不了会用中文说明原因（robots 禁止、站点拒绝、跳转到名单以外、超时、太大、页面靠脚本生成没有正文）。
+- 正文抽取 `app/services/page_text.py`：去导航、页脚、链接列表、脚本样式，保留成段正文；按声明的编码解码（GBK 等）；发布日期优先取页面元数据，其次只认带「发布时间 / 来源」标签的日期，页头「今天是……」这类日期不当发布日；找不到日期时 `fetch_url` 的结果行写「页面没有标注日期，日期是读取当天」，不假装知道发布日。
+- 第二个搜索服务：百度千帆 AI 搜索。中文问题的顺序是博查 → 百度 → Brave，英文是 Brave → 博查 → 百度；HTTP 200 但带错误码的按失败处理，不算「没查到」。密钥 `BAIDU_QIANFAN_API_KEY` 只在服务端，可在管理页的运行设置里配置，结果不保存。**按官方文档写的，没有真实密钥验证。**
+
+**三、同步工具调用异步数据服务**：助手工具是同步的、在工作线程里跑，行情服务是异步的。新增 `loop_bridge.call_async`：把协程放回主事件循环执行（`main.py` 的 lifespan 里 `bind_main_loop` 登记，关闭时撤销），超时抛 `ProviderError(UPSTREAM_TIMEOUT, 504)` 并取消协程；没有主循环（脚本、测试）时退回私有循环；在循环线程里调用会直接报错，不会死锁。
+
+**四、官方政策来源与检索新鲜度衰减**（并行子任务，迁移 `20261022_0033`）
+
+- 新增两个官方来源，登记在 `official_texts.FEEDS`，由调度按 `FEEDS` 自动登记：深交所「本所要闻」`szse_news`、上交所「监管动态」`sse_supervision`。两站列表都是静态 HTML（深交所的标题和链接在每条记录内联脚本的字符串里，只读字符串、不执行 JS）。新来源 `respect_robots=True`：抓每一页前先读 robots.txt，列表页被禁止抛 `UPSTREAM_BLOCKED`（与 403 / 429 一样停止该来源），某篇正文被禁止只跳过那一篇。美联储和统计局的行为不变。`web_search` 命中这两个站的页面时同样按官方原文处理（`_OFFICIAL` 补两项，读页面时带 `respect_robots`）。
+- `html_text.article_text` 修了一个顺带发现的问题：容器里有不带斜杠的 `<br>`、`<img>` 时嵌套层数算错，会一直收到文档末尾；上交所正文因此漏出页脚的「分享：微信扫一扫」。
+- 检索新鲜度衰减 `app/services/corpus_freshness.py`（纯函数）：**只有检索词里带时间词**（最近、最新、今年、昨天、latest、recent……）时，才在通过阈值的候选里按 `分数 × 0.5^(天数/半衰期)` 重排；半衰期：官方政策与声明 180 天，公告、研报和官方要闻 30 天，快讯 3 天，用户文档与参考资料不衰减。先按原始相关度取 40 条候选，再按衰减分取前 8；`CORPUS_MIN_RANK` 比的是原始相关度，旧但相关的片段不会被整体丢掉；`published_at <= as_of` 仍在 SQL 里。时间词只用来决定要不要加权，不参与全文匹配（避免「最近 降息」要求片段里同时含「最近」）。`Passage.score` 是排序分，`rank` 仍是原始相关度。**行为变化**：原来仓库里始终开启的 30 天衰减（只对公告和官方文本）去掉了，没有时间词时只按相关度排。
+
+**五、技能与提示词**：新增 `hotspot` 技能（`market_sentiment`、`hotspot_events`、`news_flash`、`board_detail`）；`industry` 技能加 `board_detail`、`research_reports`；`news` 技能加 `news_flash`、`fetch_url` 并讲清各自什么时候用、每回合次数、快讯只是标题不能当事实；`valuation` 把短线情绪指向 `hotspot`；`documents` 说明语料库现在含深交所要闻和上交所监管动态、带时间词的检索会按新旧排序，并明确国务院、证监会、工信部、发改委的原文**没有**收进语料库、要靠 `web_search` 或用户给的链接。`assistant_v4.txt` 的技能目录加了「市场热点与资金情绪」。`news_flash`、`fetch_url` 加进 `NEVER_CACHED`；`STEP_LABELS` 补了新工具的中文进度文案。
+
+### 变更文件
+
+- 后端新增：`app/services/assistant/loop_bridge.py`、`app/services/assistant/tools/{fmt,live,reports,board_detail,sentiment,events,flash,fetch}.py`、`app/providers/eastmoney_news.py`、`app/services/{research_reports,news_flash,page_text,corpus_freshness,policy_lists}.py`、`app/prompts/skills/hotspot.md`、`alembic/versions/20261022_0033_policy_sources.py`。
+- 后端修改：`app/main.py`、`app/core/config.py`、`app/providers/{eastmoney_boards,web_search}.py`、`app/repositories/{corpus,news_events}.py`、`app/services/{html_text,official_texts,runtime_settings,scheduler}.py`、`app/services/assistant/{agent,tool_cache}.py`、`app/services/assistant/tools/{__init__,base,boards,corpus,web}.py`、`app/prompts/assistant_v4.txt`、`app/prompts/skills/{industry,news,valuation,documents}.md`、`.env.example`（只加 `BAIDU_QIANFAN_API_KEY=` 空值）。
+- 测试新增：`tests/live_fakes.py`（共用假件）、`tests/unit/test_{loop_bridge,assistant_tools_reports,assistant_tools_board_detail,assistant_tools_sentiment,assistant_tools_events,eastmoney_news,assistant_tools_flash,page_text,assistant_tools_fetch,web_search_qianfan,assistant_live_tools_turns,policy_feeds,corpus_freshness}.py`；修改 `tests/unit/test_official_and_web.py`（加交易所页面按官方原文处理的用例）、`tests/integration/test_corpus_repository.py`。
+- 迁移：`20261022_0033_policy_sources.py` 往 `corpus_sources` 插入 `szse_news`、`sse_supervision` 两行（`robots_checked_at` 记 2026-10-21），有 downgrade（按 code 删除）。无新依赖。
+
+### 用例
+
+每个工具至少一个正常用例和一个缺数据 / 异常用例，新增 229 个，另在 `test_official_and_web.py` 加 1 个。
+
+- `test_loop_bridge.py`（5）：协程在主循环里跑、没有主循环时退回私有循环、上游错误原样传出、超时后取消协程、在循环线程里调用被拒绝而不是死锁。
+- `test_assistant_tools_reports.py`（13）：行业研报新到旧并带链接、二级行业优先按板块编号查、`as_of` 之后的研报不返回、个股研报、某个板块失败其余照给、全部失败 / 窗口内没有研报 / 行业名查不到都是 unavailable 且不发请求、非法参数被拒（参数化 5）。
+- `test_assistant_tools_board_detail.py`（10）：概览、成分股排序和截断、细分行业、缺估值是带原因的一行而不是编出来的数、库里的快照带日期并标 stale、没有成分股说明原因、过去日期被拒、板块代码直用与未知名称、上游失败不带细节、上游里没有该板块不崩。
+- `test_assistant_tools_sentiment.py`（16）：涨停汇总、缺数保持缺、`as_of` 传到服务、非交易日 / 无涨停池 unavailable、stale 标注、涨停个股排序与截断、调研（含行业列缺失说明）、人气榜每个榜单限量并标注、一个榜单失败其余照给、全部失败 unavailable、实时视图拒绝过去日期、上游失败、非法参数。
+- `test_assistant_tools_events.py`（9）：新到旧并带来源与链接、关键词过滤并统计溢出、`LIKE` 通配符按字面、`as_of` 隐藏之后发布的事件、`as_of` 当天算到上海日末、查不到 / 空表 unavailable 并说明覆盖范围、非法参数、仓库 `search` 返回超过 limit 的总数（内存 SQLite）。
+- `test_eastmoney_news.py`（17）：快讯解析为 UTC 时间 + 东财链接、缺标题 / 编号 / 时间的条目丢弃不猜、搜索结果只收 https 与媒体名、去高亮标签并截断长标题、只认东财站内链接、畸形载荷抛结构化错误（参数化 10）、URL 参数。
+- `test_assistant_tools_flash.py`（15）：无关键词只调快讯、关键词合并去重并过滤无关快讯与超窗新闻、时间窗按发布时间、片段未核实且正文带时间、一路失败给另一路并说明、两路都失败 unavailable、窗口内没有、过去日期不发请求、每回合次数、`top` 截断并说明漏了多少、缓存过期标 stale、非法参数（参数化 4）。
+- `test_page_text.py`（18）：保留成段正文去掉导航页脚脚本、标题不重复、元数据发布日、带标签的日期、「今天是……」不当发布日、未来日期不当发布日、没有日期就是没有、GBK 声明与未声明、BOM、未知编码不崩、截断标记、恰好放得下不算截断、`<form>` 包裹、脚本生成的页面无正文、链接列表不当正文、英文块长度门槛。
+- `test_assistant_tools_fetch.py`（31）：官方页给分段正文和带日期的行、官方页截断并说明、媒体页只给开头一小段、没有日期的页面写明、白名单外 / 仿冒域名 / 内网 / 带账号 / 非标准端口 / 非 https / 含空格的地址不发请求（参数化 9）、拒绝信息点名站点、http 升级与锚点去除、子域名归类、各种读取失败的中文说明（参数化 7）、PDF 不读、没有正文的页面说明原因、每回合 3 页、没有联系邮箱不抓、分块按段落且硬切超长块、被禁路径不请求、允许路径经礼貌客户端读取。
+- `test_web_search_qianfan.py`（14）：请求体与时间窗、引用变成带来源名和日期的结果、垃圾响应不崩（参数化 4）、200 带错误码算失败、中文 / 英文的服务顺序、只配百度也能用且未配置的不被调用、错误码时落到下一家、全部失败的原因点名百度但不含密钥、百度正常但没有引用是空结果不是错误、密钥是服务端设置项。
+- `test_assistant_live_tools_turns.py`（6）：真 `Agent` + 假模型走一整轮：`hotspot` 技能只开放已注册的工具、池里的数字与带 `[n]` 的快讯通过核对、证据里没有的数字被拦下并改写、快讯里的数字没带同句 `[n]` 被拦、新工具有进度文案。
+- `test_policy_feeds.py`（27）、`test_corpus_freshness.py`（48）：两站列表解析（正常和缺数据）、正文容器、`sync_official` 幂等与每源上限、robots 各种情形、迁移 UUID 与 `FEEDS` 一一对应、调度登记；衰减纯函数的边界、关键词带时间词时的重排、阈值闸门拿原始相关度、`as_of` 条件。
+- `test_official_and_web.py`（+1）：深交所、上交所页面被换成官方原文（已核实），转载页不下载、保持未核实。
+- 集成 `test_corpus_repository.py`：原来断言「200 天前的讲话排在昨天纪要后面」，现在没有时间词不衰减，改成「没有时间词时分数等于相关度；带时间词时同一批文档、旧讲话分数被打折、整体按分数降序」。**本机没有 PostgreSQL，未能运行。**
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/unit` | 1228 passed |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/integration/test_corpus_repository.py` | 5 skipped（PostgreSQL 不可用，等待约 31 秒后跳过） |
+| `backend\.venv\Scripts\python.exe -m ruff check app tests` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check app tests` | 446 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 291 source files |
+| `alembic heads` | `20261022_0033 (head)`，单头 |
+| `alembic upgrade 20261021_0032:20261022_0033 --sql` 与对应 downgrade | SQL 渲染正常（插入两行 / 按 code 删除） |
+| 用 `default_registry()` 列注册表、`create_app()` | 17 个无需语料库的工具，含 6 个新工具（`research_reports`、`board_detail`、`market_sentiment`、`hotspot_events`、`news_flash`、`fetch_url`）；应用工厂可创建 |
+| 真实上游冒烟（一次性脚本，已删除）：`NewsFlashTool` 关键词「半导体」、无关键词，`ResearchReportsTool` 个股 `002371` | 三项都是 `ok`，分别 15 行、15 行、7 行；快讯带上海时间，研报带评级、机构和东财链接 |
+
+真实冒烟只对东方财富的三个公开接口各发了一两次请求（快讯结果在缓存里复用），没有登录、没有写库。
+
+### 没有验证的
+
+- **没有部署，没有用真实模型跑**：技能加载、新工具在真实问答里的效果（比如「中国半导体还有救吗」重问）只用假模型按剧本验证过。
+- **PostgreSQL 相关全部没跑**：`CorpusRepository.search` 的 SQL 改动（去掉衰减乘数、带时间词时候选改 40 条）、`NewsEventRepository.search`（只在内存 SQLite 上验证过）、迁移 `0033` 的真实升级，都交给 CI（ubuntu + pgvector）。
+- **corpus 评测集（Recall@5）没跑**：排序从「始终衰减」变成「纯相关度」，对召回的影响未评测。
+- **没有对真实的深交所、上交所栏目做完整同步**，没有往真实数据库写入；各只取过 1 篇正文核对容器（深交所 `id="desContent"`，上交所 `class="allZoom"`）。
+- **`market_sentiment`、`board_detail`、`hotspot_events`、`fetch_url` 没有对真实服务冒烟**：前两者包的是已有服务，`hotspot_events` 需要数据库，`fetch_url` 本机没有配置联系邮箱（`SEC_USER_AGENT`）所以按设计不抓。
+- **百度千帆没有真实密钥验证**，请求体和解析按官方文档写。
+- **前端没有改动，页面没有在浏览器里点过。**
+
+### 已知局限与阻塞
+
+- `BLOCKED` 向量检索（bge-m3 本地嵌入 + 混合检索）：SSH 查到阿里云服务器 3.5 GiB 内存、2 核、22 GiB 磁盘可用，装不下 bge-m3 和现有服务。需要用户决定：升配到 8 GiB 以上（最好 16 GiB），或改用外部嵌入 API（有费用，须先批准）。在此之前检索仍是全文检索 + 带时间词时的新鲜度加权。
+- `NOT_IMPLEMENTED` 财联社电报：接口需要请求签名，不绕过；快讯只用东方财富。
+- `BLOCKED` 国务院（gov.cn）、证监会（csrc.gov.cn）、工信部（miit.gov.cn）、发改委（ndrc.gov.cn）的政策列表：国务院探查预算内没找到可用的列表页；证监会 robots 返回 302 未核实、要闻栏目停在 2021-12、新闻发布会栏目最新到 2024-04；工信部文件库靠 JS 渲染；发改委 robots 返回 403（WAF），按规则当作禁止，没有绕过。这四家的原文目前只能靠 `web_search` 查报道或 `fetch_url` 读用户给的链接（发改委读不了）。
+- `NOT_IMPLEMENTED` `fetch_url` 读到的官方页面不入语料库；不读 PDF。
+- 上交所「监管动态」栏目最新一条是 2024-02-22，应该基本停更；深交所列表依赖页面内联脚本的模板，模板一改就解析不出条目，会返回空，不会写错数据；两站 `published_at` 只有日期，取当天 0 点（上海），同一天内的回测时点可能略早于真实发布时间。
+- `hotspot_events` 只覆盖系统已跟踪公司的巨潮 / SEC 披露，不是全市场新闻。
+- 快讯和新闻标题没有被系统核对：回答必须写明是媒体报道并带 `[n]`，不能当成已证实事实。
+- 研报只有元数据：评级和标题可以引用，研报里的观点和数字拿不到。
+- 既有的不稳定测试 `test_filing_report.py::test_rules_report_uses_only_stored_sample_numbers` 仍未修（本轮全量运行没有触发）。
+
+### 下一项建议
+
+1. 决定向量检索的路线（升配服务器，或批准外部嵌入 API），再做混合检索和评测。
+2. 部署后用「中国半导体还有救吗」在页面上重问，看 trace 里加载了哪些技能、调用了哪些新工具、`news_flash` 和 `fetch_url` 的真实表现；在管理页配置 `BAIDU_QIANFAN_API_KEY` 后做一次真实检索。
+3. CI 上确认集成测试（含 `test_corpus_repository.py` 和迁移 `0033`）与 corpus 评测集。
+4. 补查 gov.cn 当前的政策列表页和证监会新版站点；工信部、发改委要找官方 RSS 或开放数据接口，不绕过 robots 和 WAF。
+5. 修 `test_filing_report.py` 的不稳定（固定事实 id），一行改动，单独提交。
+
+## 2026-10-21 ASSISTANT-5B 政策语料：中国政府网「最新政策」、证监会要闻
+
+分支 `feat/assistant-data-tools`。接上一节「下一项建议」第 4 条，由用户选定「继续补政策来源」。本节同时更正上一节两处已过时的说法：
+
+- 「`BLOCKED` 国务院、证监会、工信部、发改委的政策列表」：国务院、证监会**已接入**（见下）；工信部、发改委仍是 `BLOCKED`，原因不变。
+- 「`test_filing_report.py` 的不稳定测试仍未修」：已在提交 `a1ee994` 修好，`_fact()` 的事实 id 改为由 accession、期间和数值算出的 `uuid5`，不再随机。
+
+### 探查（礼貌请求，间隔 2 秒以上，UA `FinScopeAI/1.0 (research prototype; +ops@finscope.test)`）
+
+- 中国政府网共 7 次请求（探查 6 次，写日志时为核实 robots 补 1 次）。`robots.txt` 只禁止 `/2016zhengce/`、`/premier/` 等旧目录和个别页面，不涉及 `/zhengce/`。「最新政策」栏目页面本身由脚本渲染，但它读的是同目录下的静态文件 `https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json`（当时 1106 条，新到旧，每条有 `TITLE`、`URL`、`DOCRELPUBTIME`）。只读这份 JSON、不执行脚本。正文页正文在 `id="UCAP-CONTENT"`，精确发布时间在 `<meta name="firstpublishedtime">`。`/zhengceku/` 返回 403，不用。
+- 证监会共 3 次请求。`robots.txt` 302 跳转到首页、返回的是 HTML：按 RFC 9309，跳转后拿到的内容里没有规则即视为不限制，现有 `PoliteClient` 本来就这样处理（401 / 403 / 5xx 和读取失败仍按禁止）。「要闻」栏目列表页停在 2021-12，不能用；当前要闻链接在首页（约 10 条，路径 `/csrc/c100028/c<数字>/content.shtml`），首页不写日期。正文在 `class="detail-news"`，发布时间在 `<meta name="PubDate">`。
+
+### 做了什么
+
+- 两个新来源登记在 `official_texts.FEEDS`，调度照旧按 `FEEDS` 自动登记，都 `respect_robots=True`：
+  - `gov_policy`（中国政府网，`kind=policy`）：读 JSON 最新 50 条，只收 `https://www.gov.cn/zhengce/` 下的链接。
+  - `csrc_news`（中国证监会，`kind=news`）：读首页，只收上面那个路径格式、带标题的 https 链接并去重。
+- 发布时间：`OfficialFeed` 新增 `time_meta`，`policy_lists.page_published_at` 从指定 `<meta>` 读上海时间、存为 UTC。列表有日期时，正文页时间落在同一个上海日历日才采用（更精确），否则保留列表日期；列表没有日期（证监会首页）时只认正文页时间，**正文页也没有就整篇跳过**，不猜日期。`FeedItem.published_at` 因此改为可空，只有证监会首页这一种来源会是空。
+- **修了 robots 解析的一个合规问题**（`app/providers/robots.py`）：政府网的 robots.txt 以 UTF-8 BOM 开头，原来的解析器认不出第一行 `User-agent: *`，整份规则被当成空的，结果连对方明确禁止的目录也判为允许。现在解析前去掉 BOM。这次要抓的 `/zhengce/` 本来就允许，接入本身不受影响；之前 `fetch_url` 和 `web_search` 读政府网页面时也走这段逻辑，同样被修正。
+- `web_search` 命中这两个站时按官方原文处理，但只限政策路径：政府网 `/zhengce/`、证监会 `/csrc/`；政府网新闻稿（`/xinwen/` 等）仍按未核实的报道摘要处理，不下载。
+- `documents` 技能：语料库内容加上「中国政府网最新政策、证监会要闻」；第 7 条改为：只收了这两个栏目的近期文章，更早的文件和各部委自己发的文件（工信部、发改委）没有收，查不到就走 `web_search` / `fetch_url`。
+
+### 变更文件
+
+- 新增：`backend/alembic/versions/20261023_0034_gov_csrc_sources.py`。
+- 修改：`backend/app/services/{policy_lists,official_texts,rss_feed}.py`、`backend/app/providers/robots.py`、`backend/app/repositories/corpus.py`（`GOV_POLICY_SOURCE`、`CSRC_NEWS_SOURCE`）、`backend/app/services/assistant/tools/web.py`、`backend/app/prompts/skills/documents.md`、`backend/tests/unit/{test_policy_feeds,test_official_and_web,test_robots}.py`。
+- 迁移：`20261023_0034` 接在 `20261022_0033` 之后，往 `corpus_sources` 插入 `gov_policy`（`government` / `json`，`www.gov.cn`）、`csrc_news`（`regulator` / `html`，`www.csrc.gov.cn`）两行，每小时，`robots_checked_at` 记 2026-10-21；downgrade 先删这两个来源的文档，再删来源。无新依赖。
+
+### 用例（新增 22 个）
+
+- `test_robots.py`（+1）：以 BOM 开头的文件，第一组规则照样生效（`/2016zhengce/` 禁止、`/zhengce/` 允许）。
+- `test_policy_feeds.py`（+20，政府网 robots 假件按真实文件带 BOM）：
+  - 迁移：UUID 与 `FEEDS` 一一对应（含 0034），0034 的链和 downgrade。
+  - 政府网列表：新到旧、只留 `/zhengce/`；不是 JSON 数组时没有条目（参数化 4）；只看最新 50 行。
+  - 证监会首页：只取要闻栏目链接、无日期、去重；改版后的首页没有条目。
+  - 页面时间：按指定 meta 读出上海时间并转 UTC，名字大小写不敏感，缺失或格式坏时为空（参数化）。
+  - `FEEDS` 登记：两源都读 robots、各带页面时间 meta。
+  - 同步：同一天时用正文页精确时间；正文页没有时间保留列表日期；robots 禁止 `/zhengce/` 时停止；证监会按正文页定日期、没有时间的文章跳过（robots 302 到首页视为允许，请求顺序 robots → 首页 → 首页）；证监会以后真放了 robots.txt 规则会被遵守。
+- `test_official_and_web.py`（+1）：政府网 `/zhengce/` 和证监会 `/csrc/` 页面按官方原文（已核实），政府网 `/xinwen/` 保持未核实摘要、不下载。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/unit` | 1250 passed |
+| `backend\.venv\Scripts\python.exe -m ruff check app tests alembic` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check app tests alembic` | 481 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 291 source files |
+| `alembic heads` | `20261023_0034 (head)`，单头 |
+| `alembic upgrade 20261022_0033:20261023_0034 --sql` 与对应 downgrade | SQL 渲染正常（插入两行 / 先删文档再删来源） |
+| 用新解析器读探查时下载到本地的真实页面（不联网，一次性脚本，已和探查文件一起删除） | 政府网 JSON 取 50 条，最新一条是 10 月 21 日《中办国办关于推动科技创新和产业创新深度融合的意见》；证监会首页取 11 条要闻；3 篇正文都抽出了正文和精确发布时间（如证监会《证券市场先行赔付指导意见》征求意见稿为北京时间 2026-10-19 19:03:25） |
+| 用 `RobotsRules` 判断真实的政府网 robots.txt（本地文件，不联网） | 修复前 `/2016zhengce/x.htm` 被判允许；修复后为禁止；`/zhengce/zuixin/ZUIXINZHENGCE.json` 和两篇正文路径为允许 |
+
+### 没有验证的
+
+- **没有对真实站点跑完整同步，没有写真实数据库**；迁移 `0034` 的真实升级交给 CI（ubuntu + PostgreSQL）。
+- 列表取 50 条，但每次同步每源最多存 8 篇（来源为空时的首次补跑是 20 篇），其余要等后续每小时的同步陆续补上；线上实际耗时和补齐所需时间没有观察过。
+
+### 已知局限与阻塞
+
+- `BLOCKED` 工信部（miit.gov.cn）：文件库列表靠 JS 渲染，没找到静态数据源。
+- `BLOCKED` 发改委（ndrc.gov.cn）：robots 返回 403（WAF），按规则当作禁止，没有绕过。
+- 政府网只收「最新政策」栏目，更早的文件不回补；证监会只收首页当前展示的约 10 条要闻，首页撤下之前没被同步到的文章会漏掉。
+- 两站都依赖当前的页面结构（JSON 字段名、首页链接格式、正文容器、meta 名）；改版后会取不到条目或跳过文章，不会写错数据。
+- `BLOCKED` 向量检索：用户已选外部嵌入 API 路线，**等用户选定服务商并提供密钥**后再做。
+
+### 下一项建议
+
+1. 用户提供嵌入 API 的服务商和密钥后，做官方文本与公告的向量化和混合检索，并跑 corpus 评测集对比 Recall@5。
+2. 部署后看政府网、证监会两源的首次同步结果（条数、`published_at`、正文长度），再用「中国半导体还有救吗」重问。
+3. 工信部、发改委继续找官方 RSS 或开放数据接口。
+
+## 2026-10-21 ASSISTANT-5C 语料语义检索：智谱 embedding-3
+
+分支 `feat/assistant-data-tools`。上一节「向量检索」标为 `BLOCKED`，等用户选定外部嵌入服务。用户选定智谱（bigmodel.cn）的 `embedding-3`。密钥不进代码库，在「集成设置」里填，或用环境变量 `CORPUS_EMBEDDING_API_KEY`。本节写完调用、入库和混合检索；**没有密钥，所以没有对智谱发过真实请求**，真实调用留给部署后在管理页点「测试连接」。
+
+上传文档那条线（`document_chunks`、`local-hashing-v1`、1536 维）没有改。
+
+### 做了什么
+
+- 配置（`config.py`）：`CORPUS_EMBEDDING_API_BASE_URL` 默认 `https://open.bigmodel.cn/api/paas/v4`，模型默认 `embedding-3`，相似度下限 `CORPUS_MIN_SIMILARITY` 默认 0.55。地址和模型只认环境变量：换模型或维度要新迁移建索引，界面里不能改。只有密钥进托管配置，加密存库。
+- 客户端 `app/providers/corpus_embedding.py`：`POST {base}/embeddings`，Bearer 密钥，请求带 `dimensions`。一批最多 32 条。返回维度必须是 1024，否则报错，不截断、不补零；向量做 L2 归一。401/403 说密钥不对，429 且错误码 1113 说余额不足，其余 429 说限流；不回显上游报错正文。没配密钥、地址不是 https、模型不在 `INDEXED_DIMS` 里时，`embedding_config` 返回 None，检索退回纯全文。
+- 迁移 `20261024_0035`：新表 `corpus_embeddings`（`chunk_id`、`embedding_model`、不定维度 `halfvec`、截断字数、跳过原因、时间）。空向量必须有跳过原因。按块级联删除。部分 HNSW 索引 `embedding::halfvec(1024)`、`halfvec_cosine_ops`、`WHERE embedding_model = 'embedding-3@1024'`。在线升级时 pgvector 低于 0.7 直接失败并说明原因。
+- 补向量 `embed_pending`：只补官方文本、公告、参考资料的**最新版本**，按发布时间从新到旧；用户上传的文档不发给智谱。每 10 分钟一条 `corpus_embed` 任务（语料检索开着且有密钥才登记），每轮最多 320 块，幂等键按 10 分钟一档，失败不重试整轮（密钥、余额、超时下一轮再来，已写入的批次保留）。整批被拒（HTTP 400）时逐条重试，仍被拒的记原因，不再反复打。正文超过 2400 字截断并记下截掉的字数。
+- 检索：`CorpusRepository.search` 没传查询向量时与原来的全文检索相同。传了向量时，全文前 40 和向量前 40 各自过阈值（全文看 `CORPUS_MIN_RANK`，向量看余弦相似度），再按 RRF（k = 60）融合；同一篇最多 2 块。两路都没有过阈值才算没查到。时间词仍只决定要不要按新旧加权，不进全文，也不进查询向量（全是时间词时保留）。向量查询把模型名和维度直接写进 SQL，好走到部分索引；写进去之前按 `模型名@维度` 校验，不接受任意字符串。`hnsw.ef_search` 设为 200，避免先取近邻再过滤时把该留的滤掉。
+- `corpus_search` 配了 `QueryEmbedder`：每次检索读当前生效的密钥（约 5 秒缓存），检索词转向量失败（超时、限流、欠费）只记日志，退回纯全文，不让这一轮问答失败。相同检索词缓存在进程内。
+- 「测试连接」：用这个密钥向量化「测试」两个字，维度不对或被拒绝时说明原因，不回显密钥。
+
+### 变更文件
+
+- 新增：`backend/app/providers/corpus_embedding.py`、`backend/app/repositories/corpus_embeddings.py`、`backend/app/services/corpus_vectors.py`、`backend/alembic/versions/20261024_0035_corpus_embeddings.py`、`backend/tests/unit/test_corpus_embedding.py`、`backend/tests/unit/test_corpus_vectors.py`、`backend/tests/integration/test_corpus_vectors_repository.py`。
+- 修改：`backend/app/core/config.py`、`backend/app/main.py`、`backend/app/repositories/corpus.py`、`backend/app/services/{rrf,runtime_settings,integration_probe,scheduler}.py`、`backend/app/services/assistant/tools/{__init__,corpus}.py`、`backend/app/workers/jobs.py`、`backend/app/prompts/skills/documents.md`、`.env.example`（只加空的 `CORPUS_EMBEDDING_API_KEY=` 和默认地址、模型、相似度，没有密钥）。
+
+### 用例（单测新增 54 个，集成 3 个）
+
+- `test_corpus_embedding.py`：请求体与 Bearer；结果按输入顺序排回并做单位化；畸形响应（维度不对、零向量、非数字、下标重复、非有限数）是 `UPSTREAM_PAYLOAD`；401 / 余额不足 / 限流 / 400 / 5xx 的中文说明且不回显上游正文；超时与连接失败；空批不发请求、超批和空文本拒绝；正文拼接与截断；没密钥或模型没建索引时关闭；托管项只有密钥且标为密文；测试连接打到 embedding-3、1024 维，拒绝时照实说；迁移链、模型名、维度、索引表达式与代码一致。
+- `test_corpus_vectors.py`：32 条一批、没密钥不读库、被拒的块逐条跳过、空块不请求、超长截断、密钥/余额/超时停下且保留已写入批次；检索词缓存、失败返回空、时间词不进向量；两路都命中的块排最前并保留两套分数、每篇最多 2 块；没向量时不碰向量表；同义命中且弱相似丢掉；全文没词时语义单独作答；两路都不过阈值返回空；全文弱不挡住语义强；时间词在融合后再按新旧排；模型标识格式不对不进 SQL；工具把向量和阈值传下去，转向量失败退回全文；没开语料检索不登记任务，登记键按上海时间 10 分钟取整；worker 读 scope 里的条数。
+- 集成 `test_corpus_vectors_repository.py`（本机没有 PostgreSQL，**未运行**，交给 CI）：待补清单不含用户文档和旧版本、被拒的块不再出现、空向量缺原因违反约束、全文没有「降准」二字时向量仍能找回「下调存款准备金率」、`as_of` 之前的不返回。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/unit` | 1304 passed |
+| `backend\.venv\Scripts\python.exe -m ruff check .` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check .` | 488 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 294 source files |
+| `alembic heads` | `20261024_0035 (head)`，单头 |
+| `alembic upgrade 20261023_0034:20261024_0035 --sql` 与对应 downgrade | SQL 渲染正常（建表、halfvec 部分索引、检查约束 / 删索引再删表） |
+
+### 没有验证的
+
+- **没有智谱密钥，没有发过真实嵌入请求。** 请求体按官方文档写，解析和错误码用假响应测过。
+- **迁移 `0035` 没有在真实 PostgreSQL 上执行**；`halfvec` 索引和混合检索 SQL 只在集成测试里，本机跳不过去（连不上数据库）。CI 用 `pgvector/pgvector:pg16` 跑。
+- 评测集 Recall@5 没跑：现有评测集是全文检索，向量要先有密钥才能离线生成，没有拿哈希向量冒充。
+- 没有部署，没有在页面上重问。
+
+### 已知局限与阻塞
+
+- 上一节「`BLOCKED` 向量检索，等用户选定服务商」到此结束：服务商定为智谱 embedding-3。**还没配密钥，所以线上仍是纯全文检索**，配上之后约 5 秒生效，历史块由每 10 分钟的任务补，不会一次打完。
+- `BLOCKED` 工信部、发改委：原因同上一节。
+- 相似度下限 0.55 还没用评测集校准。
+- 用户上传的文档仍然只有全文检索（哈希向量那条线），不进这次的语义检索。
+
+### 下一项建议
+
+1. 部署后在「集成设置」填智谱密钥，点测试连接；看 `corpus_embed` 任务是否写入，再用同义说法问一条已入库的政策。
+2. 有密钥后跑 corpus 评测集，校准 `CORPUS_MIN_SIMILARITY`。
+3. 工信部、发改委继续找官方 RSS 或开放数据接口。

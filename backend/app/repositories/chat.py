@@ -28,6 +28,12 @@ class SessionRecord:
     id: UUID
     title: str
     created_at: datetime
+    # 最近一次提问的时间（新建时等于 created_at）；会话列表按它倒序。
+    updated_at: datetime | None = None
+
+
+class SessionBusy(Exception):
+    """会话里还有正在生成的回答：先等它结束或取消，再删除。"""
 
 
 @dataclass(frozen=True)
@@ -92,18 +98,60 @@ class ChatRepository:
         with Session(self.engine) as session, session.begin():
             session.add(row)
             session.flush()
-            return SessionRecord(id=row.id, title=row.title, created_at=row.created_at)
+            return _session_record(row)
 
     def list_sessions(self, user_id: UUID) -> list[SessionRecord]:
         with Session(self.engine) as session:
             rows = session.scalars(
                 select(ChatSession)
                 .where(ChatSession.user_id == user_id)
-                .order_by(ChatSession.created_at.desc())
+                .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
             ).all()
-            return [
-                SessionRecord(id=row.id, title=row.title, created_at=row.created_at) for row in rows
-            ]
+            return [_session_record(row) for row in rows]
+
+    def rename_session(self, user_id: UUID, session_id: UUID, title: str) -> SessionRecord | None:
+        """改标题；不改 `updated_at`，改名不算一次提问，不把会话顶到列表最前。
+
+        会话不归该用户返回 None。
+        """
+
+        cleaned = " ".join(title.split())[:80]
+        if not cleaned:
+            raise ValueError("标题不能为空")
+        with Session(self.engine) as session, session.begin():
+            row = session.get(ChatSession, session_id)
+            if row is None or row.user_id != user_id:
+                return None
+            row.title = cleaned
+            session.flush()
+            return _session_record(row)
+
+    def delete_session(self, user_id: UUID, session_id: UUID) -> bool:
+        """删掉会话和其中全部消息（外键 ON DELETE CASCADE）。会话不归该用户返回 False。
+
+        还有没过期的 streaming 回答时抛 `SessionBusy`：后台线程还在往这个会话写。
+        过期的 streaming（进程重启留下的残留）不拦。
+        """
+
+        cutoff = utc_now() - timedelta(seconds=self.stale_seconds)
+        with Session(self.engine) as session, session.begin():
+            row = session.get(ChatSession, session_id, with_for_update=True)
+            if row is None or row.user_id != user_id:
+                return False
+            running = session.scalar(
+                select(func.count())
+                .select_from(ChatMessage)
+                .where(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.role == "assistant",
+                    ChatMessage.completion_status == "streaming",
+                    ChatMessage.created_at >= cutoff,
+                )
+            )
+            if running:
+                raise SessionBusy
+            session.delete(row)
+        return True
 
     def list_messages(self, user_id: UUID, session_id: UUID) -> list[MessageRecord] | None:
         with Session(self.engine) as session:
@@ -343,6 +391,12 @@ class ChatRepository:
                 )
             )
             return int(total or 0)
+
+
+def _session_record(row: ChatSession) -> SessionRecord:
+    return SessionRecord(
+        id=row.id, title=row.title, created_at=row.created_at, updated_at=row.updated_at
+    )
 
 
 def _title_from(question: str) -> str:

@@ -156,6 +156,22 @@ class IndustryReport:
 
 
 @dataclass(frozen=True)
+class StockReport:
+    """个股研报的元数据：只有标题、机构、评级、日期和原文链接，没有正文，也没有盈利预测。"""
+
+    info_code: str
+    title: str
+    org_name: str
+    published_on: date
+    rating: str | None
+    researcher: str | None
+    stock_code: str
+    stock_name: str
+    industry: str | None
+    url: str
+
+
+@dataclass(frozen=True)
 class HotRankEntry:
     exchange: str
     code: str
@@ -338,6 +354,31 @@ def reports_url(code: str, start: date, end: date, page_size: int = 30) -> str:
             "fields": "",
             "qType": "1",
             "orgCode": "",
+            "rcode": "",
+        }
+    )
+    return f"{_REPORT_URL}?{query}"
+
+
+def stock_reports_url(code: str, start: date, end: date, page_size: int = 30) -> str:
+    """个股研报：qType=0，按 6 位股票代码查（行业研报是 qType=1，见 `reports_url`）。"""
+
+    if len(code) != 6 or not code.isdigit():
+        raise ProviderError(code="VALIDATION_ERROR", message="股票代码是 6 位数字", status_code=422)
+    query = urlencode(
+        {
+            "industryCode": "*",
+            "pageSize": str(page_size),
+            "industry": "*",
+            "rating": "*",
+            "ratingChange": "*",
+            "beginTime": start.isoformat(),
+            "endTime": end.isoformat(),
+            "pageNo": "1",
+            "fields": "",
+            "qType": "0",
+            "orgCode": "",
+            "code": code,
             "rcode": "",
         }
     )
@@ -530,6 +571,34 @@ def parse_reports(payload: bytes) -> tuple[IndustryReport, ...]:
                 rating=_text(row.get("emRatingName")) or _text(row.get("sRatingName")),
                 researcher=_text(row.get("researcher")),
                 url=f"https://data.eastmoney.com/report/zw_industry.jshtml?infocode={info_code}",
+            )
+        )
+    return tuple(reports)
+
+
+def parse_stock_reports(payload: bytes) -> tuple[StockReport, ...]:
+    document = _object(_decode(payload, "个股研报"), "个股研报")
+    reports: list[StockReport] = []
+    for raw in _list(document.get("data") or [], "个股研报"):
+        row = _object(raw, "个股研报")
+        info_code = _text(row.get("infoCode"))
+        title = _text(row.get("title"))
+        day = _day(row.get("publishDate"))
+        stock_code = _text(row.get("stockCode"))
+        if info_code is None or title is None or day is None or stock_code is None:
+            continue
+        reports.append(
+            StockReport(
+                info_code=info_code,
+                title=title,
+                org_name=_text(row.get("orgSName")) or _text(row.get("orgName")) or "—",
+                published_on=day,
+                rating=_text(row.get("emRatingName")) or _text(row.get("sRatingName")),
+                researcher=_text(row.get("researcher")),
+                stock_code=stock_code,
+                stock_name=_text(row.get("stockName")) or stock_code,
+                industry=_text(row.get("indvInduName")),
+                url=f"https://data.eastmoney.com/report/zw_stock.jshtml?infocode={info_code}",
             )
         )
     return tuple(reports)

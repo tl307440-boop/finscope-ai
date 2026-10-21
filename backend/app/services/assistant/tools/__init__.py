@@ -7,19 +7,26 @@
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import Engine
 
+from app.repositories.corpus import QueryVector
 from app.services.assistant.calc import CalcArgs, run_calc
 from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
+from app.services.assistant.tools.board_detail import BoardDetailTool
+from app.services.assistant.tools.boards import IndustryBoardTool
 from app.services.assistant.tools.corpus import CorpusSearchTool
+from app.services.assistant.tools.events import HotspotEventsTool
+from app.services.assistant.tools.fetch import FetchUrlTool
 from app.services.assistant.tools.filings import FilingFetchTool
+from app.services.assistant.tools.flash import NewsFlashTool
 from app.services.assistant.tools.macro import MacroCompareTool, MacroSeriesTool
 from app.services.assistant.tools.market import (
     BoardStrengthTool,
@@ -28,6 +35,8 @@ from app.services.assistant.tools.market import (
     PriceBarsTool,
 )
 from app.services.assistant.tools.quote import QuoteTableTool
+from app.services.assistant.tools.reports import ResearchReportsTool
+from app.services.assistant.tools.sentiment import MarketSentimentTool
 from app.services.assistant.tools.web import WebSearchTool
 
 logger = logging.getLogger(__name__)
@@ -38,7 +47,8 @@ class CalcTool:
     name: ClassVar[str] = "calc"
     description: ClassVar[str] = (
         "做算术：差值、涨跌幅、比值、平均、分位、换算。事实数字只能引用本回合已有资料"
-        "（资料编号 + 列 + 行）；做情景分析时可以用 assume + label 给出假设的数字。"
+        "（资料编号 + 列 + 行）：列写 key 或表头名；要某个指标或某一天的值，用 match 写指标代码"
+        "或交易日，比数行号可靠。做情景分析时可以用 assume + label 给出假设的数字。"
         "所有算术都用它，不要心算。结果会登记成新的资料，之后可以引用；"
         "用到假设的结果只能写在带「假设 / 若 / 如果」的句子里。"
     )
@@ -67,9 +77,13 @@ class ToolRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._tools))
 
-    def definitions(self) -> list[dict[str, Any]]:
-        """给模型的工具列表：按名字排序、序列化方式固定，所有请求逐字节相同（前缀缓存）。"""
+    def definitions(self, only: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        """给模型的工具列表：按名字排序、序列化方式固定，所有请求逐字节相同（前缀缓存）。
 
+        `only` 给了就只列这些（按需开放工具时用）；不认识的名字忽略。
+        """
+
+        names = self.names if only is None else tuple(sorted(set(only) & set(self._tools)))
         return [
             {
                 "type": "function",
@@ -79,7 +93,7 @@ class ToolRegistry:
                     "parameters": compact_schema(self._tools[name].args_model),
                 },
             }
-            for name in self.names
+            for name in names
         ]
 
     def execute(self, name: str, raw_arguments: str, ctx: ToolContext) -> ToolOutcome:
@@ -126,26 +140,43 @@ class ToolRegistry:
 
 
 def default_registry(
-    cache: ToolCache | None = None, *, corpus_min_rank: float | None = None
+    cache: ToolCache | None = None,
+    *,
+    corpus_min_rank: float | None = None,
+    corpus_min_similarity: float = 0.0,
+    corpus_embed_query: Callable[[Engine, str], QueryVector | None] | None = None,
 ) -> ToolRegistry:
-    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。"""
+    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。
+
+    `corpus_embed_query` 给了就是混合检索；它返回 None（没配密钥、转向量失败）时退回纯全文。
+    """
 
     tools: list[Tool] = [
+        BoardDetailTool(),
         BoardStrengthTool(),
         CalcTool(),
         CustomIndicatorTool(),
+        FetchUrlTool(),
         FinancialMetricsTool(),
+        HotspotEventsTool(),
+        IndustryBoardTool(),
         InstrumentSearchTool(),
         MacroCompareTool(),
         MacroSeriesTool(),
+        MarketSentimentTool(),
+        NewsFlashTool(),
         PriceBarsTool(),
+        ResearchReportsTool(),
         WatchlistTool(),
         WebSearchTool(),
     ]
     if corpus_min_rank is not None:
-        tools.extend(
-            (CorpusSearchTool(min_rank=corpus_min_rank), FilingFetchTool(), QuoteTableTool())
+        corpus = CorpusSearchTool(
+            min_rank=corpus_min_rank,
+            min_similarity=corpus_min_similarity,
+            embed_query=corpus_embed_query,
         )
+        tools.extend((corpus, FilingFetchTool(), QuoteTableTool()))
     return ToolRegistry(tools, cache)
 
 

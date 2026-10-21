@@ -1,6 +1,6 @@
 """OpenAI 兼容 `/chat/completions` 的带工具调用客户端（规格 §5）。
 
-- 请求：`temperature: 0`、`max_tokens: 1200`、`stream: true`，
+- 请求：`temperature: 0`、`max_tokens: 1800`、`stream: true`，
   单次不重试（重试由编排器按步数预算决定）。
 - 流式解析：`tool_calls` 按 `index` 累积成完整调用，`content` 累积成正文；
   两者同时出现以工具调用为准。
@@ -12,6 +12,7 @@
 """
 
 import json
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -20,7 +21,7 @@ from typing import Any, Protocol
 
 import httpx
 
-MAX_TOKENS = 1200
+MAX_TOKENS = 1800
 CONNECT_SECONDS = 5.0
 FIRST_BYTE_SECONDS = 20.0
 SINGLE_CALL_SECONDS = 60.0
@@ -213,8 +214,66 @@ def _build(calls: dict[int, dict[str, str]], content: str, usage: dict[str, int]
         for index, slot in sorted(calls.items())
         if slot.get("name")
     )
+    if _DSML.search(content):
+        content, written = split_dsml(content)
+        tool_calls = tool_calls or written
     # 同时出现工具调用与正文时以工具调用为准，正文丢弃。
     return ModelReply(content="" if tool_calls else content, tool_calls=tool_calls, usage=usage)
+
+
+# DeepSeek 有时不走 `tool_calls` 字段，而是把调用按它自己的 DSML 标记写进正文：
+# <｜DSML｜function_calls><｜DSML｜invoke name="calc">
+# <｜DSML｜parameter name="op" string="true">diff</｜DSML｜parameter>…
+# 竖线有全角、半角，也见过两条；标记一律不能进正文。
+_BAR = r"[｜|]+"
+_DSML = re.compile(rf"<\s*/?\s*{_BAR}\s*DSML\s*{_BAR}")
+_DSML_TAG = re.compile(rf"<\s*/?\s*{_BAR}\s*DSML\s*{_BAR}[^>]*>")
+_DSML_INVOKE = re.compile(rf'<\s*{_BAR}\s*DSML\s*{_BAR}\s*invoke\s+name\s*=\s*"([^"]+)"[^>]*>')
+_DSML_PARAM = re.compile(
+    rf'<\s*{_BAR}\s*DSML\s*{_BAR}\s*parameter\s+name\s*=\s*"([^"]+)"'
+    r'(?:\s+string\s*=\s*"(true|false)")?[^>]*>(.*?)'
+    rf"(?=<\s*/?\s*{_BAR}\s*DSML\s*{_BAR}|$)",
+    re.DOTALL,
+)
+
+
+def split_dsml(content: str) -> tuple[str, tuple[ToolCall, ...]]:
+    """把正文里的 DSML 调用拆出来：返回（去掉标记后的正文，解析出的调用）。
+
+    标记之后如果还有正文（模型写完调用又接着写回答），保留下来；解析不出参数的调用丢弃。
+    """
+
+    first = _DSML.search(content)
+    if first is None:
+        return content, ()
+    tags = list(_DSML_TAG.finditer(content))
+    tail = content[tags[-1].end() :] if tags else ""
+    # 最后一个标记之后紧跟的是参数值或残缺的标记，不是正文。
+    if tags and not tags[-1].group().lstrip("<").lstrip().startswith("/"):
+        tail = ""
+    calls: list[ToolCall] = []
+    invokes = list(_DSML_INVOKE.finditer(content))
+    for index, invoke in enumerate(invokes):
+        end = invokes[index + 1].start() if index + 1 < len(invokes) else len(content)
+        args: dict[str, Any] = {}
+        for param in _DSML_PARAM.finditer(content, invoke.end(), end):
+            name, is_string, raw = param.group(1), param.group(2), param.group(3).strip()
+            if is_string == "true":
+                args[name] = raw
+                continue
+            try:
+                args[name] = json.loads(raw)
+            except ValueError:
+                args[name] = raw
+        calls.append(
+            ToolCall(
+                id=f"dsml_{index}",
+                name=invoke.group(1).strip(),
+                arguments=json.dumps(args, ensure_ascii=False),
+            )
+        )
+    text = (content[: first.start()] + tail).strip()
+    return text, tuple(calls)
 
 
 def _usage(raw: Mapping[str, Any]) -> dict[str, int]:

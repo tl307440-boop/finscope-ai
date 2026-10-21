@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any, cast
 from uuid import UUID
 
@@ -11,7 +11,7 @@ from sqlalchemy import Engine
 from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
-from app.repositories.chat import ChatRepository, MessageRecord, SessionRecord
+from app.repositories.chat import ChatRepository, MessageRecord, SessionBusy, SessionRecord
 from app.services.assistant.limits import AssistantLimiter
 from app.services.assistant.orchestrator import TurnRunner
 from app.services.assistant.responder import AssistantResponder
@@ -44,9 +44,20 @@ class SessionCreate(BaseModel):
     title: str = Field(default="新的问答", max_length=80)
 
 
+class SessionRename(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
 class SessionItem(BaseModel):
     id: UUID
     title: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SessionDeleted(BaseModel):
+    id: UUID
+    deleted: bool = True
 
 
 class SessionList(BaseModel):
@@ -115,10 +126,7 @@ def create_session(
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> JSONResponse:
     created = _repository(request).create_session(user.id, body.title)
-    return JSONResponse(
-        status_code=200,
-        content=success_response(request, SessionItem(id=created.id, title=created.title)),
-    )
+    return JSONResponse(status_code=200, content=success_response(request, _session(created)))
 
 
 @router.get("/sessions", summary="我的问答")
@@ -128,6 +136,43 @@ def list_sessions(
 ) -> JSONResponse:
     rows = _repository(request).list_sessions(user.id)
     return JSONResponse(status_code=200, content=success_response(request, _sessions(rows)))
+
+
+@router.patch("/sessions/{session_id}", summary="重命名问答")
+def rename_session(
+    session_id: UUID,
+    body: SessionRename,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    try:
+        renamed = _repository(request).rename_session(user.id, session_id, body.title)
+    except ValueError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
+    if renamed is None:
+        raise AppError(code="NOT_FOUND", message="找不到这个问答", status_code=404)
+    return JSONResponse(status_code=200, content=success_response(request, _session(renamed)))
+
+
+@router.delete("/sessions/{session_id}", summary="删除问答（连同其中的消息）")
+def delete_session(
+    session_id: UUID,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> JSONResponse:
+    try:
+        deleted = _repository(request).delete_session(user.id, session_id)
+    except SessionBusy as exc:
+        raise AppError(
+            code="SESSION_BUSY",
+            message="这个问答里还有回答正在生成，请等它结束或取消后再删除",
+            status_code=409,
+        ) from exc
+    if not deleted:
+        raise AppError(code="NOT_FOUND", message="找不到这个问答", status_code=404)
+    return JSONResponse(
+        status_code=200, content=success_response(request, SessionDeleted(id=session_id))
+    )
 
 
 @router.get("/sessions/{session_id}/messages", summary="问答历史")
@@ -233,8 +278,14 @@ def _composer(engine: Engine) -> Callable[[str], str]:
     return compose
 
 
+def _session(row: SessionRecord) -> SessionItem:
+    return SessionItem(
+        id=row.id, title=row.title, created_at=row.created_at, updated_at=row.updated_at
+    )
+
+
 def _sessions(rows: list[SessionRecord]) -> SessionList:
-    return SessionList(sessions=[SessionItem(id=row.id, title=row.title) for row in rows])
+    return SessionList(sessions=[_session(row) for row in rows])
 
 
 def _messages(rows: list[MessageRecord]) -> MessageList:

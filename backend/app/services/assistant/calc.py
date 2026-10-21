@@ -44,7 +44,17 @@ class CellRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     evidence: str | None = Field(default=None, description="证据编号，如 E2")
-    column: str | None = Field(default=None, description="数字列的 key")
+    column: str | None = Field(
+        default=None, description="数字列：key（如 close、value）或表头名（如「收盘」）"
+    )
+    match: str | None = Field(
+        default=None,
+        max_length=60,
+        description=(
+            "只取文字或日期列等于它的行：财务指标表写指标代码（如 gross_margin），"
+            "日线写交易日（如 2025-10-21）；row 在这些行里数"
+        ),
+    )
     row: int | None = Field(
         default=None,
         description="第几行，从 1 开始；负数从末尾数（-1 是最后一行）；不给表示整列",
@@ -59,7 +69,12 @@ class CellRef(BaseModel):
 
     @model_validator(mode="after")
     def _one_kind(self) -> Self:
-        cites = self.evidence is not None or self.column is not None or self.row is not None
+        cites = (
+            self.evidence is not None
+            or self.column is not None
+            or self.row is not None
+            or self.match is not None
+        )
         assumes = self.assume is not None or self.label is not None
         if cites == assumes:
             raise ValueError("每个输入要么给 evidence + column，要么给 assume + label")
@@ -131,15 +146,12 @@ def _collect(args: CalcArgs, book: EvidenceBook) -> _Collected:
         item = book.get(ref.evidence)
         if item is None:
             raise CalcError(f"没有这条证据：{ref.evidence}")
-        column = next((col for col in item.result.columns if col.key == ref.column), None)
-        if column is None or column.kind != "number":
-            raise CalcError(f"{ref.evidence} 里没有数字列 {ref.column}")
-        rows = item.result.rows
-        picked = _pick(rows, ref)
-        for number, row in picked:
-            parsed = to_decimal(row.get(ref.column))
+        column, match = _resolve(item.result, ref.column, ref.match, ref.evidence)
+        rows = _filter(item.result, match, ref.evidence)
+        for number, row in _pick(rows, ref):
+            parsed = to_decimal(row.get(column.key))
             if parsed is None:
-                raise CalcError(f"{ref.evidence} 第 {number} 行的 {ref.column} 不是数字")
+                raise CalcError(f"{ref.evidence} 第 {number} 行的 {column.key} 不是数字")
             collected.values.append(parsed)
         if collected.unit is None:
             collected.unit = column.unit
@@ -163,15 +175,60 @@ def _assumed(raw: float) -> Decimal:
     return number
 
 
-def _pick(
-    rows: Sequence[dict[str, str | None]], ref: CellRef
-) -> list[tuple[int, dict[str, str | None]]]:
+_Row = tuple[int, dict[str, str | None]]
+_PARENS = str.maketrans({"（": "(", "）": ")"})
+
+
+def _norm(text: str) -> str:
+    return "".join(text.split()).translate(_PARENS).lower()
+
+
+def _resolve(
+    result: ToolResult, wanted: str, match: str | None, evidence: str
+) -> tuple[Column, str | None]:
+    """找数字列。模型照着资料表头写「收盘(CNY)」、或把长表里的指标代码当列名，都要认得。
+
+    返回（列，行筛选词）。长表（只有一个数字列、指标代码在文字列里）把列名当成行筛选词。
+    """
+
+    numeric = [column for column in result.columns if column.kind == "number"]
+    key = _norm(wanted)
+    for column in numeric:
+        names = (column.key, column.label, f"{column.label}({column.unit})")
+        if key in {_norm(name) for name in names}:
+            return column, match
+    if match is None and len(numeric) == 1 and _filter_rows(result, wanted):
+        return numeric[0], wanted
+    keys = "、".join(column.key for column in numeric) or "（没有数字列）"
+    raise CalcError(f"{evidence} 里没有数字列 {wanted}；可用的数字列：{keys}")
+
+
+def _filter_rows(result: ToolResult, match: str) -> list[_Row]:
+    texts = [column.key for column in result.columns if column.kind in {"text", "date"}]
+    target = _norm(match)
+    return [
+        (number, row)
+        for number, row in enumerate(result.rows, start=1)
+        if any(_norm(row.get(key) or "") == target for key in texts)
+    ]
+
+
+def _filter(result: ToolResult, match: str | None, evidence: str) -> list[_Row]:
+    if match is None:
+        return list(enumerate(result.rows, start=1))
+    rows = _filter_rows(result, match)
+    if not rows:
+        raise CalcError(f"{evidence} 里没有「{match[:40]}」这一行")
+    return rows
+
+
+def _pick(rows: Sequence[_Row], ref: CellRef) -> list[_Row]:
     if ref.row is None:
-        return list(enumerate(rows, start=1))
+        return list(rows)
     if ref.row == 0 or abs(ref.row) > len(rows):
         raise CalcError(f"{ref.evidence} 只有 {len(rows)} 行，没有第 {ref.row} 行")
     index = ref.row - 1 if ref.row > 0 else len(rows) + ref.row
-    return [(index + 1, rows[index])]
+    return [rows[index]]
 
 
 def _compute(args: CalcArgs, values: list[Decimal], unit: str) -> tuple[Decimal, str]:

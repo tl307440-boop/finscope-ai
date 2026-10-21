@@ -28,11 +28,13 @@ from app.db.session import create_db_engine
 from app.repositories.accounts import AccountRepository
 from app.services.accounts import bootstrap_admin
 from app.services.assistant.limits import AssistantLimiter
+from app.services.assistant.loop_bridge import bind_main_loop
 from app.services.assistant.orchestrator import TurnRunner
 from app.services.assistant.tool_cache import ToolCache
 from app.services.assistant.tools import default_registry
 from app.services.assistant.turns import AssistantConfig
 from app.services.cockpit import keep_dashboard_warm
+from app.services.corpus_vectors import QueryEmbedder
 from app.services.eastmoney_binding import build_service as build_eastmoney_service
 from app.services.login_limiter import LoginRateLimiter
 from app.services.market_cache import close_gateways
@@ -77,6 +79,8 @@ def create_app() -> FastAPI:
             window_seconds=settings.login_failure_window_seconds,
         )
         # 助手：回合在后台线程池里跑，限流状态放进程内（每日额度查库）。
+        # 工具是同步的，行情服务是异步的：登记主事件循环，让工具把协程放回这里执行。
+        bind_main_loop(asyncio.get_running_loop())
         assistant_runner = TurnRunner(
             workers=settings.assistant_workers,
             heartbeat_seconds=settings.assistant_heartbeat_seconds,
@@ -98,6 +102,8 @@ def create_app() -> FastAPI:
         app.state.assistant_registry = default_registry(
             ToolCache(),
             corpus_min_rank=settings.corpus_min_rank if settings.corpus_enabled else None,
+            corpus_min_similarity=settings.corpus_min_similarity,
+            corpus_embed_query=QueryEmbedder(),
         )
         _bootstrap_admin(engine, settings)
         # 总览的上游（FRED / 东财 / 外盘 / 指数 / 板块 / 公告）冷启动要几十次跨境请求：
@@ -120,6 +126,7 @@ def create_app() -> FastAPI:
                 await asyncio.gather(task, return_exceptions=True)
         await close_gateways()
         assistant_runner.shutdown()
+        bind_main_loop(None)
         engine.dispose()
 
     app = FastAPI(

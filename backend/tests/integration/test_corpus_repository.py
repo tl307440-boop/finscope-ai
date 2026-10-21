@@ -249,8 +249,14 @@ def test_filters_time_window_and_per_document_cap(
     titles = [p.title for p in found]
     assert "Future speech on inflation" not in titles  # 晚于 as_of 的不给（不前视）
     assert titles.count("Minutes") == 2  # 同一篇最多 2 块
-    # 时间衰减：200 天前的讲话排在昨天的纪要后面。
-    assert titles.index("Old speech on inflation") > titles.index("Minutes")
+    # 没有时间词：只按相关度排序，不衰减。
+    assert all(p.score == p.rank for p in found)
+    # 带时间词：时间词不参与匹配（还是同一批文档），旧讲话的分数被打折，整体按分数从高到低。
+    fresh = repo.search(_query(user, keywords_en=("inflation", "latest")))
+    assert {p.title for p in fresh} == set(titles)
+    old_speech = next(p for p in fresh if p.title == "Old speech on inflation")
+    assert old_speech.score < old_speech.rank
+    assert [p.score for p in fresh] == sorted((p.score for p in fresh), reverse=True)
     recent = repo.search(_query(user, keywords_en=("inflation",), since=date(2026, 10, 1)))
     assert {p.title for p in recent} == {"Minutes"}
     old = repo.search(_query(user, keywords_en=("inflation",), until=date(2026, 5, 1)))

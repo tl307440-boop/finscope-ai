@@ -150,6 +150,35 @@ class BoardMarketRepository:
             rows = session.scalars(query.order_by(BoardDailySnapshot.board_code)).all()
             return [_snapshot(row) for row in rows]
 
+    def search_latest(
+        self, query: str, on_or_before: date, kinds: Sequence[str], limit: int
+    ) -> list[StoredSnapshot]:
+        """`on_or_before` 当天或之前最近一个快照日里，名称包含 `query` 的板块。
+
+        名称完全相同的排前面，其余按名称长短（越短越接近所问的板块）。
+        """
+
+        day = self.latest_snapshot_date(on_or_before)
+        if day is None:
+            return []
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        statement = (
+            select(BoardDailySnapshot)
+            .where(
+                BoardDailySnapshot.trade_date == day,
+                BoardDailySnapshot.kind.in_(list(kinds)),
+                BoardDailySnapshot.name.ilike(f"%{escaped}%", escape="\\"),
+            )
+            .order_by(
+                (BoardDailySnapshot.name != query),
+                func.length(BoardDailySnapshot.name),
+                BoardDailySnapshot.board_code,
+            )
+            .limit(limit)
+        )
+        with Session(self.engine) as session:
+            return [_snapshot(row) for row in session.scalars(statement).all()]
+
     def latest_snapshot(self, board_code: str) -> StoredSnapshot | None:
         with Session(self.engine) as session:
             row = session.scalars(
