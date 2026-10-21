@@ -34,6 +34,7 @@ from app.services.policy_lists import (
     GOV_POLICY_LIST,
     SSE_SUPERVISION_PAGE,
     SZSE_NEWS_PAGE,
+    _SzseNews,
     day_start_in_shanghai,
     page_published_at,
     parse_csrc_home_news,
@@ -159,6 +160,8 @@ def test_szse_list_drops_records_without_a_date_and_never_borrows_the_next_one()
 
 
 def test_szse_list_ignores_pages_without_the_list_and_empty_lists() -> None:
+    # 标准库用 _pending 做缓冲。这里如果把它覆盖成 None，空页面在打过补丁的 Python 上会崩。
+    assert isinstance(_SzseNews().__dict__.get("_pending", []), list)
     assert parse_szse_news_list(b"", SZSE_NEWS_PAGE) == ()
     assert parse_szse_news_list(_szse_page(), SZSE_NEWS_PAGE) == ()
     assert parse_szse_news_list("<html><body>验证码</body></html>".encode(), SZSE_NEWS_PAGE) == ()

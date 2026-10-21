@@ -211,7 +211,9 @@ class _SzseNews(HTMLParser):
         self._depth = 0  # 在 `ul.newslist` 里面的嵌套层数
         self._script: list[str] | None = None
         self._time: list[str] | None = None
-        self._pending: tuple[str, str] | None = None
+        # 不能叫 _pending：2026 年的 HTMLParser 安全补丁用这个名字做内部缓冲，
+        # 子类再写成 None 的话，feed("") 会在缓冲上 append 而崩溃。
+        self._record: tuple[str, str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         classes = {
@@ -232,16 +234,16 @@ class _SzseNews(HTMLParser):
         if tag == "ul" and self._depth:
             self._depth -= 1
             if not self._depth:
-                self._pending = None
+                self._record = None
         elif tag == "script" and self._script is not None:
             self._remember("".join(self._script))
             self._script = None
         elif tag == "span" and self._time is not None:
             stamp = "".join(self._time)
             self._time = None
-            if self._pending is not None:
-                self.found.append((self._pending[0], self._pending[1], stamp))
-                self._pending = None
+            if self._record is not None:
+                self.found.append((self._record[0], self._record[1], stamp))
+                self._record = None
 
     def handle_data(self, data: str) -> None:
         if self._script is not None:
@@ -253,7 +255,7 @@ class _SzseNews(HTMLParser):
         href = _CUR_HREF.search(script)
         title = _CUR_TITLE.search(script)
         # 没有拿到完整的一对就清掉上一条：缺日期或缺标题的记录不能和下一条串起来。
-        self._pending = (
+        self._record = (
             (href.group(1), _js_string(title.group(1))) if href is not None and title else None
         )
 
