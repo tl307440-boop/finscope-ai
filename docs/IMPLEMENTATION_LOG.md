@@ -1650,7 +1650,8 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 - 易方达 588080 在 2025-10-17 除息，合约单位 10000 → 10097；PCR 用成交张数，不受影响。
 - 数据本来就在：上交所接口返回全部标的，这两只此前已入库（同样与官方 CP_RATE 对账，0 行待审），只是没有分组使用。
 - 代码：custom_analysis_rules.OPTION_GROUPS 加 star50；前端 PCR_GROUPS 加「科创50」；接口分组校验正则本来就放行。
-- 测试：规则（两只加总、缺一只整天丢弃、其他标的不混入）、服务（正常 / 缺一只降级 / 无股指期权篮子）、API（含 CSV：kind=index 返回 404）、前端（标签切换请求 star50、只有一张卡）。后端 pytest tests 693 通过、1 跳过；前端 itest 286 通过；ue-tsc、uff 通过。
+- 测试：规则（两只加总、缺一只整天丢弃、其他标的不混入）、服务（正常 / 缺一只降级 / 无股指期权篮子）、API（含 CSV：kind=index 返回 404）、前端（标签切换请求 star50、只有一张卡）。后端 pytest tests 693 通过、1 跳过；前端 itest 286 通过；ue-tsc、
+uff 通过。
 - 局限：上市不足 5 年（约 3.4 年），样本不足 750 个交易日前不给分位。
 ## 2026-10-18 CHINA-MACRO-CATCHUP 中国宏观新增序列部署后为空：启动补跑与种子文件进镜像
 
@@ -2097,3 +2098,74 @@ T23：把 `refresh_hotspot_events` 的执行器接上，并在拿到合规数据
 1. 合并部署后复测联网检索（服务器诊断脚本 + 页面实问一次）。
 2. 「运行状态」页加搜索服务健康：最近一次联网成功时间、最近的失败原因，博查余额低时提醒。
 3. 修 `test_filing_report.py` 的不稳定（固定事实 id），一行改动，单独提交。
+
+## 2026-10-21 ASSISTANT-4 技能按需加载、板块行情工具、calc 列名、DSML 泄漏、会话列表
+
+分支 `feat/assistant-skills`。起因：用户贴了服务器上两轮关于半导体的问答，反馈助手「限制太死」「不太聪明」，并要求历史记录隔离、按问题按需调用工具（渐进式披露）。参考了 [ai-image-master](https://github.com/2799662352/ai-image-master)（MIT）的「Skills Markdown 按需加载」思路；它是 Electron + LangGraph，技术栈不同，没有拷代码。
+
+### 查到的原因（只看用户贴的问答，没有登录服务器）
+
+- **DSML 泄漏**：DeepSeek 偶尔不走结构化 `tool_calls`，把调用写进正文（`<｜DSML｜invoke name=…>`）。强制写回答那一轮里模型照样写调用，按句核对拦掉带数字的句子，改写后正文前面仍带着这段标记，用户看到的是乱码。
+- **calc 认不出列名**：资料表显示的是「label(unit)」，`calc` 只认内部 key；财务指标又是长表（一列指标名、一列数值），模型写「营业收入」对不上，算不出来就只好回避数字。
+- **库里有数据但没有工具**：东财行业 / 概念板块每日快照 `board_daily_snapshots` 已在库里，助手没有工具能查，问「半导体板块怎么样」只能答宏观。
+- **提示词规则太多、太死**：v3 把每类问题的做法都写进系统提示词，模型倾向于保守地只复述数据。
+- **前端只打开最近一个会话**：后端早就按会话取历史（`responder.recent_turns`），但界面没有会话列表，看起来像所有问答混在一起。
+
+### 做了什么
+
+- **技能按需加载（渐进式披露）**：新增 `app/services/assistant/skills.py` 和 `app/prompts/skills/*.md`（industry、company、valuation、macro、documents、news、scenario、watchlist 8 个）。每个技能文件头部写 name / title / summary / tools，正文是这类问题的做法。回合开始只给核心工具（calc、financial_metrics、instrument_search、macro_series、price_bars）加 `load_skill`；模型加载技能后，正文进入上下文，对应工具开放。只加载技能的轮次不计步数（每回合最多 2 轮），`load_skill` 不占并行 3 个的名额；未知技能列出可用目录，重复加载会提示；模型直接调用还没开放的白名单工具照常执行并开放。工具全部不在注册表里的技能会被去掉。trace 记录本回合加载的技能。
+- **提示词 v4**：`assistant_v4.txt` 更短，要求像分析师一样先给倾向性结论、可以做定性的行业分析、追问时深入而不是重复；底线不变：数字和日期只能来自资料、`[n]` 引用、stale / unavailable 如实说、不给买卖指令。v3 文件保留。`PROMPT_VERSION = "assistant_v4"`。
+- **板块行情工具 `industry_board`**：`BoardMarketRepository.search_latest` 在最近一个快照日里按名称模糊匹配（LIKE 转义，完全同名优先）。一次 1–4 个关键词，可限定行业或概念，每个词最多 4 条、合计最多 12 条；超过 10 天标 stale。主力净流入用 Decimal 换算成亿元，保留两位、四舍五入。来源写明「东方财富行业 / 概念板块（本系统每日快照）」。
+- **calc 列名**：`CellRef` 可以写 key、表头名或「表头名(单位)」（忽略空格、全角括号、大小写），新增 `match` 按文本 / 日期列筛行；长表里把指标名当行筛选词。找不到列时报错信息列出可用的数字列。`calc` 失败不再在回答下方显示提示（与 `quote_table` 一样）。
+- **DSML 解析**：`llm_tools.split_dsml` 把正文里的 DSML 调用解析成 `ToolCall` 并从正文里去掉；没有结构化调用时用它代替。强制写回答那一轮如果模型还在调用工具，带「不要再调用工具」再催一次。`MAX_TOKENS` 由 1200 调到 1800。
+- **会话列表（历史记录隔离）**：
+  - 后端：`PATCH /api/v1/assistant/sessions/{id}` 改名（1–80 字，压掉多余空白，不改 updated_at）；`DELETE /api/v1/assistant/sessions/{id}` 删除（只能删自己的，别人的返回 404；有未过期的 streaming 回答时返回 409 `SESSION_BUSY`；消息由外键 `ON DELETE CASCADE` 一起删）。会话列表按 `updated_at` 倒序，返回 `created_at` / `updated_at`。迁移 `20261015_0011` 里 `chat_messages.session_id` 已是 `ON DELETE CASCADE`，**不需要新迁移**。
+  - 前端：`AssistantView.vue` 左侧加会话列表（窄屏移到上方，限高可滚动），按今天 / 昨天 / 近 7 天 / 更早分组。切换会话加载各自的消息；「新对话」只清空界面，发第一问时才建会话，不留空记录；改名在原位编辑；删除要再点「确认删除」，409 时显示后端原因；删的是当前会话就切到下一条，没有了就回到新对话。生成中不能切换、改名、删除、新建。列表有 loading / empty / error（可重试）三种状态。回答结束后刷新列表，拿到后端用第一问改过的标题。页头重复的「新对话」按钮去掉。
+
+### 变更文件
+
+- 后端：`app/services/assistant/{agent,llm_tools,calc,blocks,responder,skills}.py`、`app/services/assistant/tools/{__init__,boards}.py`、`app/repositories/{board_market,chat}.py`、`app/api/v1/assistant.py`、`app/prompts/assistant_v4.txt`、`app/prompts/skills/*.md`（8 个）。
+- 后端测试：新增 `tests/unit/test_assistant_skills.py`、`test_assistant_tools_boards.py`、`test_assistant_sessions_api.py`；修改 `test_assistant_llm_tools.py`、`test_assistant_calc.py`、`test_assistant_agent.py`、`tests/integration/test_assistant_agent_turns.py`、`tests/integration/test_chat_sessions.py`。
+- 前端：新增 `src/api/assistantSessions.ts`、`src/components/assistant/SessionList.vue`、`tests/unit/assistantSessions.test.ts`；修改 `src/views/AssistantView.vue`。
+- 无迁移，无新依赖，无新的外部数据源（板块数据是已有的每日快照）。
+
+### 用例
+
+- `test_assistant_skills.py`（19）：技能文件能解析、与注册表一致、所有工具都能经核心或技能拿到；第一轮只给核心工具和 `load_skill`；加载后开放工具；技能轮次不计步数且最多 2 轮；未知技能、重复加载；未加载就直接调用；`load_skill` 不占并行名额；DSML 时再催一次；calc 失败不显示提示。
+- `test_assistant_tools_boards.py`（8）：多个关键词合并去重、亿元按 Decimal 四舍五入、行业 / 概念筛选和 as_of 传到仓库、旧快照标 stale、没有匹配返回 unavailable 并给提示、非法参数被拒（参数化 3 个）。
+- `test_assistant_sessions_api.py`（8）：列表按 updated_at 倒序并带时间、改名压空白并返回会话、空标题 / 全空白 / 81 字返回 422、改名或删除别人的会话返回 404、删除成功、生成中删除返回 409。
+- `test_assistant_calc.py`（35，其中新增按表头名、「表头名(单位)」、`match` 筛行、长表、找不到列的报错）；`test_assistant_llm_tools.py`（29，新增 4 个 DSML 用例：写进正文的调用变成 `ToolCall` 且不进正文、双竖线变体、调用前后的文字保留且被截断的参数丢掉、没有 invoke 的标记也从回答里去掉）。
+- 集成 `test_chat_sessions.py::test_rename_order_and_delete_with_messages`：两个会话按活动排序、改名压空白、别人改名返回 None、生成中删除抛 `SessionBusy`、回答结束后删除成功且该会话的 `chat_messages` 为 0。
+- 前端 `assistantSessions.test.ts`（11）：解析与排序、缺 updated_at 回退 created_at、upsert / remove、标题校验、按日分组；组件的切换、生成中锁住、原位改名（空标题不提交、压空白后提交）、删除二次确认与取消、loading / empty / error 与重试、显示操作失败原因。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/integration/test_chat_sessions.py tests/unit` | 978 passed, 2 skipped（2 个是 `test_chat_sessions.py`，本机没有 PostgreSQL） |
+| 同上，只跑本轮相关的 6 个单测文件 + 2 个集成文件 | 单测全部通过；集成 `test_assistant_agent_turns.py` 15 个、`test_chat_sessions.py` 2 个全部 skipped |
+| `backend\.venv\Scripts\python.exe -m ruff check .` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check .` | 447 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 275 source files |
+| `docker run --rm -v frontend:/app -v /app/node_modules -w /app node:22-alpine sh -c "npm ci; npx vitest run; npm run typecheck"` | vitest：55 个文件、361 个用例全部通过（新增 11 个）；`vue-tsc --noEmit` 无错误 |
+
+### 没有验证的
+
+- **没有部署到服务器复测**：用户贴的两轮半导体问答没有在服务器上用新代码重问。
+- **没有用真实模型跑**：技能加载、DSML 解析、v4 提示词的效果只用假模型按剧本验证过；DeepSeek 真实输出的 DSML 格式是照用户贴的样子写的，可能还有别的变体。
+- **集成测试**：本机没有 PostgreSQL，`test_chat_sessions.py`（含新增的改名 / 删除 / 级联用例）和 `test_assistant_agent_turns.py` 全部 skipped，交给 CI（ubuntu + pgvector）。
+- **页面没有在浏览器里点过**：会话列表只有组件测试和类型检查，没有起前后端实际操作，也没有截图。
+
+### 已知局限与阻塞
+
+- 技能是否加载由模型决定；模型不加载时只能用核心工具（直接调用没开放的工具也能用，但它看不到那份做法说明）。
+- `industry_board` 只有东财的每日快照，没有盘中数据，也没有成分股列表；快照任务没跑时会标 stale / unavailable。
+- 会话列表一次取全部，没有分页和搜索；会话多了以后要加。
+- 删除是硬删除，不可恢复（界面已二次确认）。
+- 既有的不稳定测试 `test_filing_report.py::test_rules_report_uses_only_stored_sample_numbers` 仍未修。
+
+### 下一项建议
+
+1. 部署后用用户原来的两个半导体问题在页面上重问，看 trace 里加载了哪些技能、是否还有 DSML 漏出来，必要时补 DSML 变体。
+2. CI 上确认集成测试（改名 / 删除 / 级联）通过。
+3. 会话列表加分页或按标题搜索。

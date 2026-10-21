@@ -149,6 +149,50 @@ def test_replay_returns_the_saved_answer_once() -> None:
         _cleanup(other)
 
 
+@pytest.mark.integration
+def test_rename_order_and_delete_with_messages() -> None:
+    if not _ready():
+        pytest.skip("PostgreSQL 不可用")
+    from app.repositories.chat import ChatRepository, SessionBusy
+
+    username = f"t18c-{uuid4().hex[:8]}"
+    engine = create_db_engine(get_settings().database_url)
+    user = AccountRepository(engine).create_user(
+        username=username,
+        email=f"{username}@example.com",
+        password_hash=PasswordService("test").hash("correct-password"),
+        role="researcher",
+    )
+    chats = ChatRepository(engine)
+    try:
+        first = chats.create_session(user.id, "研究问答")
+        second = chats.create_session(user.id, "研究问答")
+        busy_id = uuid4()
+        assert chats.create_turn(user.id, first.id, busy_id, "中国半导体还有救吗")
+        # 第一会话刚有提问：排到最前；标题取问题前 30 字。
+        listed = chats.list_sessions(user.id)
+        assert [item.id for item in listed] == [first.id, second.id]
+        assert listed[0].title == "中国半导体还有救吗"
+        renamed = chats.rename_session(user.id, second.id, "  半导体  追问 ")
+        assert renamed is not None and renamed.title == "半导体 追问"
+        assert chats.rename_session(uuid4(), second.id, "别人改") is None
+        with pytest.raises(SessionBusy):
+            chats.delete_session(user.id, first.id)
+        chats.finish_turn(first.id, busy_id, status="completed", content="好")
+        assert chats.delete_session(uuid4(), first.id) is False
+        assert chats.delete_session(user.id, first.id) is True
+        with engine.connect() as connection:
+            left = connection.execute(
+                text("SELECT count(*) FROM chat_messages WHERE session_id = :id"),
+                {"id": first.id},
+            ).scalar_one()
+        assert left == 0
+        assert [item.id for item in chats.list_sessions(user.id)] == [second.id]
+    finally:
+        engine.dispose()
+        _cleanup(username)
+
+
 def _deltas(raw: str) -> str:
     parts: list[str] = []
     for block in raw.split("\n\n"):

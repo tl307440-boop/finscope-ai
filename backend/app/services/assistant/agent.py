@@ -4,7 +4,8 @@
 1. 快速路径（可关）：一眼能看出要查什么的问题先直取数据，
    结果以「模型已调用过这些工具」的形式放进消息；
 2. 工具调用循环：模型按需调用数据工具，最多 `max_steps` 轮，每轮最多并行 3 个；
-   用完后强制写叙述；
+   用完后强制写叙述。给了技能清单（`SkillBook`）时，一开始只开放核心工具和 `load_skill`，
+   其余工具随模型加载的技能开放（渐进式披露，见 `skills.py`）；
 3. 叙述按句校验：每句都要通过 `grounding` 才推给浏览器；
    某句不通过，改写一次，仍不通过就隐藏后文；
 4. 总时长、取消：每轮开始前和每次模型调用返回后检查；
@@ -30,21 +31,29 @@ from app.services.assistant.evidence import render, source_payload
 from app.services.assistant.grounding import CITATION, Grounder, GroundingResult
 from app.services.assistant.llm_tools import ModelCallError, ModelReply, ToolCall, ToolModel
 from app.services.assistant.sentences import split_sentences
+from app.services.assistant.skills import LOAD_SKILL, SkillBook
+from app.services.assistant.skills import load as load_skill
 from app.services.assistant.tools import ToolRegistry
 from app.services.assistant.tools.base import ToolContext
 from app.services.assistant.tools.macro import SERIES
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "assistant_v3"
+PROMPT_VERSION = "assistant_v4"
 MAX_PARALLEL = 3
 PLANNER_MAX_CALLS = 4
 MAX_ENTITIES = 8
+# 只加载技能、没查数据的轮次不占步数，但最多这么多轮，防止模型反复加载。
+MAX_SKILL_ROUNDS = 2
 
 NO_PLAN_TEXT = "没能理解这个问题，请换个问法，或直接说明要查的序列、证券或指标。"
 NO_TEXT_NOTICE = "没能生成可核对的文字回答，请看下方查到的数据。"
 HIDDEN_NOTICE = "后续内容没能通过核对，已隐藏；请看下方查到的数据。"
 IGNORED_CALL = "本轮同时调用的工具太多，这个调用被忽略；需要的话下一步再调用。"
+NO_MORE_TOOLS = (
+    "这一回合已经不能再调用工具了。请直接根据已经查到的资料写回答；"
+    "没算出来的数就不写，或直接引用资料里的原始数字。"
+)
 
 STEP_LABELS = {
     "macro_series": "查宏观序列",
@@ -53,6 +62,7 @@ STEP_LABELS = {
     "price_bars": "查日线",
     "financial_metrics": "查财务指标",
     "board_strength": "查行业强弱",
+    "industry_board": "查板块行情",
     "custom_indicator": "查自定义指标",
     "watchlist": "读我的自选",
     "calc": "计算",
@@ -122,6 +132,10 @@ class _Turn:
     unmatched: list[str] = field(default_factory=list)
     prefetched: list[str] = field(default_factory=list)
     sources: list[dict[str, Any]] = field(default_factory=list)
+    # 按需开放：本回合加载过的技能、开放的工具（核心工具不在这里）。
+    skills: list[str] = field(default_factory=list)
+    enabled: set[str] = field(default_factory=set)
+    skill_rounds: int = 0
     model_calls: int = 0
     counter: int = 0
     repaired: bool = False
@@ -138,13 +152,17 @@ class Agent:
         tools_supported: bool,
         system_prompt: str,
         clock: Callable[[], float] = time.monotonic,
+        skills: SkillBook | None = None,
     ) -> None:
+        """`skills` 为 None 时一开始就给全部工具；给了就只给核心工具 + `load_skill`，按需开放。"""
+
         self._model = model
         self._registry = registry
         self._settings = settings
         self._tools_supported = tools_supported
         self._prompt = system_prompt
         self._clock = clock
+        self._skills = skills
 
     # ------------------------------------------------------------------ 入口
     def run(
@@ -208,6 +226,7 @@ class Agent:
             arguments = json.dumps(planned.args, ensure_ascii=False)
             text = self._execute(turn, planned.name, arguments)
             turn.prefetched.append(planned.name)
+            turn.enabled.add(planned.name)
             done.append(_Prefetched(f"prefetch_{index}", planned.name, arguments, text))
         return done
 
@@ -235,19 +254,41 @@ class Agent:
             )
 
     def _tool_loop(self, turn: _Turn) -> str | None:
-        tools = self._registry.definitions()
-        for _ in range(self._settings.max_steps):
+        steps = 0
+        while steps < self._settings.max_steps:
             if self._stopped(turn):
                 return None
-            reply = self._call(turn, tools)
+            reply = self._call(turn, self._tools(turn))
             if self._stopped(turn):
                 return None
             if not reply.tool_calls:
                 return reply.content
             self._run_calls(turn, reply.tool_calls)
+            only_skills = all(call.name == LOAD_SKILL for call in reply.tool_calls)
+            if only_skills and turn.skill_rounds < MAX_SKILL_ROUNDS:
+                turn.skill_rounds += 1
+                continue
+            steps += 1
         if self._stopped(turn):
             return None
-        return self._call(turn, None).content  # 步数用完：强制写叙述
+        return self._final(turn)
+
+    def _tools(self, turn: _Turn) -> list[dict[str, Any]]:
+        if self._skills is None:
+            return self._registry.definitions()
+        opened = self._registry.definitions({*self._skills.core, *turn.enabled})
+        return [*opened, self._skills.definition()]
+
+    def _final(self, turn: _Turn) -> str | None:
+        """步数用完：不再给工具，强制写叙述。模型仍要调用工具（DSML 写在正文里）时再催一次。"""
+
+        reply = self._call(turn, None)
+        if not reply.tool_calls:
+            return reply.content
+        if self._stopped(turn):
+            return None
+        reply = self._call(turn, None, extra=[{"role": "system", "content": NO_MORE_TOOLS}])
+        return None if reply.tool_calls else reply.content
 
     def _run_calls(self, turn: _Turn, calls: Sequence[ToolCall]) -> None:
         turn.messages.append(
@@ -264,13 +305,45 @@ class Agent:
                 ],
             }
         )
-        for index, call in enumerate(calls):
-            text = (
-                self._execute(turn, call.name, call.arguments)
-                if index < MAX_PARALLEL
-                else IGNORED_CALL
-            )
+        queried = 0
+        for call in calls:
+            if call.name == LOAD_SKILL and self._skills is not None:
+                text = self._load_skill(turn, self._skills, call.arguments)
+            elif queried < MAX_PARALLEL:
+                queried += 1
+                text = self._execute(turn, call.name, call.arguments)
+                # 模型没加载技能就直接调用了技能里的工具：照常执行，之后也一直给它。
+                turn.enabled.add(call.name)
+            else:
+                text = IGNORED_CALL
             turn.messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
+
+    def _load_skill(self, turn: _Turn, skills: SkillBook, arguments: str) -> str:
+        """加载技能：做法说明作为工具结果回给模型，技能带的工具从下一次调用起开放。
+
+        不是查数据，不登记证据、不出数据块；步骤列表里照样显示，读者看得到助手展开了哪些能力。
+        """
+
+        turn.counter += 1
+        step_id = f"s{turn.counter}"
+        turn.emit({"type": "step", "id": step_id, "label": "加载技能…", "status": "running"})
+        loaded = load_skill(skills, arguments, turn.skills)
+        turn.enabled.update(loaded.tools)
+        turn.skills.extend(name for name in loaded.names if name not in turn.skills)
+        label = "、".join(loaded.titles) or "没有这个技能"
+        status = "ok" if loaded.ok else "unavailable"
+        done = {"id": step_id, "label": f"加载技能：{label}", "status": status}
+        turn.steps.append(done)
+        turn.emit({"type": "step", **done})
+        turn.calls.append(
+            {
+                "step": turn.counter,
+                "tool": LOAD_SKILL,
+                "args": {"names": list(loaded.names)},
+                "status": status,
+            }
+        )
+        return loaded.text
 
     # ------------------------------------------------------------------ 规划器模式
     def _planner(self, turn: _Turn) -> str | None:
@@ -476,6 +549,7 @@ class Agent:
             "model": self._model.model_name,
             "mode": "tools" if self._tools_supported else "planner",
             "fast_path": turn.prefetched,
+            "skills": turn.skills,
             "calls": turn.calls,
             "model_calls": turn.model_calls,
             "usage": turn.usage,

@@ -332,7 +332,7 @@ def test_enabled_turn_streams_steps_blocks_and_text_then_saves_and_replays_every
     assert (str(row["as_of"]), row["model"]) == ("2026-08-01", "fake-1")
     assert row["finished_at"] is not None
     trace = row["tool_trace"]
-    assert trace["prompt"] == "assistant_v3" and trace["mode"] == "tools"
+    assert trace["prompt"] == "assistant_v4" and trace["mode"] == "tools"
     assert trace["fast_path"] == ["macro_series"]
     assert [(c["tool"], c["status"], c["evidence"]) for c in trace["calls"]] == [
         ("macro_series", "ok", "E1")

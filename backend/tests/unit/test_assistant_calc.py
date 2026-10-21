@@ -187,9 +187,103 @@ def test_calc_schema_stays_flat_for_models() -> None:
     schema = compact_schema(CalcArgs)
     item = schema["properties"]["inputs"]["items"]
     properties = item["properties"]
-    assert set(properties) == {"evidence", "column", "row", "assume", "label"}
+    assert set(properties) == {"evidence", "column", "match", "row", "assume", "label"}
     assert all("anyOf" not in field for field in properties.values())
     assert properties["assume"]["type"] == "number"
+
+
+def _bars() -> ToolResult:
+    return ToolResult(
+        tool="price_bars",
+        title="中芯国际（688981.SH）日线",
+        columns=(
+            Column("trade_date", "交易日", "", "date"),
+            Column("close", "收盘", "CNY", "number"),
+        ),
+        rows=(
+            {"trade_date": "2025-10-21", "close": "127.19"},
+            {"trade_date": "2026-04-21", "close": "110.5"},
+            {"trade_date": "2026-10-21", "close": "100.24"},
+        ),
+        as_of=TODAY,
+        source="日线",
+    )
+
+
+def _metrics() -> ToolResult:
+    return ToolResult(
+        tool="financial_metrics",
+        title="中芯国际（688981.SH）财务指标",
+        columns=(
+            Column("metric_code", "指标", "", "text"),
+            Column("period_end", "报告期", "", "date"),
+            Column("value", "数值", "", "number"),
+        ),
+        rows=(
+            {"metric_code": "gross_margin", "period_end": "2026-06-30", "value": "23.16"},
+            {"metric_code": "revenue_yoy", "period_end": "2026-06-30", "value": "19.44"},
+        ),
+        as_of=TODAY,
+        source="财务指标",
+    )
+
+
+@pytest.mark.parametrize("column", ["close", "收盘", "收盘(CNY)", "收盘（CNY）", " 收盘 (CNY) "])
+def test_column_can_be_the_key_or_the_header_the_model_saw(column: str) -> None:
+    """资料表头写的是「收盘(CNY)」，模型照抄表头当列名也要认得（线上问答里的失败）。"""
+
+    book = _book(_bars())
+    result = _calc(
+        book,
+        op="pct_change",
+        inputs=[_ref(-1, column=column), _ref(1, column=column)],
+    )
+    assert result.status == "ok" and result.rows == ({"value": "-21.1888"},)
+
+
+def test_match_picks_a_trading_day_instead_of_counting_rows() -> None:
+    book = _book(_bars())
+    result = _calc(
+        book,
+        op="pct_change",
+        inputs=[
+            {"evidence": "E1", "column": "close", "match": "2026-10-21"},
+            {"evidence": "E1", "column": "close", "match": "2025-10-21"},
+        ],
+    )
+    assert result.rows == ({"value": "-21.1888"},)
+
+
+def test_long_table_metric_code_works_as_column_or_match() -> None:
+    """财务指标是一行一个指标：模型把 gross_margin 当列名，按行筛选来理解。"""
+
+    book = _book(_metrics(), _metrics())
+    as_column = _calc(
+        book, op="diff", inputs=[_ref(column="gross_margin"), _ref(column="revenue_yoy")]
+    )
+    assert as_column.status == "ok" and as_column.rows == ({"value": "3.72"},)
+    as_match = _calc(
+        book,
+        op="diff",
+        inputs=[
+            {"evidence": "E1", "column": "value", "match": "gross_margin"},
+            {"evidence": "E2", "column": "value", "match": "revenue_yoy"},
+        ],
+    )
+    assert as_match.rows == ({"value": "3.72"},)
+
+
+def test_unknown_column_and_missing_match_say_what_is_available() -> None:
+    book = _book(_metrics())
+    wrong = _calc(book, op="mean", inputs=[_ref(column="roe")])
+    assert wrong.status == "unavailable"
+    assert "没有数字列 roe" in (wrong.reason or "") and "可用的数字列：value" in (
+        wrong.reason or ""
+    )
+    missing = _calc(book, op="mean", inputs=[{"evidence": "E1", "column": "value", "match": "roe"}])
+    assert "没有「roe」这一行" in (missing.reason or "")
+    with pytest.raises(ValueError):
+        CalcArgs.model_validate({"op": "mean", "inputs": [{"match": "gross_margin"}]})
 
 
 def test_model_cannot_pass_raw_numbers() -> None:

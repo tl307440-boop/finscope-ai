@@ -128,7 +128,7 @@ def test_request_shape_is_deterministic_and_secret_only_in_header() -> None:
     assert request.headers["authorization"] == f"Bearer {SECRET}"
     assert body["temperature"] == 0
     assert body["stream"] is True
-    assert body["max_tokens"] == 1200
+    assert body["max_tokens"] == 1800
     assert body["tools"] == tools
     assert body["tool_choice"] == "auto"
     assert SECRET not in request.content.decode()
@@ -256,3 +256,53 @@ def test_probe_cache_is_per_model() -> None:
     )
     assert supports_tools(plain, BASE) is False
     assert supports_tools(capable, BASE) is True
+
+
+# ---------------------------------------------------------------- DeepSeek 把调用写进正文
+DSML_CALC = (
+    "<｜DSML｜function_calls>\n"
+    '<｜DSML｜invoke name="calc">\n'
+    '<｜DSML｜parameter name="op" string="true">pct_change</｜DSML｜parameter>\n'
+    '<｜DSML｜parameter name="inputs" string="false">'
+    '[{"evidence": "E7", "column": "close", "row": -1}]</｜DSML｜parameter>\n'
+    "</｜DSML｜invoke>\n"
+    "</｜DSML｜function_calls>"
+)
+
+
+def test_dsml_written_into_content_becomes_a_tool_call_and_never_text() -> None:
+    reply = build(lambda r: stream_response(sse(delta(content=DSML_CALC)))).complete(
+        MESSAGES, [{}], timeout=30
+    )
+    assert reply.content == ""
+    assert [(c.id, c.name) for c in reply.tool_calls] == [("dsml_0", "calc")]
+    assert json.loads(reply.tool_calls[0].arguments) == {
+        "op": "pct_change",
+        "inputs": [{"evidence": "E7", "column": "close", "row": -1}],
+    }
+
+
+def test_dsml_variants_with_double_bars_are_recognised() -> None:
+    from app.services.assistant.llm_tools import split_dsml
+
+    text, calls = split_dsml(
+        '<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="calc">\n'
+        '<｜｜DSML｜｜ parameter name="op" string="true">diff</｜｜DSML｜｜ parameter>'
+    )
+    assert text == ""
+    assert [c.name for c in calls] == ["calc"] and json.loads(calls[0].arguments) == {"op": "diff"}
+
+
+def test_text_around_dsml_is_kept_and_a_cut_off_value_is_dropped() -> None:
+    from app.services.assistant.llm_tools import split_dsml
+
+    text, calls = split_dsml("中芯国际业绩改善。" + DSML_CALC + "\n股价近一年下跌。")
+    assert text == "中芯国际业绩改善。\n股价近一年下跌。" and len(calls) == 1
+    cut, _ = split_dsml('前文。<｜DSML｜invoke name="calc"><｜DSML｜parameter name="op">di')
+    assert cut == "前文。"
+
+
+def test_dsml_without_any_invoke_is_stripped_from_the_answer() -> None:
+    body = sse(delta(content="结论在这里。<｜DSML｜function_calls></｜DSML｜function_calls>"))
+    reply = build(lambda r: stream_response(body)).complete(MESSAGES, None, timeout=30)
+    assert reply.content == "结论在这里。" and reply.tool_calls == ()

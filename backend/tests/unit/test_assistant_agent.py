@@ -132,7 +132,7 @@ def test_tool_loop_answers_from_evidence_and_streams_in_order() -> None:
     assert {block["type"] for block in result.blocks} == {"line_chart", "metric_cards"}
     assert "".join(deltas(events)) == result.text
     trace = result.trace
-    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v3"
+    assert trace["mode"] == "tools" and trace["prompt"] == "assistant_v4"
     assert trace["model_calls"] == 2 and trace["usage"] == {"total_tokens": 5}
     assert [c["tool"] for c in trace["calls"]] == ["macro_series"]
 
