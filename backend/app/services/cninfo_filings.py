@@ -94,6 +94,8 @@ def store_filing(
     source_id: UUID = CNINFO_SOURCE,
     publisher: str = "巨潮资讯",
     license_note: str = "巨潮资讯公开公告，仅作研究引用，保留原文链接",
+    kind: str = "filing",
+    doc_type: str = "announcement",
 ) -> UUID | None:
     """把已经解析的公告页写入语料库。内容与最新版本相同则返回 None。"""
 
@@ -112,9 +114,9 @@ def store_filing(
         NewDocument(
             source_id=source_id,
             canonical_url=hit.url,
-            kind="filing",
+            kind=kind,
             title=hit.title,
-            doc_type="announcement",
+            doc_type=doc_type,
             language=detect_language(body),
             published_at=hit.published_at,
             content_hash=content_hash(chunks),

@@ -17,7 +17,7 @@ from typing import Any
 
 from app.services.assistant.results import ToolResult
 
-NEVER_CACHED = frozenset({"watchlist", "corpus_search", "quote_table"})
+NEVER_CACHED = frozenset({"watchlist", "corpus_search", "quote_table", "web_search"})
 CacheKey = tuple[str, str, str]
 
 

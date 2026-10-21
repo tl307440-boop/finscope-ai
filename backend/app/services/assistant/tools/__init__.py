@@ -28,6 +28,7 @@ from app.services.assistant.tools.market import (
     PriceBarsTool,
 )
 from app.services.assistant.tools.quote import QuoteTableTool
+from app.services.assistant.tools.web import WebSearchTool
 
 logger = logging.getLogger(__name__)
 MAX_ARGUMENT_CHARS = 4000
@@ -139,6 +140,7 @@ def default_registry(
         MacroSeriesTool(),
         PriceBarsTool(),
         WatchlistTool(),
+        WebSearchTool(),
     ]
     if corpus_min_rank is not None:
         tools.extend(

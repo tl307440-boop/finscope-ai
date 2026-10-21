@@ -58,6 +58,7 @@ STEP_LABELS = {
     "calc": "计算",
     "corpus_search": "检索资料",
     "filing_fetch": "读取公告",
+    "web_search": "联网检索",
     "quote_table": "整理原文摘录",
 }
 
@@ -459,6 +460,15 @@ class Agent:
     def _result(
         self, turn: _Turn, status: str, text: str, grounding: str, failure: str | None
     ) -> AgentResult:
+        if any(item.get("kind") == "web" for item in turn.sources) and not any(
+            block.get("code") == "WEB_EPHEMERAL" for block in turn.blocks
+        ):
+            self._notice(
+                turn,
+                "info",
+                "WEB_EPHEMERAL",
+                "联网来源只在这一次回答里显示，刷新后不再保存。需要的话可以重新提问。",
+            )
         book = turn.ctx.book
         as_of = max((item.result.as_of for item in book), default=None)
         trace: dict[str, Any] = {
@@ -482,7 +492,7 @@ class Agent:
             model=self._model.model_name,
             grounding=grounding,
             trace=trace,
-            sources=list(turn.sources),
+            sources=[item for item in turn.sources if item.get("kind") != "web"],
         )
 
 

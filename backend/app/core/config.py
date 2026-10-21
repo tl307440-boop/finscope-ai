@@ -106,6 +106,8 @@ class Settings(BaseSettings):
     # 公告正文：财报季每 30 分钟扫全市场业绩预告/快报，其余月份每天一次；自选股每天两次。
     # 没有真实联系邮箱（SEC_USER_AGENT 仍是 example.com）时只记日志，不登记任务。
     scheduler_enable_cninfo_filings: bool = True
+    # 美联储 RSS 与国家统计局数据发布，每小时抓新正文。没有真实联系邮箱时不登记。
+    scheduler_enable_official_texts: bool = True
     scheduler_enable_cn_statements: bool = True
     scheduler_enable_us_bars: bool = True
     # 全市场证券清单（SEC ticker 表 + 巨潮 A 股列表）每周刷新一次。
@@ -171,6 +173,11 @@ class Settings(BaseSettings):
     corpus_enabled: bool = False
     # 最相关片段的分数低于它就当没查到，不拿低相关片段凑数；用评测集校准，0 表示有命中就给。
     corpus_min_rank: float = 0.0
+    # 联网检索。默认关。密钥也可在「集成设置」里填，约 5 秒生效。结果不入库。
+    assistant_web_search_enabled: bool = False
+    brave_api_key: str = ""
+    bocha_api_key: str = ""
+    assistant_web_daily_limit: int = 30
     login_max_failures: int = 5
     login_failure_window_seconds: int = 300
     # 同一来源 IP 每小时最多尝试注册的次数（成败都计）。

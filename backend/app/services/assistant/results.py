@@ -37,6 +37,8 @@ class Passage:
     section: str | None = None
     page_start: int | None = None
     page_end: int | None = None
+    # 联网摘要没有被系统核对过。这类来源只在本回合展示，不写入回答记录。
+    verified: bool = True
 
 
 @dataclass(frozen=True)
