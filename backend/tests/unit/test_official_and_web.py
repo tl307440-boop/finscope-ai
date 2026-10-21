@@ -2,7 +2,7 @@ import json
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
-from app.providers.web_search import SearchHit, bocha_hits, brave_hits
+from app.providers.web_search import SearchHit, bocha_body, bocha_hits, brave_hits, brave_request
 from app.services.assistant.evidence import EvidenceBook, source_payload
 from app.services.assistant.grounding import check
 from app.services.assistant.tools.base import ToolContext
@@ -98,6 +98,12 @@ def test_search_payloads_keep_title_url_and_date() -> None:
     )
     assert (brave[0].provider, brave[0].published) == ("Brave", date(2026, 10, 18))
     assert bocha[0].title == "沃什访谈"
+
+
+def test_freshness_is_passed_through_to_both_search_providers() -> None:
+    assert json.loads(bocha_body("沃什", "oneWeek"))["freshness"] == "oneWeek"
+    url, _headers = brave_request("warsh", "oneWeek")
+    assert "freshness=pw" in url
 
 
 def test_web_snippets_are_unverified_and_numbers_need_a_citation() -> None:

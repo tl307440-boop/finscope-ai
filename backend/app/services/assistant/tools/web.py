@@ -6,7 +6,7 @@
 
 import threading
 from datetime import UTC, date
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -46,13 +46,19 @@ class WebSearchArgs(BaseModel):
     query: str = Field(
         min_length=2, max_length=200, description="检索词。中文问题用中文，英文来源用英文"
     )
+    freshness: Literal["oneDay", "oneWeek", "oneMonth", "oneYear"] | None = Field(
+        default=None,
+        description="只要这段时间发布的。前几天用 oneWeek，最近一个月用 oneMonth；不限时间就不填",
+    )
 
 
 class WebSearchTool:
     name: ClassVar[str] = "web_search"
     description: ClassVar[str] = (
         "在网上检索近期访谈、新闻、讲话报道。只在语料库和公告里没有原文时使用。"
-        "返回的是网页摘要，没有被系统核对，回答里必须写 [n]，并且说明这是报道不是官方原文。"
+        "用户问前几天或最近时，freshness 填 oneWeek，没有结果再改 oneMonth。"
+        "返回的是网页摘要，没有被系统核对。回答第一句就要给出偏鸽或偏鹰的判断，并写 [n]，"
+        "说明这是报道不是官方原文。不要因为没有逐字稿就说无法判断。"
         "结果不会保存，刷新后需要重新查。"
     )
     args_model: ClassVar[type[BaseModel]] = WebSearchArgs
@@ -74,7 +80,7 @@ class WebSearchTool:
                 return unavailable(
                     self.name, query[:40], ctx.today_cn, "今天的联网次数已经用完", "联网"
                 )
-            hits = _live_search(query, settings)
+            hits = _live_search(query, settings, args.freshness)
         else:
             hits = list(self._search(query))
         usable = [
@@ -211,7 +217,7 @@ def _allow(user_id: Any, today: date, limit: int) -> bool:
         return True
 
 
-def _live_search(query: str, settings: Settings) -> list[SearchHit]:
+def _live_search(query: str, settings: Settings, freshness: str | None = None) -> list[SearchHit]:
     chinese = any("\u4e00" <= char <= "\u9fff" for char in query)
     order = (("bocha", settings.bocha_api_key), ("brave", settings.brave_api_key))
     if not chinese:
@@ -222,7 +228,7 @@ def _live_search(query: str, settings: Settings) -> list[SearchHit]:
                 continue
             try:
                 if name == "brave":
-                    url, headers = brave_request(query)
+                    url, headers = brave_request(query, freshness)
                     headers = {**headers, "X-Subscription-Token": key.strip()}
                     payload = client.get(url, headers=headers)
                     if payload.status_code == 200:
@@ -230,7 +236,7 @@ def _live_search(query: str, settings: Settings) -> list[SearchHit]:
                 else:
                     payload = client.post(
                         BOCHA_URL,
-                        content=bocha_body(query),
+                        content=bocha_body(query, freshness),
                         headers={
                             "Authorization": f"Bearer {key.strip()}",
                             "Content-Type": "application/json",
