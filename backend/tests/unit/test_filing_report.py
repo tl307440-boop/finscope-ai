@@ -1,7 +1,7 @@
 import json
 from datetime import date
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from app.repositories.filings import FactRecord
 from app.schemas.research import RESEARCH_NOTICE
@@ -19,7 +19,8 @@ class ScriptModel(LanguageModel):
 
 def _fact(value: str, period: date, accession: str) -> FactRecord:
     return FactRecord(
-        id=uuid4(),
+        # id 会写进报告正文；随机 UUID 偶尔含 "999"，会让「模型编的 999 没进报告」的断言随机变红。
+        id=uuid5(NAMESPACE_URL, f"{accession}/{period.isoformat()}/{value}"),
         concept="us-gaap:Revenues",
         unit="USD",
         value=Decimal(value),
