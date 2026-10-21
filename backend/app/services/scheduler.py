@@ -66,6 +66,7 @@ from app.services.data_sync import bars_window
 from app.services.pdf_upload import default_parser_version, parse_document_identity
 from app.services.runtime_settings import effective_settings
 from app.services.sync_queue import dedupe_key_for
+from app.utils.market_time import SHANGHAI
 from app.utils.time import utc_now
 
 logger = logging.getLogger(__name__)
@@ -340,20 +341,25 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
             )
         )
     if settings.scheduler_enable_custom_analysis:
-        triggers.append(
-            TriggerRegistration(
-                job_id="sync_custom_analysis",
-                task_name="sync_custom_analysis",
-                trigger=CronTrigger(
-                    day_of_week="mon-fri",
-                    hour=settings.scheduler_custom_analysis_hour,
-                    minute=settings.scheduler_custom_analysis_minute,
-                    timezone=zone,
-                ),
-                builder=build_custom_analysis_tasks,
-                failure_policy="官方源逐日增量；连续 3 次上游失败即停，已写入的保留，最多重试 3 次",
+        # 18:30 经常早于中证指数发布。同一天再补 21:30，次日 08:30 再补一次。
+        # 幂等键带上时刻，成功的早场不会把当晚和次日早上的补跑挡掉。
+        for hour, minute in settings.scheduler_custom_analysis_slots():
+            triggers.append(
+                TriggerRegistration(
+                    job_id=f"sync_custom_analysis_{hour:02d}{minute:02d}",
+                    task_name="sync_custom_analysis",
+                    trigger=CronTrigger(
+                        day_of_week="mon-fri",
+                        hour=hour,
+                        minute=minute,
+                        timezone=zone,
+                    ),
+                    builder=build_custom_analysis_tasks,
+                    failure_policy=(
+                        "官方源逐日增量；连续 3 次上游失败即停，已写入的保留，最多重试 3 次"
+                    ),
+                )
             )
-        )
     if settings.scheduler_enable_universe:
         triggers.append(
             TriggerRegistration(
@@ -998,12 +1004,19 @@ def build_board_market_tasks(
     ]
 
 
+def custom_analysis_dedupe_key(now: datetime) -> str:
+    """上海日期加触发时刻。同一天的 18:30 和 21:30 在 UTC 仍是同一天，不能共用一个键。"""
+
+    local = now.astimezone(SHANGHAI)
+    return f"custom_analysis:{local.date().isoformat()}:{local.strftime('%H%M')}"
+
+
 def build_custom_analysis_tasks(
     engine: Engine, settings: Settings, now: datetime
 ) -> list[ScheduledTask]:
-    """自定义数据分析：一天一条增量任务，执行器按已入库的日期只补缺口。"""
+    """自定义数据分析：每个触发时刻一条增量任务，执行器按已入库的日期只补缺口。"""
 
-    day = now.date().isoformat()
+    local_day = now.astimezone(SHANGHAI).date().isoformat()
     provider_id = SyncJobRepository(engine).ensure_provider(
         code="custom_analysis",
         name="自定义数据分析（交易所 / 中证指数 / 东方财富公开接口）",
@@ -1017,8 +1030,8 @@ def build_custom_analysis_tasks(
         ScheduledTask(
             task_name="sync_custom_analysis",
             job_type="custom_analysis",
-            dedupe_key=f"custom_analysis:{day}",
-            scope={"display_symbol": "custom-analysis", "observation_end": day},
+            dedupe_key=custom_analysis_dedupe_key(now),
+            scope={"display_symbol": "custom-analysis", "observation_end": local_day},
             provider_id=provider_id,
             failure_policy="连续 3 次上游失败即停，已写入的保留",
             max_attempts=3,
