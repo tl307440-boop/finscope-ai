@@ -229,6 +229,16 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="403/429 停止该来源，不换身份重试",
             )
         )
+    if settings.scheduler_enable_official_texts:
+        triggers.append(
+            TriggerRegistration(
+                job_id="sync_official_texts",
+                task_name="sync_official_texts",
+                trigger=CronTrigger(minute=15, timezone=zone),
+                builder=build_official_text_tasks,
+                failure_policy="403/429 停止该来源，不换身份重试",
+            )
+        )
     if settings.scheduler_enable_financial_metrics:
         triggers.append(
             TriggerRegistration(
@@ -790,6 +800,29 @@ def _cninfo_tasks(
             failure_policy="403/429 停止该来源，不换身份重试",
             unavailable_reason=None if email else "SEC_USER_AGENT 不是可用联系邮箱，不抓公告正文",
         )
+    ]
+
+
+def build_official_text_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """每小时抓美联储 RSS 和国家统计局数据发布栏目的新正文。"""
+
+    local = now.astimezone(_SHANGHAI)
+    email = contact_email(settings.sec_user_agent)
+    reason = None if email else "SEC_USER_AGENT 不是可用联系邮箱，不抓官方文本"
+    provider_id = _provider_id(engine, code="corpus", name="动态语料库")
+    return [
+        ScheduledTask(
+            task_name="sync_official_texts",
+            job_type="corpus_official",
+            dedupe_key=f"corpus-official:{code}:{local.strftime('%Y-%m-%dT%H')}",
+            scope={"source": code},
+            provider_id=provider_id,
+            failure_policy="403/429 停止该来源，不换身份重试",
+            unavailable_reason=reason,
+        )
+        for code in ("fed_speeches", "fed_press", "fed_testimony", "nbs_release")
     ]
 
 

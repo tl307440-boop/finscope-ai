@@ -22,6 +22,7 @@ from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.db.session import create_db_engine
 from app.repositories.worker_heartbeat import WorkerHeartbeatRepository
+from app.services.official_texts import catch_up_official_texts
 from app.services.scheduler import (
     RegisteredJob,
     build_scheduler,
@@ -120,6 +121,13 @@ def _catch_up(engine: Engine, settings: Settings) -> None:
     except Exception:
         # 失败不拦调度器；当天的定时同步仍会再判一次基期月缺不缺。
         logger.warning("scheduler fred history catch-up failed error_type=unexpected")
+    try:
+        queued = catch_up_official_texts(engine, settings)
+        if queued:
+            logger.info("scheduler queued official text catch-up jobs=%s", queued)
+    except Exception:
+        # 失败不拦调度器；每小时的定时抓取仍会补新正文。
+        logger.warning("scheduler official text catch-up failed error_type=unexpected")
 
 
 def _beat(

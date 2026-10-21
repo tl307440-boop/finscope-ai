@@ -224,13 +224,13 @@ def source_payload(number: int, passage: Passage) -> dict[str, object]:
 
     payload: dict[str, object] = {
         "n": number,
-        "kind": "corpus",
+        "kind": "corpus" if passage.verified else "web",
         "corpus_kind": passage.corpus_kind,
         "publisher": passage.publisher,
         "title": passage.title,
         "published_at": passage.published.isoformat(),
         "url": passage.url,
-        "verified": True,
+        "verified": passage.verified,
     }
     if passage.page_start is not None:
         payload["page_start"] = passage.page_start

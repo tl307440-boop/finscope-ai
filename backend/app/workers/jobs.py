@@ -31,6 +31,7 @@ from app.services.hotspot_sync import sync_hotspot_events
 from app.services.macro_regime import compute_macro_regime
 from app.services.market_cache import PacedGateway
 from app.services.metrics_snapshot import snapshot_company_metrics
+from app.services.official_texts import sync_official
 from app.services.runtime_settings import effective_settings
 from app.utils.time import utc_now
 
@@ -93,6 +94,10 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return resume_filing(engine, job.scope)
     if job.job_type == "corpus_cninfo_scan":
         return sync_recent(engine, _text(job.scope, "mode"))
+    if job.job_type == "corpus_official":
+        raw_limit = job.scope.get("limit")
+        limit = int(raw_limit) if isinstance(raw_limit, str) and raw_limit.isdigit() else 8
+        return sync_official(engine, _text(job.scope, "source"), limit=limit)
     if job.job_type == "hotspot_events":
         return asyncio.run(
             sync_hotspot_events(
