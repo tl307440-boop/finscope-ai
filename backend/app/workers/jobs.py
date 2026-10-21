@@ -16,6 +16,7 @@ from app.services.akshare_sync import apply_bars, fetch_bars
 from app.services.assistant.tools.filings import resume_filing
 from app.services.board_market_sync import sync_board_market
 from app.services.cninfo_filings import sync_recent
+from app.services.corpus_vectors import embed_pending
 from app.services.custom_analysis_sync import sync_custom_analysis
 from app.services.data_sync import (
     sync_china_macro,
@@ -98,6 +99,13 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         raw_limit = job.scope.get("limit")
         limit = int(raw_limit) if isinstance(raw_limit, str) and raw_limit.isdigit() else 8
         return sync_official(engine, _text(job.scope, "source"), limit=limit)
+    if job.job_type == "corpus_embed":
+        per_run = job.scope.get("limit")
+        return embed_pending(
+            engine,
+            settings,
+            limit=int(per_run) if isinstance(per_run, str) and per_run.isdigit() else None,
+        )
     if job.job_type == "hotspot_events":
         return asyncio.run(
             sync_hotspot_events(

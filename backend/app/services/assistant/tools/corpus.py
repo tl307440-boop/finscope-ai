@@ -3,15 +3,18 @@
 片段登记成来源 [n]；叙述引用片段内容时必须写 `[n]`，片段里的数字只对引用了它的句子放行。
 结果含用户私有文档，不进工具缓存（见 `tool_cache.py`）。
 关键词里带时间意图（最近、最新、今年……）时按发布时间新旧加权排序，规则见 `corpus_freshness.py`。
+配了语料向量密钥时是混合检索（全文 + 语义），转向量失败就只用全文，见 `corpus_vectors.py`。
 """
 
+from collections.abc import Callable
 from datetime import date
 from typing import Any, ClassVar, Literal, Self
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import Engine
 
-from app.repositories.corpus import CorpusQuery, CorpusRepository
+from app.repositories.corpus import CorpusQuery, CorpusRepository, QueryVector, semantic_query_text
 from app.repositories.corpus import Passage as StoredPassage
 from app.services.assistant.results import Passage, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext
@@ -75,20 +78,35 @@ class CorpusSearchTool:
     )
     args_model: ClassVar[type[BaseModel]] = CorpusSearchArgs
 
-    def __init__(self, min_rank: float = 0.0) -> None:
+    def __init__(
+        self,
+        min_rank: float = 0.0,
+        *,
+        min_similarity: float = 0.0,
+        embed_query: Callable[[Engine, str], QueryVector | None] | None = None,
+    ) -> None:
         self._min_rank = min_rank
+        self._min_similarity = min_similarity
+        self._embed_query = embed_query
 
     def run(self, ctx: ToolContext, args: Any) -> ToolResult:
         assert isinstance(args, CorpusSearchArgs)
         words = [word.strip() for word in [*args.keywords_zh, *args.keywords_en]]
         # 步骤名会写成「检索资料：<标题>」，标题只放关键词。
         title = "、".join(words)[:60]
+        keywords_zh = tuple(word.strip() for word in args.keywords_zh)
+        keywords_en = tuple(word.strip() for word in args.keywords_en)
+        vector = (
+            None
+            if self._embed_query is None
+            else self._embed_query(ctx.engine, semantic_query_text(keywords_zh, keywords_en))
+        )
         found = CorpusRepository(ctx.engine).search(
             CorpusQuery(
                 user_id=ctx.user_id,
                 as_of=ctx.now,
-                keywords_zh=tuple(word.strip() for word in args.keywords_zh),
-                keywords_en=tuple(word.strip() for word in args.keywords_en),
+                keywords_zh=keywords_zh,
+                keywords_en=keywords_en,
                 kind=args.kind,
                 symbol=args.symbol,
                 report_type=args.report_type,
@@ -97,6 +115,8 @@ class CorpusSearchTool:
                 since=args.since,
                 until=args.until,
                 min_rank=self._min_rank,
+                vector=vector,
+                min_similarity=self._min_similarity,
             )
         )
         if not found:

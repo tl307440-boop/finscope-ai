@@ -34,6 +34,7 @@ from app.services.assistant.tool_cache import ToolCache
 from app.services.assistant.tools import default_registry
 from app.services.assistant.turns import AssistantConfig
 from app.services.cockpit import keep_dashboard_warm
+from app.services.corpus_vectors import QueryEmbedder
 from app.services.eastmoney_binding import build_service as build_eastmoney_service
 from app.services.login_limiter import LoginRateLimiter
 from app.services.market_cache import close_gateways
@@ -101,6 +102,8 @@ def create_app() -> FastAPI:
         app.state.assistant_registry = default_registry(
             ToolCache(),
             corpus_min_rank=settings.corpus_min_rank if settings.corpus_enabled else None,
+            corpus_min_similarity=settings.corpus_min_similarity,
+            corpus_embed_query=QueryEmbedder(),
         )
         _bootstrap_admin(engine, settings)
         # 总览的上游（FRED / 东财 / 外盘 / 指数 / 板块 / 公告）冷启动要几十次跨境请求：

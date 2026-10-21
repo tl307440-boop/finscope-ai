@@ -7,12 +7,14 @@
 import json
 import logging
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import Engine
 
+from app.repositories.corpus import QueryVector
 from app.services.assistant.calc import CalcArgs, run_calc
 from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
@@ -138,9 +140,16 @@ class ToolRegistry:
 
 
 def default_registry(
-    cache: ToolCache | None = None, *, corpus_min_rank: float | None = None
+    cache: ToolCache | None = None,
+    *,
+    corpus_min_rank: float | None = None,
+    corpus_min_similarity: float = 0.0,
+    corpus_embed_query: Callable[[Engine, str], QueryVector | None] | None = None,
 ) -> ToolRegistry:
-    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。"""
+    """`corpus_min_rank` 为 None 时不开放语料检索（摘录表依赖检索结果，一起关）。
+
+    `corpus_embed_query` 给了就是混合检索；它返回 None（没配密钥、转向量失败）时退回纯全文。
+    """
 
     tools: list[Tool] = [
         BoardDetailTool(),
@@ -162,9 +171,12 @@ def default_registry(
         WebSearchTool(),
     ]
     if corpus_min_rank is not None:
-        tools.extend(
-            (CorpusSearchTool(min_rank=corpus_min_rank), FilingFetchTool(), QuoteTableTool())
+        corpus = CorpusSearchTool(
+            min_rank=corpus_min_rank,
+            min_similarity=corpus_min_similarity,
+            embed_query=corpus_embed_query,
         )
+        tools.extend((corpus, FilingFetchTool(), QuoteTableTool()))
     return ToolRegistry(tools, cache)
 
 

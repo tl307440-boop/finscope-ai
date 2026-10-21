@@ -175,6 +175,16 @@ class Settings(BaseSettings):
     corpus_enabled: bool = False
     # 最相关片段的分数低于它就当没查到，不拿低相关片段凑数；用评测集校准，0 表示有命中就给。
     corpus_min_rank: float = 0.0
+    # 语料语义检索（规格 §10、§12 3b、§13）：智谱 embedding-3，1024 维。密钥为空时只做全文检索。
+    # 地址和模型只认环境变量：换模型或维度要新迁移建对应的向量索引，不能在界面里随手改。
+    corpus_embedding_api_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    corpus_embedding_api_key: str = ""
+    corpus_embedding_model: str = "embedding-3"
+    # 向量候选的余弦相似度低于它就不要，不拿语义上不相关的片段凑数。待用评测集校准。
+    corpus_min_similarity: float = 0.55
+    # 每次定时任务最多给多少块补向量（每批 32 块）。
+    corpus_embed_per_run: int = 320
+    scheduler_enable_corpus_embed: bool = True
     # 联网检索。默认关。密钥也可在「集成设置」里填，约 5 秒生效。结果不入库。
     assistant_web_search_enabled: bool = False
     brave_api_key: str = ""

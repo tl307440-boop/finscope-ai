@@ -153,6 +153,17 @@ MANAGED: tuple[ManagedKey, ...] = (
         "https://console.bce.baidu.com/qianfan/",
     ),
     ManagedKey(
+        "CORPUS_EMBEDDING_API_KEY",
+        "corpus_embedding_api_key",
+        "智谱向量 API 密钥（语料语义检索）",
+        "大模型",
+        True,
+        "text",
+        "用智谱 embedding-3 把官方文本和公告转成向量，和全文检索一起排序，同义说法也能找到；"
+        "按调用量计费。你上传的文档不会发给智谱。不填只用全文检索。",
+        "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+    ),
+    ManagedKey(
         "ALLOW_REGISTRATION",
         "allow_registration",
         "开放注册",

@@ -2345,3 +2345,61 @@ uff 通过。
 1. 用户提供嵌入 API 的服务商和密钥后，做官方文本与公告的向量化和混合检索，并跑 corpus 评测集对比 Recall@5。
 2. 部署后看政府网、证监会两源的首次同步结果（条数、`published_at`、正文长度），再用「中国半导体还有救吗」重问。
 3. 工信部、发改委继续找官方 RSS 或开放数据接口。
+
+## 2026-10-21 ASSISTANT-5C 语料语义检索：智谱 embedding-3
+
+分支 `feat/assistant-data-tools`。上一节「向量检索」标为 `BLOCKED`，等用户选定外部嵌入服务。用户选定智谱（bigmodel.cn）的 `embedding-3`。密钥不进代码库，在「集成设置」里填，或用环境变量 `CORPUS_EMBEDDING_API_KEY`。本节写完调用、入库和混合检索；**没有密钥，所以没有对智谱发过真实请求**，真实调用留给部署后在管理页点「测试连接」。
+
+上传文档那条线（`document_chunks`、`local-hashing-v1`、1536 维）没有改。
+
+### 做了什么
+
+- 配置（`config.py`）：`CORPUS_EMBEDDING_API_BASE_URL` 默认 `https://open.bigmodel.cn/api/paas/v4`，模型默认 `embedding-3`，相似度下限 `CORPUS_MIN_SIMILARITY` 默认 0.55。地址和模型只认环境变量：换模型或维度要新迁移建索引，界面里不能改。只有密钥进托管配置，加密存库。
+- 客户端 `app/providers/corpus_embedding.py`：`POST {base}/embeddings`，Bearer 密钥，请求带 `dimensions`。一批最多 32 条。返回维度必须是 1024，否则报错，不截断、不补零；向量做 L2 归一。401/403 说密钥不对，429 且错误码 1113 说余额不足，其余 429 说限流；不回显上游报错正文。没配密钥、地址不是 https、模型不在 `INDEXED_DIMS` 里时，`embedding_config` 返回 None，检索退回纯全文。
+- 迁移 `20261024_0035`：新表 `corpus_embeddings`（`chunk_id`、`embedding_model`、不定维度 `halfvec`、截断字数、跳过原因、时间）。空向量必须有跳过原因。按块级联删除。部分 HNSW 索引 `embedding::halfvec(1024)`、`halfvec_cosine_ops`、`WHERE embedding_model = 'embedding-3@1024'`。在线升级时 pgvector 低于 0.7 直接失败并说明原因。
+- 补向量 `embed_pending`：只补官方文本、公告、参考资料的**最新版本**，按发布时间从新到旧；用户上传的文档不发给智谱。每 10 分钟一条 `corpus_embed` 任务（语料检索开着且有密钥才登记），每轮最多 320 块，幂等键按 10 分钟一档，失败不重试整轮（密钥、余额、超时下一轮再来，已写入的批次保留）。整批被拒（HTTP 400）时逐条重试，仍被拒的记原因，不再反复打。正文超过 2400 字截断并记下截掉的字数。
+- 检索：`CorpusRepository.search` 没传查询向量时与原来的全文检索相同。传了向量时，全文前 40 和向量前 40 各自过阈值（全文看 `CORPUS_MIN_RANK`，向量看余弦相似度），再按 RRF（k = 60）融合；同一篇最多 2 块。两路都没有过阈值才算没查到。时间词仍只决定要不要按新旧加权，不进全文，也不进查询向量（全是时间词时保留）。向量查询把模型名和维度直接写进 SQL，好走到部分索引；写进去之前按 `模型名@维度` 校验，不接受任意字符串。`hnsw.ef_search` 设为 200，避免先取近邻再过滤时把该留的滤掉。
+- `corpus_search` 配了 `QueryEmbedder`：每次检索读当前生效的密钥（约 5 秒缓存），检索词转向量失败（超时、限流、欠费）只记日志，退回纯全文，不让这一轮问答失败。相同检索词缓存在进程内。
+- 「测试连接」：用这个密钥向量化「测试」两个字，维度不对或被拒绝时说明原因，不回显密钥。
+
+### 变更文件
+
+- 新增：`backend/app/providers/corpus_embedding.py`、`backend/app/repositories/corpus_embeddings.py`、`backend/app/services/corpus_vectors.py`、`backend/alembic/versions/20261024_0035_corpus_embeddings.py`、`backend/tests/unit/test_corpus_embedding.py`、`backend/tests/unit/test_corpus_vectors.py`、`backend/tests/integration/test_corpus_vectors_repository.py`。
+- 修改：`backend/app/core/config.py`、`backend/app/main.py`、`backend/app/repositories/corpus.py`、`backend/app/services/{rrf,runtime_settings,integration_probe,scheduler}.py`、`backend/app/services/assistant/tools/{__init__,corpus}.py`、`backend/app/workers/jobs.py`、`backend/app/prompts/skills/documents.md`、`.env.example`（只加空的 `CORPUS_EMBEDDING_API_KEY=` 和默认地址、模型、相似度，没有密钥）。
+
+### 用例（单测新增 54 个，集成 3 个）
+
+- `test_corpus_embedding.py`：请求体与 Bearer；结果按输入顺序排回并做单位化；畸形响应（维度不对、零向量、非数字、下标重复、非有限数）是 `UPSTREAM_PAYLOAD`；401 / 余额不足 / 限流 / 400 / 5xx 的中文说明且不回显上游正文；超时与连接失败；空批不发请求、超批和空文本拒绝；正文拼接与截断；没密钥或模型没建索引时关闭；托管项只有密钥且标为密文；测试连接打到 embedding-3、1024 维，拒绝时照实说；迁移链、模型名、维度、索引表达式与代码一致。
+- `test_corpus_vectors.py`：32 条一批、没密钥不读库、被拒的块逐条跳过、空块不请求、超长截断、密钥/余额/超时停下且保留已写入批次；检索词缓存、失败返回空、时间词不进向量；两路都命中的块排最前并保留两套分数、每篇最多 2 块；没向量时不碰向量表；同义命中且弱相似丢掉；全文没词时语义单独作答；两路都不过阈值返回空；全文弱不挡住语义强；时间词在融合后再按新旧排；模型标识格式不对不进 SQL；工具把向量和阈值传下去，转向量失败退回全文；没开语料检索不登记任务，登记键按上海时间 10 分钟取整；worker 读 scope 里的条数。
+- 集成 `test_corpus_vectors_repository.py`（本机没有 PostgreSQL，**未运行**，交给 CI）：待补清单不含用户文档和旧版本、被拒的块不再出现、空向量缺原因违反约束、全文没有「降准」二字时向量仍能找回「下调存款准备金率」、`as_of` 之前的不返回。
+
+### 验证（本机，Windows）
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend\.venv\Scripts\python.exe -m pytest -p no:cacheprovider tests/unit` | 1304 passed |
+| `backend\.venv\Scripts\python.exe -m ruff check .` | All checks passed |
+| `backend\.venv\Scripts\python.exe -m ruff format --check .` | 488 files already formatted |
+| `backend\.venv\Scripts\python.exe -m mypy app` | Success: no issues found in 294 source files |
+| `alembic heads` | `20261024_0035 (head)`，单头 |
+| `alembic upgrade 20261023_0034:20261024_0035 --sql` 与对应 downgrade | SQL 渲染正常（建表、halfvec 部分索引、检查约束 / 删索引再删表） |
+
+### 没有验证的
+
+- **没有智谱密钥，没有发过真实嵌入请求。** 请求体按官方文档写，解析和错误码用假响应测过。
+- **迁移 `0035` 没有在真实 PostgreSQL 上执行**；`halfvec` 索引和混合检索 SQL 只在集成测试里，本机跳不过去（连不上数据库）。CI 用 `pgvector/pgvector:pg16` 跑。
+- 评测集 Recall@5 没跑：现有评测集是全文检索，向量要先有密钥才能离线生成，没有拿哈希向量冒充。
+- 没有部署，没有在页面上重问。
+
+### 已知局限与阻塞
+
+- 上一节「`BLOCKED` 向量检索，等用户选定服务商」到此结束：服务商定为智谱 embedding-3。**还没配密钥，所以线上仍是纯全文检索**，配上之后约 5 秒生效，历史块由每 10 分钟的任务补，不会一次打完。
+- `BLOCKED` 工信部、发改委：原因同上一节。
+- 相似度下限 0.55 还没用评测集校准。
+- 用户上传的文档仍然只有全文检索（哈希向量那条线），不进这次的语义检索。
+
+### 下一项建议
+
+1. 部署后在「集成设置」填智谱密钥，点测试连接；看 `corpus_embed` 任务是否写入，再用同义说法问一条已入库的政策。
+2. 有密钥后跑 corpus 评测集，校准 `CORPUS_MIN_SIMILARITY`。
+3. 工信部、发改委继续找官方 RSS 或开放数据接口。
