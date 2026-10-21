@@ -48,7 +48,7 @@ class WebSearchArgs(BaseModel):
     )
     freshness: Literal["oneDay", "oneWeek", "oneMonth", "oneYear"] | None = Field(
         default=None,
-        description="只要这段时间发布的。前几天用 oneWeek，最近一个月用 oneMonth；不限时间就不填",
+        description="不要填。限定时间后博查经常返回空；「前几天」「最近」写在 query 里",
     )
 
 
@@ -56,10 +56,11 @@ class WebSearchTool:
     name: ClassVar[str] = "web_search"
     description: ClassVar[str] = (
         "在网上检索近期访谈、新闻、讲话报道。只在语料库和公告里没有原文时使用。"
-        "用户问前几天或最近时，freshness 填 oneWeek，没有结果再改 oneMonth。"
-        "返回的是网页摘要，没有被系统核对。回答第一句就要给出偏鸽或偏鹰的判断，并写 [n]，"
-        "说明这是报道不是官方原文。不要因为没有逐字稿就说无法判断。"
-        "结果不会保存，刷新后需要重新查。"
+        "不要填 freshness，把「前几天」「最近」留在检索词里，只查一次。"
+        "限定时间如果是空的，系统会自动改为不限时间再查一次。"
+        "返回的是网页摘要，没有被系统核对。回答第一句就要给出判断并写 [n]，"
+        "说明这是报道不是官方原文。资料上的日期早于用户说的范围也要作答，并写明发布日期。"
+        "不要因为没有逐字稿就说无法判断。结果不会保存，刷新后需要重新查。"
     )
     args_model: ClassVar[type[BaseModel]] = WebSearchArgs
 
@@ -80,9 +81,10 @@ class WebSearchTool:
                 return unavailable(
                     self.name, query[:40], ctx.today_cn, "今天的联网次数已经用完", "联网"
                 )
-            hits = _live_search(query, settings, args.freshness)
+            hits, widened = _search_with_window(query, settings, args.freshness)
         else:
             hits = list(self._search(query))
+            widened = False
         usable = [
             hit for hit in hits if hit.url.startswith("https://") and hit.snippet and hit.title
         ]
@@ -100,6 +102,7 @@ class WebSearchTool:
                 passages.extend(stored)
                 rows.append(
                     {
+                        "published": (hit.published or ctx.today_cn).isoformat(),
                         "title": hit.title,
                         "url": hit.url,
                         "note": "已改为官方原文",
@@ -119,12 +122,20 @@ class WebSearchTool:
                     verified=False,
                 )
             )
-            rows.append({"title": hit.title, "url": hit.url, "note": "未核实"})
+            rows.append(
+                {
+                    "published": published.isoformat(),
+                    "title": hit.title,
+                    "url": hit.url,
+                    "note": "未核实",
+                }
+            )
         dates = [hit.published for hit in usable if hit.published is not None]
         return ToolResult(
             tool=self.name,
             title=query[:40],
             columns=(
+                Column("published", "发布日", "", "date"),
                 Column("title", "标题"),
                 Column("url", "链接"),
                 Column("note", "核对"),
@@ -132,6 +143,7 @@ class WebSearchTool:
             rows=tuple(rows),
             as_of=max(dates) if dates else ctx.today_cn,
             source="联网",
+            reason=_WIDENED if widened else None,
             passages=tuple(passages),
             excerpt=True,
         )
@@ -215,6 +227,27 @@ def _allow(user_id: Any, today: date, limit: int) -> bool:
             return False
         _USED[key] = (today, count + 1)
         return True
+
+
+_WIDENED = (
+    "限定的时间范围内没有结果，以下是不限时间的检索。"
+    "回答时写明每条资料标题后的发布日期；早于用户说的范围也要按这些资料作答，不要说查不到。"
+)
+
+
+def _search_with_window(
+    query: str,
+    settings: Settings,
+    freshness: str | None,
+    live: Any = None,
+) -> tuple[list[SearchHit], bool]:
+    """限定时间经常把能用的报道滤成空结果。空了就再查一次不限时间。"""
+
+    search = _live_search if live is None else live
+    hits = list(search(query, settings, freshness))
+    if hits or not freshness:
+        return hits, False
+    return list(search(query, settings, None)), True
 
 
 def _live_search(query: str, settings: Settings, freshness: str | None = None) -> list[SearchHit]:

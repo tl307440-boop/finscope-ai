@@ -199,6 +199,8 @@ PASSAGE_RULE = (
 
 def _render_passages(head: str, item: Evidence) -> str:
     lines = [head]
+    if item.result.reason:
+        lines.append(f"注意：{_clean(item.result.reason, 200)}")
     for number, passage in zip(item.sources, item.result.passages, strict=True):
         lines.append(f"[{number}] {_passage_label(passage)}")
         lines.append(f"原文：{_clean(passage.content, MAX_PASSAGE_CHARS)}")

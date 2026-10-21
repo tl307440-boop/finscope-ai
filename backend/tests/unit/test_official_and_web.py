@@ -1,12 +1,15 @@
 import json
 from datetime import UTC, date, datetime
+from typing import cast
 from uuid import uuid4
 
+from app.core.config import Settings
 from app.providers.web_search import SearchHit, bocha_body, bocha_hits, brave_hits, brave_request
-from app.services.assistant.evidence import EvidenceBook, source_payload
+from app.services.assistant.evidence import EvidenceBook, render, source_payload
 from app.services.assistant.grounding import check
+from app.services.assistant.results import Passage, ToolResult
 from app.services.assistant.tools.base import ToolContext
-from app.services.assistant.tools.web import WebSearchArgs, WebSearchTool
+from app.services.assistant.tools.web import WebSearchArgs, WebSearchTool, _search_with_window
 from app.services.html_text import article_text
 from app.services.official_texts import parse_nbs_list
 from app.services.rss_feed import parse_rss
@@ -104,6 +107,55 @@ def test_freshness_is_passed_through_to_both_search_providers() -> None:
     assert json.loads(bocha_body("沃什", "oneWeek"))["freshness"] == "oneWeek"
     url, _headers = brave_request("warsh", "oneWeek")
     assert "freshness=pw" in url
+
+
+def test_an_empty_time_window_is_searched_again_without_one() -> None:
+    calls: list[str | None] = []
+    older = SearchHit(
+        "沃什听证会", "https://news.example/warsh", "利率上留有空间。", date(2026, 4, 23), "博查"
+    )
+
+    def live(_query: str, _settings: object, freshness: str | None) -> list[SearchHit]:
+        calls.append(freshness)
+        return [] if freshness else [older]
+
+    hits, widened = _search_with_window("沃什", cast(Settings, object()), "oneWeek", live)
+    assert calls == ["oneWeek", None]
+    assert widened is True
+    assert hits == [older]
+
+    kept, again = _search_with_window(
+        "沃什", cast(Settings, object()), "oneWeek", lambda *_: [older]
+    )
+    assert again is False and kept == [older]
+
+
+def test_a_widened_search_tells_the_model_to_use_the_report_date() -> None:
+    result = ToolResult(
+        tool="web_search",
+        title="沃什",
+        columns=(),
+        rows=(),
+        as_of=date(2026, 4, 23),
+        source="联网",
+        reason="限定的时间范围内没有结果，以下是不限时间的检索。",
+        passages=(
+            Passage(
+                key="web:1",
+                title="沃什听证会",
+                publisher="博查",
+                corpus_kind="web",
+                published=date(2026, 4, 23),
+                content="利率上留有空间。",
+                url="https://news.example/warsh",
+                verified=False,
+            ),
+        ),
+        excerpt=True,
+    )
+    text = render(EvidenceBook().add(result))
+    assert "注意：限定的时间范围内没有结果" in text
+    assert "2026-04-23" in text
 
 
 def test_web_snippets_are_unverified_and_numbers_need_a_citation() -> None:
