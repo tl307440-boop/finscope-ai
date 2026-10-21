@@ -25,6 +25,10 @@ class ToolContext:
     # 本回合 instrument_search 返回过的证券 id；price_bars / financial_metrics 只认这里的，
     # 防止模型自己编 id。
     searched: set[UUID] = field(default_factory=set)
+    # 本回合已经联网检索的次数；上限由 `web_search` 工具在代码里卡，不靠提示词。
+    web_searches: int = 0
+    # 本回合搜索服务报过错（密钥、额度、网络）时的原因。有了它，本回合不再重试。
+    web_failure: str | None = None
 
     @property
     def today_cn(self) -> date:
