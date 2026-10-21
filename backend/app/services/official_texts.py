@@ -1,7 +1,11 @@
-"""美联储与国家统计局的公开文本（知识库设计 §5.2）。
+"""官方公开文本：美联储、国家统计局，以及深交所、上交所的栏目（知识库设计 §5.2）。
 
-美联储走官方 RSS，统计局走数据发布栏目的第一页。正文只从白名单主机下载。
-RSS 里没有发布时间的条目丢掉。访谈如果官方没有文字稿，这里不会有，要靠联网检索。
+美联储走官方 RSS，统计局和两家交易所走栏目列表页的第一页。正文只从白名单主机下载。
+列表里没有发布时间的条目丢掉。访谈如果官方没有文字稿，这里不会有，要靠联网检索。
+
+新接入的来源（`respect_robots=True`）抓每一页之前先读对方的 robots.txt：列表页被禁止就停止这个来源
+（`UPSTREAM_BLOCKED`，和 403 / 429 一样不再重试同一轮），某篇正文的路径被禁止只跳过那一篇。
+没有核实过 robots.txt、需要执行 JS 才有列表的站点不接入，见 `docs/IMPLEMENTATION_LOG.md`。
 """
 
 import re
@@ -22,12 +26,22 @@ from app.repositories.corpus import (
     FED_SPEECHES_SOURCE,
     FED_TESTIMONY_SOURCE,
     NBS_RELEASE_SOURCE,
+    SSE_SUPERVISION_SOURCE,
+    SZSE_NEWS_SOURCE,
     CorpusRepository,
 )
 from app.services.cninfo_filings import store_filing
 from app.services.filing_meta import FilingHit
 from app.services.html_text import article_text
 from app.services.pdf_text import PageText
+from app.services.policy_lists import (
+    SSE_HOSTS,
+    SSE_SUPERVISION_PAGE,
+    SZSE_HOSTS,
+    SZSE_NEWS_PAGE,
+    parse_sse_list,
+    parse_szse_news_list,
+)
 from app.services.rss_feed import FeedItem, parse_rss
 
 FED_HOSTS = frozenset({"www.federalreserve.gov"})
@@ -46,7 +60,8 @@ class OfficialFeed:
     doc_type: str
     element_id: str | None = None
     css_class: str | None = None
-    listing: str = "rss"  # rss | nbs
+    listing: str = "rss"  # rss | nbs | szse_news | sse_list
+    respect_robots: bool = False  # 新来源一律为 True：抓取前先读 robots.txt
 
 
 FEEDS: dict[str, OfficialFeed] = {
@@ -89,8 +104,44 @@ FEEDS: dict[str, OfficialFeed] = {
             css_class="txt-content",
             listing="nbs",
         ),
+        OfficialFeed(
+            "szse_news",
+            SZSE_NEWS_SOURCE,
+            "深圳证券交易所",
+            SZSE_NEWS_PAGE,
+            SZSE_HOSTS,
+            "news",
+            element_id="desContent",
+            listing="szse_news",
+            respect_robots=True,
+        ),
+        OfficialFeed(
+            "sse_supervision",
+            SSE_SUPERVISION_SOURCE,
+            "上海证券交易所",
+            SSE_SUPERVISION_PAGE,
+            SSE_HOSTS,
+            "news",
+            css_class="allZoom",
+            listing="sse_list",
+            respect_robots=True,
+        ),
     )
 }
+
+
+def parse_listing(feed: OfficialFeed, payload: bytes) -> tuple[FeedItem, ...]:
+    """按来源的列表形态解析第一页；形态不认识就当没有条目。"""
+
+    if feed.listing == "rss":
+        return parse_rss(payload)
+    if feed.listing == "nbs":
+        return parse_nbs_list(payload, feed.list_url)
+    if feed.listing == "szse_news":
+        return parse_szse_news_list(payload, feed.list_url)
+    if feed.listing == "sse_list":
+        return parse_sse_list(payload, feed.list_url)
+    return ()
 
 
 def parse_nbs_list(payload: bytes, page_url: str) -> tuple[FeedItem, ...]:
@@ -122,10 +173,13 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         raise ProviderError(code="DATA_UNAVAILABLE", message=_NO_CONTACT, status_code=503)
     client = live_client(email, feed.hosts)
     try:
-        listing = client.get(feed.list_url)
+        listing = client.get(feed.list_url, respect_robots=feed.respect_robots)
     except PoliteError as exc:
+        if exc.code == "ROBOTS":
+            # 列表页被 robots.txt 禁止：和 403 / 429 一样，停止这个来源。
+            raise ProviderError(code="UPSTREAM_BLOCKED", message=str(exc), status_code=403) from exc
         raise ProviderError(code=exc.code, message=str(exc), status_code=503) from exc
-    items = parse_rss(listing) if feed.listing == "rss" else parse_nbs_list(listing, feed.list_url)
+    items = parse_listing(feed, listing)
     repo = CorpusRepository(engine)
     saved = 0
     for item in items:
@@ -134,13 +188,13 @@ def sync_official(engine: Engine, code: str, *, limit: int = 8) -> int:
         if repo.latest_passages(source_id=feed.source_id, url=item.url, limit=1):
             continue
         try:
-            body = client.get(item.url)
+            body = client.get(item.url, respect_robots=feed.respect_robots)
         except PoliteError as exc:
             if exc.code == "BLOCKED":
                 raise ProviderError(
                     code="UPSTREAM_BLOCKED", message=str(exc), status_code=403
                 ) from exc
-            continue
+            continue  # 含 ROBOTS：只是这一篇的路径被禁止，跳过它，不影响其他篇
         text = article_text(body, element_id=feed.element_id, css_class=feed.css_class)
         if not text.strip():
             continue

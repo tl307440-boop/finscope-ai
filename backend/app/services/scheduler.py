@@ -63,6 +63,7 @@ from app.repositories.sync_jobs import JobSnapshot, SyncJobRepository
 from app.repositories.universe import UniverseRepository
 from app.services.china_macro import china_series_catalog
 from app.services.data_sync import bars_window
+from app.services.official_texts import FEEDS
 from app.services.pdf_upload import default_parser_version, parse_document_identity
 from app.services.runtime_settings import effective_settings
 from app.services.sync_queue import dedupe_key_for
@@ -812,7 +813,7 @@ def _cninfo_tasks(
 def build_official_text_tasks(
     engine: Engine, settings: Settings, now: datetime
 ) -> list[ScheduledTask]:
-    """每小时抓美联储 RSS 和国家统计局数据发布栏目的新正文。"""
+    """每小时抓 `official_texts.FEEDS` 里每个官方来源（美联储、统计局、两家交易所栏目）的新正文。"""
 
     local = now.astimezone(_SHANGHAI)
     email = contact_email(settings.sec_user_agent)
@@ -828,7 +829,7 @@ def build_official_text_tasks(
             failure_policy="403/429 停止该来源，不换身份重试",
             unavailable_reason=reason,
         )
-        for code in ("fed_speeches", "fed_press", "fed_testimony", "nbs_release")
+        for code in FEEDS
     ]
 
 

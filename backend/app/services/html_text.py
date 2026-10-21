@@ -4,6 +4,23 @@ from html.parser import HTMLParser
 
 _SKIP = {"script", "style", "nav", "noscript"}
 _BREAK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4"}
+# 没有结束标签的元素：`<br>`、`<img>` 不能算进嵌套层数，否则容器关闭后会继续往下收页脚文字。
+_VOID = {
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+}
 
 
 def article_text(
@@ -29,6 +46,10 @@ class _Article(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr = {key: value or "" for key, value in attrs}
+        if tag in _VOID:
+            if self._capture and tag in _BREAK:
+                self.parts.append("\n")
+            return
         if tag in _SKIP:
             self._skip += 1
         if self._capture:
@@ -44,6 +65,8 @@ class _Article(HTMLParser):
             self._capture = 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID:
+            return
         if tag in _SKIP and self._skip:
             self._skip -= 1
         if self._capture:
