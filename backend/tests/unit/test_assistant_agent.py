@@ -12,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from app.repositories.chat import HistoryTurn
 from app.services.assistant.agent import (
     HIDDEN_NOTICE,
     IGNORED_CALL,
@@ -23,9 +24,12 @@ from app.services.assistant.agent import (
     AgentSettings,
     HistoryMessage,
     _parse_plan,
+    carry_tools,
     entity_notes,
+    query_notes,
 )
 from app.services.assistant.llm_tools import ModelCallError, ModelReply
+from app.services.assistant.responder import NO_TEXT_HISTORY, _history_messages
 from app.services.assistant.results import Column, ToolResult
 from app.services.assistant.tools import CalcTool, ToolRegistry
 from app.services.assistant.tools.base import ToolContext
@@ -64,6 +68,7 @@ def run(
     clock: Callable[[], float] = time.monotonic,
     history: tuple[HistoryMessage, ...] = (),
     entities: tuple[str, ...] = (),
+    queried: tuple[str, ...] = (),
     series: FakeSeries | None = None,
     extra_tools: tuple[Any, ...] = (),
 ) -> tuple[AgentResult, list[dict[str, Any]], FakeSeries]:
@@ -82,7 +87,8 @@ def run(
         user_id=uuid4(),
         now=datetime(2026, 10, 19, 2, 0, tzinfo=UTC),
     )
-    result = agent.run(AgentRequest(question, history, entities), ctx, events.append, cancelled)
+    request = AgentRequest(question, history, entities, queried)
+    result = agent.run(request, ctx, events.append, cancelled)
     return result, events, series
 
 
@@ -624,3 +630,93 @@ def test_entity_notes_keep_only_the_latest_eight_without_duplicates() -> None:
     notes = entity_notes(traces)
     assert len(notes) == 8 and notes[-1] == "序列 S8"
     assert len(set(notes)) == 8
+
+
+# ---------------------------------------------------------------- 只给了数据的旧回合
+LIMIT_UP_TRACE: dict[str, Any] = {
+    "calls": [
+        {"tool": "load_skill", "args": {"names": ["hotspot"]}, "status": "ok"},
+        {
+            "tool": "market_sentiment",
+            "args": {"view": "limit_up_stocks", "top": 30},
+            "status": "ok",
+            "rows": 30,
+        },
+        {"tool": "market_sentiment", "args": {"view": "limit_up"}, "status": "unavailable"},
+    ]
+}
+
+
+def test_query_notes_name_the_tools_and_arguments_of_earlier_turns() -> None:
+    traces = [
+        LIMIT_UP_TRACE,
+        {"calls": [{"tool": "calc", "args": {}, "status": "ok"}]},
+        {"calls": [{"tool": "macro_series", "args": {"code": "UNRATE"}, "status": "ok"}]},
+        {
+            "calls": [
+                {
+                    "tool": "price_bars",
+                    "args": {"instrument_id": "f00d", "days": 30, "adjust": None},
+                    "status": "stale",
+                }
+            ]
+        },
+        {"calls": "garbage"},
+        {},
+    ]
+    # 加载技能、计算、没取到数据的调用不记；宏观序列已由「上文提到的实体」带上；证券 id 不外泄。
+    assert query_notes(traces) == (
+        "查市场热度（market_sentiment(view=limit_up_stocks, top=30)）",
+        "查日线（price_bars(days=30)）",
+    )
+
+
+def test_query_notes_shorten_long_arguments() -> None:
+    long = "很长的搜索词" * 30
+    (note,) = query_notes(
+        [{"calls": [{"tool": "web_search", "args": {"query": long}, "status": "ok"}]}]
+    )
+    assert note.endswith("…)）") and len(note) < 120
+
+
+def test_carry_tools_come_from_the_latest_turn_that_called_tools() -> None:
+    older = {"calls": [{"tool": "web_search", "args": {}, "status": "ok"}]}
+    assert carry_tools([older, LIMIT_UP_TRACE, {"calls": []}, {}]) == ("market_sentiment",)
+    assert carry_tools([{}, {"calls": []}, {"calls": "garbage"}]) == ()
+
+
+def test_history_keeps_a_turn_that_only_showed_data() -> None:
+    turns = [
+        HistoryTurn("今天涨停的主板股票有哪些", "", LIMIT_UP_TRACE),
+        HistoryTurn("再看看 CPI", "最新是 323.0。", None),
+    ]
+    assert _history_messages(turns) == (
+        HistoryMessage("user", "今天涨停的主板股票有哪些"),
+        HistoryMessage("assistant", NO_TEXT_HISTORY),
+        HistoryMessage("user", "再看看 CPI"),
+        HistoryMessage("assistant", "最新是 323.0。"),
+    )
+
+
+def test_a_follow_up_after_a_data_only_turn_knows_what_was_asked_and_queried() -> None:
+    turns = [HistoryTurn("今天涨停的主板股票有哪些", "", LIMIT_UP_TRACE)]
+    model = FakeModel(say("好。"))
+    run(
+        model,
+        "你觉得这些票哪些明天会继续晋级",
+        history=_history_messages(turns),
+        queried=query_notes([LIMIT_UP_TRACE]),
+    )
+    messages = model.calls[0][0]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "system", "user"]
+    assert messages[1]["content"] == "今天涨停的主板股票有哪些"
+    assert messages[2]["content"] == NO_TEXT_HISTORY
+    note = messages[3]["content"]
+    assert "上文查过的数据：查市场热度（market_sentiment(view=limit_up_stocks, top=30)）" in note
+    assert "重新调用工具" in note and "不要说上一轮没有给出过" in note
+
+
+def test_no_queried_note_when_nothing_was_queried_before() -> None:
+    model = FakeModel(say("好。"))
+    run(model, "你好")
+    assert "上文查过的数据" not in model.calls[0][0][1]["content"]

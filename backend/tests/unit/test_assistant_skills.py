@@ -64,7 +64,11 @@ def tool_names(tools: list[dict[str, Any]] | None) -> list[str]:
 
 
 def run(
-    model: FakeModel, *, max_steps: int = 4, board: FakeBoard | None = None
+    model: FakeModel,
+    *,
+    max_steps: int = 4,
+    board: FakeBoard | None = None,
+    carry: tuple[str, ...] = (),
 ) -> tuple[Any, list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
     registry = ToolRegistry([FakeSeries(), CalcTool(), board or FakeBoard()])
@@ -81,7 +85,8 @@ def run(
         user_id=uuid4(),
         now=datetime(2026, 10, 19, 2, 0, tzinfo=UTC),
     )
-    result = agent.run(AgentRequest("中国半导体还有救吗"), ctx, events.append, lambda: False)
+    request = AgentRequest("中国半导体还有救吗", carry_tools=carry)
+    result = agent.run(request, ctx, events.append, lambda: False)
     return result, events
 
 
@@ -152,6 +157,14 @@ def test_first_call_offers_only_core_tools_and_load_skill() -> None:
     model = FakeModel(say("好。"))
     run(model)
     assert tool_names(model.calls[0][1]) == ["calc", "macro_series", LOAD_SKILL]
+
+
+def test_tools_the_previous_turn_used_are_open_without_loading_the_skill_again() -> None:
+    """追问「这些票呢」时，上一轮的工具第一次调用就能用，不必再绕一轮加载技能。"""
+
+    model = FakeModel(say("好。"))
+    run(model, carry=("industry_board", "not_a_registered_tool"))
+    assert tool_names(model.calls[0][1]) == ["calc", "industry_board", "macro_series", LOAD_SKILL]
 
 
 def test_loading_a_skill_returns_its_guide_and_opens_its_tools() -> None:

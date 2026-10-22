@@ -35,6 +35,8 @@ ZT_ROWS: list[dict[str, object]] = [
         "p": 15160,
         "zdp": 10.0072,
         "amount": 1.2e9,
+        "ltsz": 2.2e9,
+        "tshare": 3.79e9,
         "hs": 12.3456,
         "lbc": 11,
         "fbt": 92500,
@@ -125,7 +127,9 @@ def test_pool_parse_scales_price_and_keeps_missing_values() -> None:
     first, _, suspended = page.stocks
     assert first.price == Decimal("15.16") and first.first_seal == "09:25:00"
     assert first.exchange == "SSE" and first.limit_days == 11
+    assert (first.float_cap, first.total_cap) == (Decimal("2200000000"), Decimal("3790000000"))
     assert suspended.price is None and suspended.change_pct is None
+    assert suspended.total_cap is None and suspended.float_cap is None  # 没给就是没有，不补 0
     assert es.parse_pool(json.dumps({"data": None}).encode()).trade_date is None
 
 
