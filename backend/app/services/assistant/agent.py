@@ -43,6 +43,7 @@ PROMPT_VERSION = "assistant_v4"
 MAX_PARALLEL = 3
 PLANNER_MAX_CALLS = 4
 MAX_ENTITIES = 8
+MAX_QUERIED = 6
 # 只加载技能、没查数据的轮次不占步数，但最多这么多轮，防止模型反复加载。
 MAX_SKILL_ROUNDS = 2
 
@@ -99,6 +100,10 @@ class AgentRequest:
     question: str
     history: tuple[HistoryMessage, ...] = ()
     entities: tuple[str, ...] = ()
+    # 上文查过的数据（工具、参数）：旧回合不带工具结果，追问里的「这些」靠它找回指代。
+    queried: tuple[str, ...] = ()
+    # 上一回合用过的工具：追问时直接开放，不必让模型再加载一次技能。
+    carry_tools: tuple[str, ...] = ()
 
 
 @dataclass
@@ -185,6 +190,7 @@ class Agent:
             cancelled=cancelled,
             deadline=self._clock() + self._settings.turn_seconds,
         )
+        turn.enabled.update(request.carry_tools)
         narrative: str | None = None
         failure: str | None = None
         try:
@@ -218,6 +224,12 @@ class Agent:
         note = f"今天是 {turn.ctx.today_cn.isoformat()}（上海时间）。"
         if request.entities:
             note += "上文提到的实体：" + "；".join(request.entities) + "。"
+        if request.queried:
+            note += (
+                "上文查过的数据：" + "；".join(request.queried) + "。"
+                "追问里的「这些」「那几只」「刚才那个」指的就是它们；这些结果不在本回合的资料里，"
+                "要引用其中的数字或名单，沿用同样的条件重新调用工具查一次，不要说上一轮没有给出过。"
+            )
         messages.append({"role": "system", "content": note})
         messages.append({"role": "user", "content": request.question})
         return messages
@@ -644,6 +656,65 @@ def entity_notes(traces: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
             notes.extend(_notes_for(call))
     unique = list(dict.fromkeys(notes))
     return tuple(unique[-MAX_ENTITIES:])
+
+
+# 这些工具的指代已经由「上文提到的实体」带上，或本身不是数据查询。
+_NOT_QUERIED = frozenset(
+    {LOAD_SKILL, "calc", "instrument_search", "macro_series", "macro_compare", "custom_indicator"}
+)
+_HIDDEN_ARGS = frozenset({"instrument_id", "instrument_ids"})
+
+
+def query_notes(traces: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """从旧回合的 `tool_trace` 汇总「上文查过的数据」：工具名和参数，不含结果行。
+
+    只有数据没有文字的回合（回答没通过核对、只给了表）也在里面，追问才找得到「这些」指什么。
+    """
+
+    notes: list[str] = []
+    for trace in traces:
+        for call in _calls(trace):
+            tool = call.get("tool")
+            if not isinstance(tool, str) or tool in _NOT_QUERIED:
+                continue
+            if call.get("status") not in ("ok", "stale"):
+                continue
+            raw = call.get("args")
+            args = (
+                {k: v for k, v in raw.items() if k not in _HIDDEN_ARGS and v is not None}
+                if isinstance(raw, dict)
+                else {}
+            )
+            shown = ", ".join(f"{key}={_short(value)}" for key, value in args.items())
+            notes.append(f"{STEP_LABELS.get(tool, tool[:30])}（{tool}({shown})）")
+    unique = list(dict.fromkeys(notes))
+    return tuple(unique[-MAX_QUERIED:])
+
+
+def carry_tools(traces: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
+    """最近一个有工具调用的旧回合用过的工具：追问时直接开放。"""
+
+    for trace in reversed(traces):
+        names = [
+            tool
+            for call in _calls(trace)
+            if isinstance(tool := call.get("tool"), str) and tool != LOAD_SKILL
+        ]
+        if names:
+            return tuple(dict.fromkeys(names))
+    return ()
+
+
+def _calls(trace: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    calls = trace.get("calls")
+    if not isinstance(calls, list):
+        return []
+    return [call for call in calls if isinstance(call, dict)]
+
+
+def _short(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False) if isinstance(value, (list, dict)) else str(value)
+    return text if len(text) <= 60 else text[:60] + "…"
 
 
 def _notes_for(call: Mapping[str, Any]) -> list[str]:

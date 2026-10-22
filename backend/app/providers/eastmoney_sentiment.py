@@ -44,6 +44,7 @@ class PoolStock:
     change_pct: Decimal | None
     amount: Decimal | None
     float_cap: Decimal | None
+    total_cap: Decimal | None
     turnover_pct: Decimal | None
     streak: int | None
     first_seal: str | None
@@ -167,6 +168,7 @@ def parse_pool(payload: bytes) -> PoolPage:
                 change_pct=_rounded(em._number(row.get("zdp"))),
                 amount=em._number(row.get("amount")),
                 float_cap=_rounded(em._number(row.get("ltsz"))),
+                total_cap=_rounded(em._number(row.get("tshare"))),
                 turnover_pct=_rounded(em._number(row.get("hs"))),
                 streak=em._int(row.get("lbc")),
                 first_seal=_clock(row.get("fbt")),

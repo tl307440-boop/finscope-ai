@@ -243,6 +243,93 @@ def test_no_limit_up_stocks_is_unavailable() -> None:
     assert result.status == "unavailable" and "没有涨停股" in (result.reason or "")
 
 
+YI = Decimal(100_000_000)
+
+
+def _capped(code: str, name: str, streak: int, total: str | None, float_: str | None) -> Any:
+    return _stock(
+        code,
+        name,
+        streak,
+        total_cap=None if total is None else Decimal(total) * YI,
+        float_cap=None if float_ is None else Decimal(float_) * YI,
+    )
+
+
+def _cap_pool() -> LimitUpView:
+    return _limit_up(
+        limit_up_stocks=[
+            _capped("002724", "海洋王", 5, "86.48", "63.5"),
+            _capped("603278", "大业股份", 5, "45", "20"),
+            _capped("300001", "创业股", 2, "50", "30"),
+            _capped("688001", "科创股", 1, "40", None),
+            _capped("000999", "大盘股", 1, "500", "200"),
+            _capped("600888", "无市值", 1, None, None),
+        ]
+    )
+
+
+def test_limit_up_stocks_show_both_market_caps_in_yi_and_keep_a_plain_title() -> None:
+    result = _run('{"view": "limit_up_stocks"}', FakeSentiment(limit_up=_cap_pool()))
+    first = result.rows[0]
+    assert (first["name"], first["total_cap"], first["float_cap"]) == ("海洋王", "86.48", "63.5")
+    assert result.rows[-1]["total_cap"] is None  # 没有市值就是没有，不补 0
+    assert result.title == "涨停股清单（2026-10-21）"  # 没筛选时标题不变
+    labels = {column.key: (column.label, column.unit) for column in result.columns}
+    assert labels["total_cap"] == ("总市值", "亿元") and labels["float_cap"] == ("流通市值", "亿元")
+
+
+def test_market_cap_range_and_main_board_are_applied_before_taking_the_top_rows() -> None:
+    args = '{"view": "limit_up_stocks", "min_cap": 30, "max_cap": 100, "main_board_only": true}'
+    result = _run(args, FakeSentiment(limit_up=_cap_pool()))
+    assert [row["name"] for row in result.rows] == ["海洋王", "大业股份"]
+    assert "沪深主板" in result.title and "总市值 30–100 亿元" in result.title
+    assert "涨停池 6 只，符合 2 只" in result.title
+    assert result.status == "ok" and result.truncated == 0
+
+
+def test_without_the_main_board_flag_other_boards_stay_in() -> None:
+    args = '{"view": "limit_up_stocks", "min_cap": 30, "max_cap": 100}'
+    result = _run(args, FakeSentiment(limit_up=_cap_pool()))
+    assert [row["name"] for row in result.rows] == ["海洋王", "大业股份", "创业股", "科创股"]
+
+
+def test_float_cap_basis_and_a_single_bound() -> None:
+    args = '{"view": "limit_up_stocks", "min_cap": 25, "cap_basis": "float"}'
+    result = _run(args, FakeSentiment(limit_up=_cap_pool()))
+    assert [row["name"] for row in result.rows] == ["海洋王", "创业股", "大盘股"]
+    assert "流通市值不低于 25 亿元" in result.title
+    upper = _run('{"view": "limit_up_stocks", "max_cap": 45}', FakeSentiment(limit_up=_cap_pool()))
+    assert [row["name"] for row in upper.rows] == ["大业股份", "科创股"]
+    assert "总市值不高于 45 亿元" in upper.title
+
+
+def test_a_screen_that_matches_nothing_says_so_instead_of_loosening_the_filter() -> None:
+    args = '{"view": "limit_up_stocks", "min_cap": 1000, "main_board_only": true}'
+    result = _run(args, FakeSentiment(limit_up=_cap_pool()))
+    assert result.status == "unavailable" and result.rows == ()
+    assert "没有符合这些条件" in (result.reason or "") and "符合 0 只" in result.title
+    only_gem = _limit_up(limit_up_stocks=[_capped("300001", "创业股", 1, "50", "30")])
+    board = '{"view": "limit_up_stocks", "min_cap": 30, "main_board_only": true}'
+    empty = _run(board, FakeSentiment(limit_up=only_gem))
+    assert "没有符合这些条件" in (empty.reason or "")  # 主板筛空，不是「缺市值数据」
+
+
+def test_a_pool_without_any_market_cap_cannot_be_screened_by_it() -> None:
+    bare = _limit_up(limit_up_stocks=[_stock("600001", "甲", 1), _stock("600002", "乙", 1)])
+    result = _run('{"view": "limit_up_stocks", "min_cap": 30}', FakeSentiment(limit_up=bare))
+    assert result.status == "unavailable"
+    assert "没有一只返回了总市值数据" in (result.reason or "")
+
+
+def test_the_list_can_be_asked_for_up_to_sixty_rows() -> None:
+    many = _limit_up(limit_up_stocks=[_stock(f"60{n:04d}", f"票{n}", 1) for n in range(45)])
+    full = _run('{"view": "limit_up_stocks", "top": 60}', FakeSentiment(limit_up=many))
+    assert len(full.rows) == 45 and full.truncated == 0
+    too_many = _run('{"view": "limit_up_stocks", "top": 61}', FakeSentiment(limit_up=many))
+    assert too_many.status == "unavailable"
+
+
 def test_surveys_list_the_most_visited_companies() -> None:
     service = FakeSentiment(surveys=_surveys())
     result = _run('{"view": "surveys", "days": 14}', service)

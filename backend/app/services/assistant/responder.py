@@ -23,7 +23,9 @@ from app.services.assistant.agent import (
     AgentRequest,
     AgentSettings,
     HistoryMessage,
+    carry_tools,
     entity_notes,
+    query_notes,
 )
 from app.services.assistant.llm_tools import OpenAIToolModel, supports_tools
 from app.services.assistant.orchestrator import Emit
@@ -43,6 +45,8 @@ SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "assistant_v4
 SKILLS = read_skills()
 HISTORY_TURNS = 3  # 最近 3 个回合 = 6 条消息
 HISTORY_ANSWER_CHARS = 1200
+# 旧回合没有文字回答（回答没通过核对，只给了数据表）时，历史里用这句占位，让模型知道问过什么。
+NO_TEXT_HISTORY = "（这一轮没有文字回答，只展示了查到的数据，见「上文查过的数据」。）"
 
 
 class AssistantResponder:
@@ -82,10 +86,13 @@ class AssistantResponder:
         history = self._repository.recent_turns(
             turn.session_id, turn.client_message_id, HISTORY_TURNS
         )
+        traces = [item.trace for item in history if isinstance(item.trace, dict)]
         request = AgentRequest(
             question=turn.question,
             history=_history_messages(history),
-            entities=entity_notes([item.trace for item in history if isinstance(item.trace, dict)]),
+            entities=entity_notes(traces),
+            queried=query_notes(traces),
+            carry_tools=carry_tools(traces),
         )
         ctx = ToolContext(engine=self._engine, user_id=turn.user_id, now=self._clock())
         with httpx.Client() as client:
@@ -125,15 +132,17 @@ class AssistantResponder:
 
 
 def _history_messages(history: Sequence[HistoryTurn]) -> tuple[HistoryMessage, ...]:
-    """旧回合只带文字，不带工具结果；没有文字回答的回合（只给了数据）整对跳过。"""
+    """旧回合只带文字，不带工具结果。
+
+    没有文字回答的回合（只给了数据）也要留下：不然追问「这些票」时，模型看不到上一问，
+    会说「上一轮没有给出过名单」。它查了什么由 `query_notes` 另行告诉模型。
+    """
 
     messages: list[HistoryMessage] = []
     for item in history:
         answer = item.answer.strip()
-        if not answer:
-            continue
         messages.append(HistoryMessage("user", item.question))
-        messages.append(HistoryMessage("assistant", _clip(answer)))
+        messages.append(HistoryMessage("assistant", _clip(answer) if answer else NO_TEXT_HISTORY))
     return tuple(messages)
 
 

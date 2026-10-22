@@ -18,6 +18,7 @@ class PoolStockItem(BaseModel):
     change_pct: Decimal | None = None
     amount: Decimal | None = None
     float_cap: Decimal | None = None
+    total_cap: Decimal | None = None
     turnover_pct: Decimal | None = None
     streak: int | None = None
     first_seal: str | None = None
