@@ -131,6 +131,7 @@ def test_integration(
             value,
             sec_user_agent=effective.sec_user_agent,
             llm_base_url=effective.llm_api_base_url,
+            llm_api_key=effective.llm_api_key,
         )
         outcome = ProbeOutcome(ok=result.ok, message=result.message)
     return JSONResponse(status_code=200, content=success_response(request, outcome))
