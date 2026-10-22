@@ -142,7 +142,52 @@ const streaming = ref(false)
 const activeClientId = ref("")
 const errorText = ref("")
 const threadEl = ref<HTMLElement | null>(null)
+const sessionPaneEl = ref<HTMLElement | null>(null)
 const composerEl = ref<{ focus: () => void } | null>(null)
+
+/** 距底部不超过这一距离时，流式输出才继续跟着滚。 */
+const NEAR_BOTTOM_PX = 80
+const stickToBottom = ref(true)
+let scrollGeneration = 0
+
+const CONTEXT_KEY = "finscope.assistant.contextOpen"
+
+/** 同步读偏好，避免先展开再收起。没有记录时，窄于 1180px 默认收起。 */
+function readContextOpen(): boolean {
+  if (typeof window === "undefined") {
+    return false
+  }
+  try {
+    const saved = window.localStorage.getItem(CONTEXT_KEY)
+    if (saved === "1") {
+      return true
+    }
+    if (saved === "0") {
+      return false
+    }
+    return window.matchMedia("(min-width: 1180px)").matches
+  } catch {
+    return false
+  }
+}
+
+const contextOpen = ref(readContextOpen())
+
+function toggleContext(): void {
+  const follow = stickToBottom.value
+  contextOpen.value = !contextOpen.value
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(CONTEXT_KEY, contextOpen.value ? "1" : "0")
+    } catch {
+      // 浏览器禁止写入时，这一次的展开状态仍然保留。
+    }
+  }
+  // 展开或收起会改变消息区高度。原本贴在底部时继续贴住最新一条，往上翻过的不拉回去。
+  if (follow) {
+    void scrollToLatest(true)
+  }
+}
 
 const modelAvailable = ref<boolean | null>(null)
 const modelMessage = ref("")
@@ -159,6 +204,17 @@ const symbolInput = ref("")
 const stockMessage = ref("")
 const docs = ref<DocRow[]>([])
 const dataUpdatedAt = ref("")
+
+const contextPeek = computed(() => {
+  if (dataPhase.value === "loading") {
+    return "读取中"
+  }
+  if (dataPhase.value === "error") {
+    return dataError.value || "研究上下文暂时读不到"
+  }
+  const macroCount = macroSeriesCount.value || macroTiles.value.length
+  return `宏观 ${macroCount} · 自选 ${stocks.value.length} · 文档 ${docs.value.length}`
+})
 
 const modelTone = computed<"ok" | "warn" | "muted">(() =>
   modelAvailable.value === null ? "muted" : modelAvailable.value ? "ok" : "warn",
@@ -251,6 +307,7 @@ async function load(): Promise<void> {
       turns.value = []
     }
     phase.value = "ready"
+    await presentLatest()
   } catch {
     message.value = "网络连接失败，请稍后重试"
     phase.value = "error"
@@ -284,10 +341,12 @@ async function selectSession(id: string): Promise<void> {
   turns.value = []
   errorText.value = ""
   sessionActionError.value = ""
+  stickToBottom.value = true
   phase.value = "loading"
   try {
     await loadMessages()
     phase.value = "ready"
+    await presentLatest()
   } catch {
     message.value = "这段对话读不出来，请稍后重试"
     phase.value = "error"
@@ -363,7 +422,6 @@ async function loadMessages(): Promise<void> {
   )
   const payload = await readJson(response)
   turns.value = listOf(dataOf(payload)?.messages).flatMap(readTurn)
-  await scrollToLatest()
 }
 
 function readTurn(value: Record<string, unknown>): Turn[] {
@@ -379,12 +437,99 @@ function dataBlocks(turn: Turn): AssistantBlock[] {
   return splitNotices(turn.extras.blocks).data
 }
 
-async function scrollToLatest(): Promise<void> {
-  await nextTick()
+function waitFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve())
+  })
+}
+
+function onThreadScroll(): void {
   const host = threadEl.value
-  if (host) {
-    host.scrollTop = host.scrollHeight
+  if (!host || host.clientHeight === 0) {
+    return
   }
+  stickToBottom.value = host.scrollHeight - host.scrollTop - host.clientHeight <= NEAR_BOTTOM_PX
+}
+
+/**
+ * 把消息列表滚到最新一条。只改 `.thread` 自己的 scrollTop，
+ * 不用 scrollIntoView，避免把页面和问答记录一起带走。
+ * force 用于进入页面、切换会话、刚发出提问；流式追加时不强制。
+ */
+async function scrollToLatest(force = false): Promise<void> {
+  if (force) {
+    stickToBottom.value = true
+  }
+  if (!force && !stickToBottom.value) {
+    return
+  }
+  const generation = ++scrollGeneration
+  await nextTick()
+  await waitFrame()
+  if (generation !== scrollGeneration) {
+    return
+  }
+  const host = threadEl.value
+  if (!host) {
+    return
+  }
+  if (!force && !stickToBottom.value) {
+    return
+  }
+  host.scrollTop = host.scrollHeight
+  await waitFrame()
+  if (generation !== scrollGeneration) {
+    return
+  }
+  const again = threadEl.value
+  if (!again || again.clientHeight === 0) {
+    return
+  }
+  if (!force && !stickToBottom.value) {
+    return
+  }
+  again.scrollTop = again.scrollHeight
+  stickToBottom.value = again.scrollHeight - again.scrollTop - again.clientHeight <= NEAR_BOTTOM_PX
+}
+
+/** 问答记录最新在最上。只在会话列表自己的滚动条里露出当前项，不滚动页面。 */
+function revealActiveSession(): void {
+  const pane = sessionPaneEl.value
+  if (!pane) {
+    return
+  }
+  const id = sessionId.value
+  if (!id) {
+    pane.scrollTop = 0
+    return
+  }
+  const safe = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(id) : id
+  const item = pane.querySelector<HTMLElement>(`[data-session="${safe}"]`)
+  if (!item) {
+    return
+  }
+  const paneRect = pane.getBoundingClientRect()
+  const itemRect = item.getBoundingClientRect()
+  if (itemRect.top < paneRect.top) {
+    pane.scrollTop += itemRect.top - paneRect.top
+  } else if (itemRect.bottom > paneRect.bottom) {
+    pane.scrollTop += itemRect.bottom - paneRect.bottom
+  }
+}
+
+async function presentLatest(): Promise<void> {
+  await scrollToLatest(true)
+  revealActiveSession()
+}
+
+async function restoreThreadOffset(offset: number): Promise<void> {
+  await nextTick()
+  await waitFrame()
+  const host = threadEl.value
+  if (!host) {
+    return
+  }
+  host.scrollTop = offset
 }
 
 function useExample(text: string): void {
@@ -436,7 +581,7 @@ async function ask(): Promise<void> {
     },
   ]
   question.value = ""
-  await scrollToLatest()
+  await scrollToLatest(true)
   try {
     const response = await authorizedFetch(
       `/api/v1/assistant/sessions/${sessionId.value}/messages`,
@@ -455,8 +600,15 @@ async function ask(): Promise<void> {
       return
     }
     await readStream(response)
+    const follow = stickToBottom.value
+    const savedTop = threadEl.value?.scrollTop ?? 0
     await loadMessages()
-    void refreshSessions()
+    if (follow) {
+      await scrollToLatest(true)
+    } else {
+      await restoreThreadOffset(savedTop)
+    }
+    void refreshSessions().then(() => revealActiveSession())
   } catch {
     errorText.value = "网络连接失败，问题没有发出"
     turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
@@ -518,7 +670,9 @@ function applyExtras(payload: Record<string, unknown>): void {
   const next = applyEvent(target.extras, payload)
   if (next !== target.extras) {
     target.extras = next
-    void scrollToLatest()
+    if (stickToBottom.value) {
+      void scrollToLatest()
+    }
   }
 }
 
@@ -527,8 +681,11 @@ function appendDelta(part: string): void {
   if (!target) {
     return
   }
+  const follow = stickToBottom.value
   target.content += part
-  void scrollToLatest()
+  if (follow) {
+    void scrollToLatest()
+  }
 }
 
 /**
@@ -854,6 +1011,7 @@ async function cancelPending(): Promise<void> {
     return
   }
   await loadMessages()
+  await scrollToLatest(true)
 }
 
 onMounted(() => {
@@ -863,8 +1021,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="page">
+  <main class="page assistant-page">
     <PageHeader
+      class="assistant-top"
       title="AI 智能投研助手"
       subtitle="围绕已入库的宏观、行情与财报数据提问，回答可追溯到数据来源"
     >
@@ -873,15 +1032,15 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <div class="grid-2-1">
-      <PanelCard :title="sessionTitle || '研究问答'" info="每次提问都会保存在你的问答记录里" flush>
+    <div class="assistant-body" :class="{ 'context-open': contextOpen }">
+      <PanelCard class="chat-card" :title="sessionTitle || '研究问答'" info="每次提问都会保存在你的问答记录里" flush>
         <template #icon><ChatDotRound /></template>
         <template #actions>
           <span v-if="phase === 'ready' && turns.length" class="muted">共 {{ turns.length }} 条消息</span>
         </template>
 
         <div class="chat-layout">
-        <aside class="session-pane">
+        <aside ref="sessionPaneEl" class="session-pane">
           <SessionList
             :sessions="sessions"
             :active-id="sessionId"
@@ -910,7 +1069,7 @@ onMounted(() => {
             </div>
           </div>
 
-          <div ref="threadEl" class="thread">
+          <div ref="threadEl" class="thread" @scroll.passive="onThreadScroll">
             <section v-if="!turns.length" class="welcome">
               <span class="avatar large" aria-hidden="true">AI</span>
               <h3>想研究点什么？</h3>
@@ -1034,11 +1193,22 @@ onMounted(() => {
         </div>
       </PanelCard>
 
-      <PanelCard title="研究上下文" info="可在提问时参考的已入库数据；模型接入后才会被自动引用">
+      <PanelCard class="context-card" title="研究上下文" info="可在提问时参考的已入库数据；模型接入后才会被自动引用">
         <template #actions>
-          <span class="muted side-asof">更新于 {{ dataUpdatedAt || "—" }}</span>
+          <span v-show="!contextOpen" class="context-peek" :title="contextPeek">{{ contextPeek }}</span>
+          <button
+            type="button"
+            class="context-toggle"
+            :aria-expanded="contextOpen"
+            aria-controls="assistant-context"
+            @click="toggleContext"
+          >
+            {{ contextOpen ? "收起" : "展开" }}
+          </button>
+          <span v-if="contextOpen" class="muted side-asof">更新于 {{ dataUpdatedAt || "—" }}</span>
         </template>
 
+        <div v-show="contextOpen" id="assistant-context" class="context-scroll">
         <StateBlock v-if="dataPhase === 'loading'" state="loading" :rows="5" />
         <StateBlock v-else-if="dataPhase === 'error'" state="error" :message="dataError" @retry="loadSidebar" />
 
@@ -1137,10 +1307,12 @@ onMounted(() => {
             <p v-else class="muted side-note">利率序列的观测值不足，暂不画走势。</p>
           </section>
         </div>
+        </div>
       </PanelCard>
     </div>
 
     <SourceFooter
+      class="assistant-foot"
       :as-of="dataUpdatedAt || '—'"
       :sources="['FinScope 问答记录', 'FRED 宏观序列', 'A 股日线']"
       :note="modelAvailable === false ? '模型未接入：回答只有系统说明，不会生成分析或引用' : '回答按原文展示，引用角标对应数据来源'"
@@ -1149,30 +1321,96 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.chat-layout {
+.assistant-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--topbar));
+  overflow: hidden;
+}
+
+.assistant-top,
+.assistant-foot {
+  flex: none;
+}
+
+.assistant-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
+  gap: var(--gap);
+  overflow: hidden;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "context"
+    "chat";
+}
+
+.assistant-body.context-open {
+  grid-template-rows: minmax(168px, 34vh) minmax(0, 1fr);
+}
+
+.chat-card,
+.context-card {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-card {
+  grid-area: chat;
+  container-type: inline-size;
+  container-name: assistant-chat;
+}
+
+.context-card {
+  grid-area: context;
+}
+
+.chat-card :deep(.head),
+.context-card :deep(.head) {
+  flex: none;
+}
+
+.chat-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
+  overflow: hidden;
 }
 
 .session-pane {
-  max-height: 700px;
+  min-height: 0;
+  height: 100%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 12px 12px 0;
   border-right: 1px solid var(--line);
 }
 
 .chat-main {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-@media (max-width: 900px) {
+@container assistant-chat (max-width: 560px) {
   .chat-layout {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 148px) minmax(0, 1fr);
   }
 
   .session-pane {
-    max-height: 240px;
+    max-height: 148px;
     padding: 8px 0;
     border-right: none;
     border-bottom: 1px solid var(--line);
@@ -1182,10 +1420,13 @@ onMounted(() => {
 .chat {
   display: flex;
   flex-direction: column;
-  min-height: 640px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .model-banner {
+  flex: none;
   display: flex;
   gap: 10px;
   align-items: flex-start;
@@ -1218,12 +1459,12 @@ onMounted(() => {
 
 .thread {
   flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  max-height: 600px;
-  min-height: 420px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 14px 2px;
 }
 
@@ -1345,6 +1586,7 @@ onMounted(() => {
 }
 
 .composer {
+  flex: none;
   border-top: 1px solid var(--line);
   padding: 12px 0 4px;
 }
@@ -1372,6 +1614,57 @@ onMounted(() => {
 
 .side-asof {
   font-size: 12px;
+}
+
+.context-toggle {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.context-toggle:hover,
+.context-toggle:focus-visible {
+  border-color: var(--accent);
+}
+
+.context-peek {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.context-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.assistant-body:not(.context-open) .context-card {
+  height: auto;
+  align-self: start;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.assistant-body:not(.context-open) .context-card :deep(.head) {
+  margin-bottom: 0;
+}
+
+.assistant-body:not(.context-open) .context-card :deep(.actions) {
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  overflow: hidden;
 }
 
 .side-body {
@@ -1477,5 +1770,106 @@ onMounted(() => {
   gap: 8px;
   align-items: center;
   margin-top: 8px;
+}
+
+@media (min-width: 1180px) {
+  .assistant-body,
+  .assistant-body.context-open {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+    grid-template-rows: minmax(0, 1fr);
+    grid-template-areas: "chat context";
+  }
+
+  .assistant-body:not(.context-open) {
+    grid-template-columns: minmax(0, 1fr) 56px;
+  }
+
+  .assistant-body:not(.context-open) .context-peek {
+    display: none;
+  }
+
+  .assistant-body:not(.context-open) .context-card {
+    height: 100%;
+    align-self: stretch;
+    padding: 12px 4px;
+    align-items: center;
+  }
+
+  .assistant-body:not(.context-open) .context-toggle {
+    padding: 6px 4px;
+  }
+
+  .assistant-body:not(.context-open) .context-card :deep(.head) {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 14px;
+    margin-bottom: 0;
+    height: 100%;
+  }
+
+  .assistant-body:not(.context-open) .context-card :deep(.title) {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .assistant-body:not(.context-open) .context-card :deep(h2) {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    letter-spacing: 0.18em;
+    overflow: visible;
+  }
+
+  .assistant-body:not(.context-open) .context-card :deep(.info) {
+    display: none;
+  }
+
+  .assistant-body:not(.context-open) .context-card :deep(.actions) {
+    flex: none;
+    overflow: visible;
+  }
+}
+
+@media (max-width: 767px) {
+  .assistant-page {
+    height: auto;
+    overflow: visible;
+  }
+
+  .assistant-body,
+  .assistant-body.context-open {
+    flex: none;
+    overflow: visible;
+    grid-template-rows: auto auto;
+  }
+
+  .chat-card,
+  .context-card,
+  .assistant-body.context-open .context-card {
+    height: auto;
+    overflow: visible;
+  }
+
+  .chat-layout,
+  .chat-main,
+  .chat {
+    height: auto;
+    overflow: visible;
+    flex: none;
+  }
+
+  .thread {
+    flex: none;
+    min-height: 320px;
+    max-height: min(70vh, 640px);
+  }
+
+  .context-scroll {
+    max-height: 50vh;
+  }
+
+  .session-pane {
+    max-height: 148px;
+  }
 }
 </style>
