@@ -69,7 +69,15 @@ FLASHES = as_json(
 def _run(model: FakeModel) -> tuple[AgentResult, list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
     flash = NewsFlashService(
-        gateway=ScriptedGateway({"getFastNewsList": FLASHES}), cache=TtlCache()
+        gateway=ScriptedGateway(
+            {
+                "getFastNewsList": FLASHES,
+                "api-one.wallstcn.com": as_json({"code": 20000, "data": {"items": []}}),
+                "flash-api.jin10.com": as_json({"status": 200, "data": []}),
+                "cls.cn/api/cache": as_json({"errno": 0, "data": {"roll_data": []}}),
+            }
+        ),
+        cache=TtlCache(),
     )
     registry = ToolRegistry(
         [

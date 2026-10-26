@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 from app.providers import eastmoney_boards as em
+from app.providers import sina_market as sina
+from app.providers.errors import ProviderError
 from app.repositories.board_market import StoredSnapshot
 from app.services.assistant.results import ToolResult
 from app.services.assistant.tools import ToolRegistry
@@ -72,6 +74,12 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeBoards.asked = []
     monkeypatch.setattr(board_tools, "BoardMarketRepository", FakeBoards)
 
+    async def _no_sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+        del gateway
+        raise ProviderError(code="UPSTREAM_ERROR", message="测试里不连新浪", status_code=502)
+
+    monkeypatch.setattr(board_tools, "fetch_sina_boards", _no_sina)
+
 
 def _run(arguments: str) -> ToolResult:
     ctx = ToolContext(engine=cast(Engine, None), user_id=uuid4(), now=NOW)
@@ -118,6 +126,89 @@ def test_old_snapshot_is_marked_stale() -> None:
     result = _run('{"queries": ["半导体"]}')
     assert result.status == "stale"
     assert "2026-10-02" in (result.reason or "")
+
+
+def test_a_stale_snapshot_keeps_old_columns_and_overlays_todays_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
+
+    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+        del gateway
+        return (
+            sina.SinaBoard(
+                code="new_semis",
+                name="半导体",
+                members=12,
+                change_pct=Decimal("2.5"),
+                amount=Decimal("100"),
+                leader_code="688981",
+                leader_name="北方华创",
+                leader_change_pct=Decimal("4.2"),
+            ),
+        )
+
+    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
+    result = _run('{"queries": ["半导体"]}')
+    row = result.rows[0]
+    assert result.status == "stale"
+    assert row["change_pct"] == "2.5" and row["change_source"] == "新浪实时"
+    assert row["leader_name"] == "北方华创" and row["leader_change_pct"] == "4.2"
+    assert row["pe_ttm"] == "98.76" and row["change_5d_pct"] == "3.4" and row["advancers"] == "40"
+    assert row["trade_date"] == "2026-10-02"
+    assert "新浪实时补上" in (result.reason or "") and "2026-10-02" in (result.reason or "")
+
+
+def test_sina_without_a_change_does_not_wipe_the_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
+
+    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+        del gateway
+        return (
+            sina.SinaBoard(
+                code="new_semis",
+                name="半导体",
+                members=12,
+                change_pct=None,
+                amount=None,
+                leader_code=None,
+                leader_name="北方华创",
+                leader_change_pct=Decimal("9"),
+            ),
+        )
+
+    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
+    row = _run('{"queries": ["半导体"]}').rows[0]
+    assert row["change_pct"] == "-1.25" and row["change_source"] == "收盘快照"
+    assert row["leader_name"] == "中芯国际" and row["leader_change_pct"] == "6.01"
+    assert row["pe_ttm"] == "98.76"
+
+
+def test_sina_change_without_a_leader_keeps_the_snapshot_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
+
+    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+        del gateway
+        return (
+            sina.SinaBoard(
+                code="new_semis",
+                name="半导体",
+                members=12,
+                change_pct=Decimal("2.5"),
+                amount=Decimal("100"),
+                leader_code=None,
+                leader_name=None,
+                leader_change_pct=None,
+            ),
+        )
+
+    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
+    row = _run('{"queries": ["半导体"]}').rows[0]
+    assert row["change_pct"] == "2.5" and row["change_source"] == "新浪实时"
+    assert row["leader_name"] == "中芯国际" and row["leader_change_pct"] == "6.01"
+    assert row["change_5d_pct"] == "3.4" and row["advancers"] == "40"
 
 
 def test_no_matching_board_is_unavailable_with_a_hint() -> None:
