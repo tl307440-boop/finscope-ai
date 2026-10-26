@@ -70,10 +70,12 @@ def parse_jin10(payload: bytes) -> tuple[NewsItem, ...]:
         row = raw if isinstance(raw, dict) else {}
         if row.get("type") == 1:
             continue
-        extras = row.get("extras") if isinstance(row.get("extras"), dict) else {}
+        raw_extras = row.get("extras")
+        extras = raw_extras if isinstance(raw_extras, dict) else {}
         if extras.get("ad") is True:
             continue
-        body = row.get("data") if isinstance(row.get("data"), dict) else {}
+        raw_body = row.get("data")
+        body = raw_body if isinstance(raw_body, dict) else {}
         if body.get("exclusive_to"):
             continue
         code = _text(row.get("id"))
