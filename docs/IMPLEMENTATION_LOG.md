@@ -2501,7 +2501,7 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 | `.\.venv\Scripts\python.exe -m pytest tests/unit/test_headline_feeds.py tests/unit/test_board_gap.py tests/unit/test_assistant_tools_flash.py tests/unit/test_assistant_tools_boards.py tests/unit/test_assistant_live_tools_turns.py` | 46 passed |
 | `.\.venv\Scripts\python.exe -m pytest tests/unit/test_assistant_skills.py` | 20 passed |
 
-没有启动生产服务，没有提交。
+没有启动生产服务。PR #47 合并后的 CI 在 `headline_feeds.py` 上被 mypy 拦住（`dict | None` 上调用 `.get`），部署因此被跳过。随后先把金十条目收成明确的 `dict` 再读字段。
 
 ### 已知局限
 
