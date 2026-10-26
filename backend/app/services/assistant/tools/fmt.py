@@ -14,6 +14,14 @@ def plain(value: Decimal | None) -> str | None:
     return None if value is None else decimal_text(value)
 
 
+def pct(value: Decimal | None) -> str | None:
+    """百分数保留两位，四舍五入。没有值就是 None，不补 0。"""
+
+    if value is None:
+        return None
+    return decimal_text(value.quantize(_CENT, rounding=ROUND_HALF_UP))
+
+
 def yi(value: Decimal | None) -> str | None:
     """元 → 亿元，四舍五入到两位小数。"""
 

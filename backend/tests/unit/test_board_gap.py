@@ -2,11 +2,18 @@
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from app.providers import sina_market as sina
 from app.providers.errors import ProviderError
-from app.services.board_gap import fetch_sina_boards, needs_live_change, session_date
+from app.services.board_gap import (
+    LiveChange,
+    fetch_sina_boards,
+    match_live,
+    needs_live_change,
+    session_date,
+)
 
 MONDAY_MORNING = datetime(2026, 10, 26, 2, 10, tzinfo=UTC)  # 上海 10:10
 WEDNESDAY_CLOSE = datetime(2026, 10, 21, 8, 0, tzinfo=UTC)  # 上海 16:00
@@ -57,3 +64,23 @@ def test_both_sina_lists_failing_raises() -> None:
     down = ProviderError(code="UPSTREAM_ERROR", message="榜单失败", status_code=502)
     with pytest.raises(ProviderError, match="榜单失败"):
         asyncio.run(fetch_sina_boards(_Gateway({sina.INDUSTRY_URL: down, sina.CONCEPT_URL: down})))
+
+
+def test_a_shorter_name_does_not_steal_a_longer_board() -> None:
+    quotes = (
+        LiveChange("机器人", Decimal("1"), "甲", Decimal("2"), "新浪实时"),
+        LiveChange("人形机器人", Decimal("4"), None, None, "同花顺热榜"),
+    )
+    humanoid = match_live("人形机器人", quotes)
+    concept = match_live("机器人概念", quotes)
+    assert humanoid is not None and humanoid.change_pct == Decimal("4")
+    assert concept is not None and concept.source == "新浪实时"
+
+
+def test_sina_wins_when_both_sources_have_the_same_name() -> None:
+    quotes = (
+        LiveChange("半导体", Decimal("2"), "北方华创", Decimal("4"), "新浪实时"),
+        LiveChange("半导体", Decimal("9"), None, None, "同花顺热榜"),
+    )
+    hit = match_live("半导体", quotes)
+    assert hit is not None and hit.source == "新浪实时" and hit.leader_name == "北方华创"

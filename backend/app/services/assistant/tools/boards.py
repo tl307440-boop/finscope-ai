@@ -1,9 +1,9 @@
 """东方财富行业 / 概念板块工具 `industry_board`（规格 §7）。
 
 数据来自本系统每天入库的板块快照（`board_daily_snapshots`）。问的是现在、而快照还停在
-更早的收盘日时，用新浪板块榜补当日涨跌幅；新浪给了领涨股名称才换领涨股。新浪没给涨跌幅
-时不盖掉快照。5 日 / 60 日、市盈率、主力、涨跌家数新浪没有，仍用快照，并在说明里写清。
-回看过去某一天时不拿今天的新浪去填。
+更早的收盘日时，先用新浪板块榜补当日涨跌，对不上名称再用同花顺热榜。新浪给了领涨股
+名称才换领涨股。没给涨跌幅时不盖掉快照。5 日 / 60 日、市盈率、主力、涨跌家数仍用快照。
+「涨跌日期」是补数当天，「快照日期」仍是入库日。回看过去某一天时不拿今天的数去填。
 按名称模糊匹配，一次可以查几个关键词。金额按亿元给出（元 ÷ 10^8，Decimal 计算）。
 """
 
@@ -12,21 +12,26 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.providers import sina_market as sina
 from app.providers.errors import ProviderError
 from app.repositories.board_market import BoardMarketRepository, StoredSnapshot
 from app.services.assistant.loop_bridge import call_async
 from app.services.assistant.results import Column, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext, effective_as_of
-from app.services.assistant.tools.fmt import count, plain, yi
-from app.services.board_gap import fetch_sina_boards, index_sina, needs_live_change
+from app.services.assistant.tools.fmt import count, pct, plain, yi
+from app.services.board_gap import (
+    LiveChange,
+    fetch_board_changes,
+    live_change_date,
+    match_live,
+    needs_live_change,
+)
 from app.services.market_cache import PacedGateway, shared_gateway
 
 MAX_QUERIES = 4
 PER_QUERY = 4
 MAX_ROWS = 12
 STALE_DAYS = 10  # 与日线一致：长假（国庆约 8 天不开市）不算过期
-SOURCE = "东方财富行业 / 概念板块（本系统每日快照）；快照落后时当日涨跌用新浪板块榜"
+SOURCE = "东方财富收盘快照；快照落后时当日涨跌依次用新浪板块榜、同花顺热榜"
 _KIND_NAMES = {"industry": "行业", "concept": "概念"}
 
 
@@ -57,9 +62,9 @@ class IndustryBoardTool:
     description: ClassVar[str] = (
         "按名称查东方财富行业 / 概念板块的最新快照（如半导体、芯片、光伏设备、白酒）："
         "当日、5 日、60 日、年初至今涨跌幅，市盈率 TTM，换手率，主力净流入，涨跌家数，领涨股。"
-        "快照早于最近收盘日时，名称对得上且新浪有涨跌幅的板块，用新浪补当日涨跌幅；"
-        "新浪给了领涨股名称才换领涨股。「涨跌来源」列写明是哪一家；其余列仍是快照。"
-        "一次可查 1–4 个关键词。已经发生的行情，不是预测。"
+        "快照早于最近收盘日时，名称对得上的板块先用新浪、再用同花顺热榜补当日涨跌幅。"
+        "「涨跌日期」是这列数字的日期，「快照日期」是其余列的日期，不要把两列当成同一天。"
+        "新浪给了领涨股名称才换领涨股。一次可查 1–4 个关键词。已经发生的行情，不是预测。"
     )
     args_model: ClassVar[type[BaseModel]] = IndustryBoardArgs
 
@@ -89,28 +94,31 @@ class IndustryBoardTool:
         latest = max(item.trade_date for item in items)
         historical = args.as_of is not None and args.as_of < ctx.today_cn
         fill = needs_live_change(latest, ctx.now, historical=historical)
-        by_name: dict[str, sina.SinaBoard] = {}
+        quotes: tuple[LiveChange, ...] = ()
         live_note: str | None = None
+        quoted_on = live_change_date(ctx.now)
         if fill:
             try:
-                live = call_async(
-                    lambda: fetch_sina_boards(self._gateway or shared_gateway()), timeout=20.0
+                quotes = call_async(
+                    lambda: fetch_board_changes(self._gateway or shared_gateway()), timeout=25.0
                 )
-                by_name = index_sina(live)
             except ProviderError as error:
                 live_note = (
-                    f"新浪板块榜也取不到（{error.message}），"
+                    f"新浪和同花顺热榜都取不到（{error.message}），"
                     f"当日涨跌仍是 {latest.isoformat()} 的快照"
                 )
-        rows = tuple(_row(item, by_name.get(item.node.name.strip())) for item in items)
-        matched = sum(1 for row in rows if row["change_source"] == "新浪实时")
-        notes = _notes(latest, pit, fill, matched, live_note)
+        rows = tuple(
+            _row(item, match_live(item.node.name, quotes), quoted_on if fill else None)
+            for item in items
+        )
+        matched = sum(1 for row in rows if row["change_source"] != "收盘快照")
+        notes = _notes(latest, pit, fill, matched, live_note, quoted_on)
         return ToolResult(
             tool=self.name,
             title=title,
             columns=COLUMNS,
             rows=rows,
-            as_of=latest,
+            as_of=quoted_on if matched else latest,
             source=SOURCE,
             status="stale" if notes else "ok",
             reason="；".join(notes) or None,
@@ -121,7 +129,8 @@ class IndustryBoardTool:
 COLUMNS = (
     Column("name", "板块", "", "text"),
     Column("kind", "类型", "", "text"),
-    Column("trade_date", "日期", "", "date"),
+    Column("trade_date", "快照日期", "", "date"),
+    Column("change_date", "涨跌日期", "", "date"),
     Column("change_pct", "当日涨跌幅", "%", "number"),
     Column("change_source", "涨跌来源", "", "text"),
     Column("change_5d_pct", "5日涨跌幅", "%", "number"),
@@ -138,7 +147,14 @@ COLUMNS = (
 )
 
 
-def _notes(latest: date, pit: date, fill: bool, matched: int, live_note: str | None) -> list[str]:
+def _notes(
+    latest: date,
+    pit: date,
+    fill: bool,
+    matched: int,
+    live_note: str | None,
+    quoted_on: date,
+) -> list[str]:
     notes: list[str] = []
     if (pit - latest).days > STALE_DAYS:
         notes.append(
@@ -149,29 +165,34 @@ def _notes(latest: date, pit: date, fill: bool, matched: int, live_note: str | N
         notes.append(live_note)
     elif fill and matched:
         notes.append(
-            f"当日涨跌幅里，{matched} 个板块已用新浪实时补上；"
-            "领涨股只在新浪给出名称时换成新浪，没给的仍是快照；"
-            "5 日、60 日、年初至今、市盈率、主力净流入和涨跌家数，"
-            f"仍是 {latest.isoformat()} 的收盘快照"
+            f"当日涨跌幅里，{matched} 个板块已用新浪或同花顺补上，"
+            f"涨跌日期是 {quoted_on.isoformat()}；"
+            "领涨股只在新浪给出名称时换成新浪，同花顺热榜没有领涨股，没给的仍是快照；"
+            f"5 日、60 日、年初至今、市盈率、主力净流入和涨跌家数"
+            f"仍是 {latest.isoformat()} 的收盘快照。"
+            "涨跌来源不是收盘快照时，当日涨跌幅按涨跌日期说，不要按快照日期丢掉"
         )
     elif fill:
         notes.append(
-            f"新浪板块榜里没有名称相同的板块，当日涨跌仍是 {latest.isoformat()} 的收盘快照"
+            f"新浪和同花顺热榜里都没有名称相同的板块，当日涨跌仍是 {latest.isoformat()} 的收盘快照"
         )
     return notes
 
 
-def _row(item: StoredSnapshot, live: sina.SinaBoard | None = None) -> dict[str, str | None]:
+def _row(
+    item: StoredSnapshot, live: LiveChange | None = None, quoted_on: date | None = None
+) -> dict[str, str | None]:
     quote = item.quote
     change = quote.change_pct
     source = "收盘快照"
+    change_day = item.trade_date
     leader_name = quote.leader_name
     leader_change = quote.leader_change_pct
-    # 新浪没给涨跌幅时不盖掉快照。给了涨跌但没给领涨股名字时，领涨股仍留快照，
-    # 避免把快照里另一只股票的涨跌幅安到空名字上。
-    if live is not None and live.change_pct is not None:
+    # 补数来源没给涨跌幅时不会进 LiveChange。给了涨跌但没给领涨股名字时，领涨股仍留快照。
+    if live is not None:
         change = live.change_pct
-        source = "新浪实时"
+        source = live.source
+        change_day = quoted_on or item.trade_date
         if live.leader_name:
             leader_name = live.leader_name
             leader_change = live.leader_change_pct
@@ -179,7 +200,8 @@ def _row(item: StoredSnapshot, live: sina.SinaBoard | None = None) -> dict[str, 
         "name": item.node.name,
         "kind": _KIND_NAMES.get(item.node.kind, item.node.kind),
         "trade_date": item.trade_date.isoformat(),
-        "change_pct": plain(change),
+        "change_date": change_day.isoformat(),
+        "change_pct": pct(change),
         "change_source": source,
         "change_5d_pct": plain(quote.change_5d_pct),
         "change_60d_pct": plain(quote.change_60d_pct),
@@ -191,5 +213,5 @@ def _row(item: StoredSnapshot, live: sina.SinaBoard | None = None) -> dict[str, 
         "advancers": count(quote.advancers),
         "decliners": count(quote.decliners),
         "leader_name": leader_name,
-        "leader_change_pct": plain(leader_change),
+        "leader_change_pct": pct(leader_change),
     }

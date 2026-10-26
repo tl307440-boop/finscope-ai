@@ -7,13 +7,13 @@ from uuid import uuid4
 
 import pytest
 from app.providers import eastmoney_boards as em
-from app.providers import sina_market as sina
 from app.providers.errors import ProviderError
 from app.repositories.board_market import StoredSnapshot
 from app.services.assistant.results import ToolResult
 from app.services.assistant.tools import ToolRegistry
 from app.services.assistant.tools import boards as board_tools
 from app.services.assistant.tools.base import ToolContext
+from app.services.board_gap import THS_SOURCE, LiveChange
 from sqlalchemy import Engine
 
 NOW = datetime(2026, 10, 21, 8, 0, tzinfo=UTC)  # 上海 10-21 16:00
@@ -74,11 +74,11 @@ def fake_repository(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeBoards.asked = []
     monkeypatch.setattr(board_tools, "BoardMarketRepository", FakeBoards)
 
-    async def _no_sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+    async def _offline(gateway: object) -> tuple[LiveChange, ...]:
         del gateway
         raise ProviderError(code="UPSTREAM_ERROR", message="测试里不连新浪", status_code=502)
 
-    monkeypatch.setattr(board_tools, "fetch_sina_boards", _no_sina)
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _offline)
 
 
 def _run(arguments: str) -> ToolResult:
@@ -133,55 +133,84 @@ def test_a_stale_snapshot_keeps_old_columns_and_overlays_todays_change(
 ) -> None:
     FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
 
-    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+    async def _live(gateway: object) -> tuple[LiveChange, ...]:
         del gateway
         return (
-            sina.SinaBoard(
-                code="new_semis",
+            LiveChange(
                 name="半导体",
-                members=12,
                 change_pct=Decimal("2.5"),
-                amount=Decimal("100"),
-                leader_code="688981",
                 leader_name="北方华创",
                 leader_change_pct=Decimal("4.2"),
+                source="新浪实时",
             ),
         )
 
-    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _live)
     result = _run('{"queries": ["半导体"]}')
     row = result.rows[0]
     assert result.status == "stale"
     assert row["change_pct"] == "2.5" and row["change_source"] == "新浪实时"
+    assert row["change_date"] == "2026-10-21"
     assert row["leader_name"] == "北方华创" and row["leader_change_pct"] == "4.2"
     assert row["pe_ttm"] == "98.76" and row["change_5d_pct"] == "3.4" and row["advancers"] == "40"
     assert row["trade_date"] == "2026-10-02"
-    assert "新浪实时补上" in (result.reason or "") and "2026-10-02" in (result.reason or "")
+    assert "涨跌日期是 2026-10-21" in (result.reason or "") and "2026-10-02" in (
+        result.reason or ""
+    )
 
 
-def test_sina_without_a_change_does_not_wipe_the_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_live_quote_without_a_change_does_not_wipe_the_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
 
-    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+    async def _empty(gateway: object) -> tuple[LiveChange, ...]:
+        del gateway
+        return ()
+
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _empty)
+    row = _run('{"queries": ["半导体"]}').rows[0]
+    assert row["change_pct"] == "-1.25" and row["change_source"] == "收盘快照"
+    assert row["change_date"] == "2026-10-02"
+    assert row["leader_name"] == "中芯国际" and row["leader_change_pct"] == "6.01"
+
+
+def test_tonghuashun_fills_when_sina_has_no_same_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeBoards.data = {
+        "人形机器人": [_snapshot("BK1184", "人形机器人", "concept", date(2026, 10, 2))]
+    }
+
+    async def _live(gateway: object) -> tuple[LiveChange, ...]:
         del gateway
         return (
-            sina.SinaBoard(
-                code="new_semis",
-                name="半导体",
-                members=12,
-                change_pct=None,
-                amount=None,
-                leader_code=None,
-                leader_name="北方华创",
-                leader_change_pct=Decimal("9"),
+            LiveChange("机器人", Decimal("1.2"), "甲股份", Decimal("3"), "新浪实时"),
+            LiveChange("人形机器人", Decimal("4.25"), None, None, THS_SOURCE),
+        )
+
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _live)
+    row = _run('{"queries": ["人形机器人"]}').rows[0]
+    assert row["change_source"] == THS_SOURCE
+    assert row["change_pct"] == "4.25" and row["change_date"] == "2026-10-21"
+    assert row["leader_name"] == "中芯国际"
+
+
+def test_a_long_live_percent_is_rounded_to_two_places(monkeypatch: pytest.MonkeyPatch) -> None:
+    FakeBoards.data = {
+        "机器人概念": [_snapshot("BK1090", "机器人概念", "concept", date(2026, 10, 2))]
+    }
+
+    async def _live(gateway: object) -> tuple[LiveChange, ...]:
+        del gateway
+        return (
+            LiveChange(
+                "机器人", Decimal("0.5955594253374"), "瑞凌股份", Decimal("12.423"), "新浪实时"
             ),
         )
 
-    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
-    row = _run('{"queries": ["半导体"]}').rows[0]
-    assert row["change_pct"] == "-1.25" and row["change_source"] == "收盘快照"
-    assert row["leader_name"] == "中芯国际" and row["leader_change_pct"] == "6.01"
-    assert row["pe_ttm"] == "98.76"
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _live)
+    row = _run('{"queries": ["机器人概念"]}').rows[0]
+    assert row["change_pct"] == "0.6" and row["leader_change_pct"] == "12.42"
+    assert row["change_source"] == "新浪实时" and row["leader_name"] == "瑞凌股份"
 
 
 def test_sina_change_without_a_leader_keeps_the_snapshot_leader(
@@ -189,22 +218,19 @@ def test_sina_change_without_a_leader_keeps_the_snapshot_leader(
 ) -> None:
     FakeBoards.data = {"半导体": [_snapshot("BK1036", "半导体", "industry", date(2026, 10, 2))]}
 
-    async def _sina(gateway: object) -> tuple[sina.SinaBoard, ...]:
+    async def _live(gateway: object) -> tuple[LiveChange, ...]:
         del gateway
         return (
-            sina.SinaBoard(
-                code="new_semis",
+            LiveChange(
                 name="半导体",
-                members=12,
                 change_pct=Decimal("2.5"),
-                amount=Decimal("100"),
-                leader_code=None,
                 leader_name=None,
                 leader_change_pct=None,
+                source="新浪实时",
             ),
         )
 
-    monkeypatch.setattr(board_tools, "fetch_sina_boards", _sina)
+    monkeypatch.setattr(board_tools, "fetch_board_changes", _live)
     row = _run('{"queries": ["半导体"]}').rows[0]
     assert row["change_pct"] == "2.5" and row["change_source"] == "新浪实时"
     assert row["leader_name"] == "中芯国际" and row["leader_change_pct"] == "6.01"
