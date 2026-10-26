@@ -52,8 +52,15 @@ SEARCH = _search(
 )
 
 
+_EMPTY_FEEDS = {
+    "api-one.wallstcn.com": as_json({"code": 20000, "data": {"items": []}}),
+    "flash-api.jin10.com": as_json({"status": 200, "data": []}),
+    "cls.cn/api/cache": as_json({"errno": 0, "data": {"roll_data": []}}),
+}
+
+
 def _service(routes: dict[str, bytes | Exception]) -> tuple[NewsFlashService, ScriptedGateway]:
-    gateway = ScriptedGateway(routes)
+    gateway = ScriptedGateway({**_EMPTY_FEEDS, **routes})
     return NewsFlashService(gateway=gateway, cache=TtlCache()), gateway
 
 
@@ -68,7 +75,7 @@ def test_latest_flashes_without_a_keyword_only_call_the_flash_feed() -> None:
     assert result.status == "ok" and result.title == "最新快讯"
     assert [row["time"] for row in result.rows] == ["22:10", "22:05", "21:00"]
     assert result.rows[0]["publisher"] == "东方财富快讯" and result.rows[0]["note"] == "未核实"
-    assert len(gateway.urls) == 1 and FLASH_URL in gateway.urls[0]
+    assert len(gateway.urls) == 4 and any(FLASH_URL in url for url in gateway.urls)
     assert result.as_of.isoformat() == "2026-10-21"
 
 
@@ -83,7 +90,7 @@ def test_keyword_merges_search_and_matching_flashes_without_duplicates() -> None
     assert "俄外交部" not in "".join(titles)  # 快讯池里和关键词无关的不要
     assert "国产芯片概念早盘走强" not in titles  # 标题里没有「半导体」
     assert "一周前的半导体新闻" not in titles  # 超出默认 72 小时
-    assert len(gateway.urls) == 2
+    assert len(gateway.urls) == 5
 
 
 def test_the_hours_window_is_applied_to_publication_time() -> None:
@@ -114,8 +121,117 @@ def test_one_feed_failing_still_gives_the_other_and_says_so() -> None:
     assert "7x24 快讯暂时取不到（快讯接口返回 500）" in (result.reason or "")
 
 
+def test_a_keyword_keeps_only_matching_headlines_from_every_flash_feed() -> None:
+    moment = int(datetime(2026, 10, 21, 14, 0, tzinfo=UTC).timestamp())
+    jin10 = as_json(
+        {
+            "status": 200,
+            "data": [
+                {
+                    "id": "J1",
+                    "type": 0,
+                    "time": "2026-10-21 22:08:00",
+                    "data": {"content": "【半导体设备订单回暖】正文不收。"},
+                },
+                {
+                    "id": "J2",
+                    "type": 0,
+                    "time": "2026-10-21 22:07:00",
+                    "data": {"content": "【黄金价格走高】无关。"},
+                },
+            ],
+        }
+    )
+    wscn = as_json(
+        {
+            "code": 20000,
+            "data": {
+                "items": [
+                    {
+                        "id": 9,
+                        "title": "半导体设备再获订单",
+                        "display_time": moment,
+                        "uri": "https://wallstreetcn.com/livenews/9",
+                    },
+                    {
+                        "id": 8,
+                        "title": "原油库存下降",
+                        "display_time": moment,
+                        "uri": "https://wallstreetcn.com/livenews/8",
+                    },
+                ]
+            },
+        }
+    )
+    cls = as_json(
+        {
+            "errno": 0,
+            "data": {
+                "roll_data": [
+                    {"id": 3, "title": "财联社称半导体设备拉升", "ctime": moment},
+                    {"id": 4, "title": "财联社称体育赛程公布", "ctime": moment},
+                ]
+            },
+        }
+    )
+    service, _ = _service(
+        {
+            FLASH_URL: FLASHES,
+            SEARCH_URL: SEARCH,
+            "flash-api.jin10.com": jin10,
+            "api-one.wallstcn.com": wscn,
+            "cls.cn/api/cache": cls,
+        }
+    )
+    result = _run(service, '{"keyword": "半导体"}')
+    titles = [row["title"] for row in result.rows]
+    assert "半导体设备订单回暖" in titles
+    assert "半导体设备再获订单" in titles
+    assert "财联社称半导体设备拉升" in titles
+    assert "黄金价格走高" not in titles
+    assert "原油库存下降" not in titles
+    assert "财联社称体育赛程公布" not in titles
+    assert "俄外交部" not in "".join(titles)
+    assert {"金十数据", "华尔街见闻", "财联社电报", "东方财富快讯"} <= {
+        row["publisher"] for row in result.rows
+    }
+
+
+def test_a_failed_eastmoney_feed_is_filled_by_jin10() -> None:
+    jin10 = as_json(
+        {
+            "status": 200,
+            "data": [
+                {
+                    "id": "J1",
+                    "type": 0,
+                    "time": "2026-10-21 22:00:00",
+                    "data": {"content": "【半导体设备订单回暖】正文不该被整段收下。", "title": ""},
+                }
+            ],
+        }
+    )
+    service, _ = _service(
+        {FLASH_URL: upstream_down("快讯接口返回 500"), "flash-api.jin10.com": jin10}
+    )
+    result = _run(service, '{"keyword": "半导体"}')
+    assert result.status == "stale"
+    assert [row["title"] for row in result.rows] == ["半导体设备订单回暖"]
+    assert result.rows[0]["publisher"] == "金十数据"
+    assert "7x24 快讯暂时取不到" in (result.reason or "")
+    assert "正文不该" not in result.rows[0]["title"]
+
+
 def test_every_feed_failing_is_unavailable_with_the_upstream_reason() -> None:
-    service, _ = _service({FLASH_URL: upstream_down("快讯接口返回 500")})
+    down = upstream_down("快讯接口返回 500")
+    service, _ = _service(
+        {
+            FLASH_URL: down,
+            "api-one.wallstcn.com": down,
+            "flash-api.jin10.com": down,
+            "cls.cn/api/cache": down,
+        }
+    )
     result = _run(service, "{}")
     assert result.status == "unavailable" and result.reason == "数据源暂时取不到：快讯接口返回 500"
 
@@ -140,7 +256,7 @@ def test_a_turn_can_look_up_headlines_only_a_few_times() -> None:
     results = [_run(service, f'{{"top": {5 + n}}}', ctx) for n in range(MAX_CALLS_PER_TURN + 1)]
     assert [result.status for result in results[:-1]] == ["ok"] * MAX_CALLS_PER_TURN
     assert results[-1].status == "unavailable" and "不要再查" in (results[-1].reason or "")
-    assert len(gateway.urls) == 1  # 同一个快讯池走缓存，没有重复请求上游
+    assert len(gateway.urls) == 4  # 四路快讯都走缓存，没有重复请求上游
 
 
 def test_top_limits_rows_and_reports_how_many_were_left_out() -> None:
@@ -152,7 +268,7 @@ def test_top_limits_rows_and_reports_how_many_were_left_out() -> None:
 
 def test_stale_cached_headlines_are_labelled_as_old() -> None:
     clock = {"now": 0.0}
-    gateway = ScriptedGateway({FLASH_URL: FLASHES})
+    gateway = ScriptedGateway({FLASH_URL: FLASHES, **_EMPTY_FEEDS})
     service = NewsFlashService(gateway=gateway, cache=TtlCache(lambda: clock["now"]))
     assert _run(service, "{}").status == "ok"
     clock["now"] = 600.0  # 超过快讯缓存的 60 秒

@@ -1,4 +1,6 @@
-"""实时财经新闻标题服务：东方财富 7x24 快讯和关键词新闻搜索，只存在进程内存里几分钟。
+"""实时财经新闻标题服务：东方财富、华尔街见闻、金十、财联社，以及东财新闻搜索。
+
+只存在进程内存里几分钟。
 
 不落库、不写日志正文：只有标题、时间、媒体名和链接，用来回答「现在市场在讨论什么」。
 同一个查询缓存 1–2 分钟，上游失败时有旧值就返回旧值并标 stale。
@@ -11,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TypeVar
 
 from app.providers import eastmoney_news as news
+from app.providers import headline_feeds as feeds
 from app.services.industry_market import Gateway
 from app.services.market_cache import Cached, TtlCache, shared_gateway
 
@@ -32,6 +35,27 @@ class NewsFlashService:
             "news:flash",
             _TTL_FLASH,
             lambda: self._fetch(url, news.FLASH_HEADERS, news.parse_flash),
+        )
+
+    async def wallstreet(self) -> Cached[tuple[news.NewsItem, ...]]:
+        return await self.cache.get(
+            "news:wscn",
+            _TTL_FLASH,
+            lambda: self._fetch(feeds.wscn_url(), feeds.WSCN_HEADERS, feeds.parse_wscn),
+        )
+
+    async def jin10(self) -> Cached[tuple[news.NewsItem, ...]]:
+        return await self.cache.get(
+            "news:jin10",
+            _TTL_FLASH,
+            lambda: self._fetch(feeds.jin10_url(), feeds.JIN10_HEADERS, feeds.parse_jin10),
+        )
+
+    async def cls(self) -> Cached[tuple[news.NewsItem, ...]]:
+        return await self.cache.get(
+            "news:cls",
+            _TTL_FLASH,
+            lambda: self._fetch(feeds.cls_url(), feeds.CLS_HEADERS, feeds.parse_cls),
         )
 
     async def search(self, keyword: str) -> Cached[tuple[news.NewsItem, ...]]:

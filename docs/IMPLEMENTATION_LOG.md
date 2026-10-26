@@ -2462,3 +2462,49 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 - 上文查过的数据只带工具名和参数，不带结果。追问要引用数字，必须重新查一次（本回合资料才算数），所以追问会多一次工具调用。
 - `carry_tools` 只延续最近一个有工具调用的回合，不延续技能说明；需要做法说明时模型仍可以自己 `load_skill`。
 - 涨停清单仍按「连板数、首次封板时间」排序，没有按市值或封单资金排序的参数。
+
+## 2026-10-26 快讯多来源合并；板块快照落后时用新浪补当日涨跌
+
+助手在一块数据没有或偏旧时，改用已经接上的其他来源一起回答，并在技能说明里要求按列写来源。没有登录页、也没有已登录浏览器的来源保持 `NOT_IMPLEMENTED`，不绕过登录和签名。
+
+### 已接上
+
+- `news_flash`：东方财富 7x24 快讯、华尔街见闻、金十（`vip=0`，公开 `x-app-id`）、财联社 `/api/cache` 电报（不计算 sign）并行。一家失败，其余照常返回，并在说明里点名。有关键词时，四路快讯都按标题筛选；东方财富新闻搜索仍单独按关键词查。只留标题、时间、媒体和链接。
+- `industry_board`：问的是现在、且快照早于最近一个已收盘交易日时，用新浪行业榜和概念榜按板块名称精确匹配，补当日涨跌幅。新浪给出领涨股名称时才换领涨股。「涨跌来源」写成「新浪实时」或「收盘快照」。5 日、60 日、年初至今、市盈率、主力、涨跌家数仍是快照。回看过去某一天不补。新浪一边榜失败时，另一边仍然可用。
+- `board_detail` 仍是东财实时，失败时退回收盘入库快照，不把新浪的数写进东财字段。
+- 东财人气榜、同花顺热榜仍由原来的 `market_sentiment` 提供。`hotspot.md`、`industry.md`、`news.md` 写明：某一榜、某一路快讯或板块详情不可用或偏旧时，加载热榜、`news_flash`、`board_detail` 或 `industry_board` 的新浪补数，一起分析，并说明哪一列是哪一家、哪一天。
+
+### 文件
+
+- `backend/app/providers/headline_feeds.py`、`backend/app/services/news_flash.py`、`backend/app/services/assistant/tools/flash.py`
+- `backend/app/services/board_gap.py`、`backend/app/services/assistant/tools/boards.py`
+- `backend/app/prompts/skills/news.md`、`industry.md`、`hotspot.md`
+- `backend/tests/unit/test_headline_feeds.py`、`test_board_gap.py`、`test_assistant_tools_flash.py`、`test_assistant_tools_boards.py`、`test_assistant_live_tools_turns.py`
+
+### NOT_IMPLEMENTED
+
+本机没有已登录的浏览器或 Electron 调试页（`127.0.0.1:9222` 和 `9223` 连不上）。没有安装或配置 REA，没有伪造 `xq_a_token`、hexin-v、财联社 sign 或开盘啦设备令牌。
+
+- 雪球：打开 https://xueqiu.com/ 登录。这次首页请求拿到的是反爬拦截页，没有读到单独的登录路径，也没有再请求。登录后只看页面自己发出的热帖、热股请求，记标题、时间、作者和链接。
+- 韭研公社：打开 https://www.jiuyangongshe.com/ ，页面上点「登录注册」。同站的 `/open-account` 是开户，不是社区登录。登录后看最新发布、个股研究、题材行业的标题、时间和链接，不收正文。
+- 开盘啦：打开 https://www.kaipanla.com/ ，页面上点「登录」。登录后看页面自己的板块和复盘列表。
+- 通达信：官网首页的「个人版」指向 https://vip.tdx.com.cn/site/app/pc-mall/main.html ，标题是「通达信金融终端」，HTML 里没有登录链接。桌面安装包在官网「下载中心」https://www.tdx.com.cn/soft.html 。不对东财板块代码填通达信行情，也不接二进制行情站。
+
+### 验证
+
+在 `backend` 目录，用 `uv sync --extra dev` 准备的 `.venv`（该目录被 gitignore，仓库里原先没有）：
+
+| 命令 | 结果 |
+| --- | --- |
+| `.\.venv\Scripts\python.exe -m ruff format`（上述 Python 文件） | 10 files left unchanged |
+| `.\.venv\Scripts\python.exe -m ruff check`（同一批文件） | All checks passed |
+| `.\.venv\Scripts\python.exe -m pytest tests/unit/test_headline_feeds.py tests/unit/test_board_gap.py tests/unit/test_assistant_tools_flash.py tests/unit/test_assistant_tools_boards.py tests/unit/test_assistant_live_tools_turns.py` | 46 passed |
+| `.\.venv\Scripts\python.exe -m pytest tests/unit/test_assistant_skills.py` | 20 passed |
+
+没有启动生产服务，没有提交。
+
+### 已知局限
+
+- 新浪行业榜和概念榜只失败一边时，工具仍返回另一边，但说明里不会点名是哪一边失败。
+- 技能只约束模型怎么说；没有用真实模型回放「一家快讯失败后再看热榜和板块」。
+- 上面四家登录之后才能继续看它们自己的页面请求。登录前不接。

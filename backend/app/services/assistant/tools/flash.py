@@ -1,8 +1,9 @@
-"""`news_flash`：东方财富 7x24 快讯和关键词新闻标题，用来回答「现在市场在讨论什么」。
+"""`news_flash`：多来源财经快讯标题，用来回答「现在市场在讨论什么」。
 
-只给标题、发布时间、媒体名和原文链接；不取摘要和正文（版权归原媒体），也不入库、不写进
-回答记录：结果只在本回合展示，来源标「未核实」。只有实时数据，不能回看过去某一天。
-财联社电报需要请求签名，没有合规的公开接口，所以没有接入（NOT_IMPLEMENTED）。
+东方财富、华尔街见闻、金十、财联社电报并行取。一家失败不影响其余几家，失败写进说明。
+只给标题、发布时间、媒体名和原文链接；不取正文（版权归原媒体），也不入库。
+只有实时数据，不能回看过去某一天。雪球、韭研公社、开盘啦、通达信不在这里：
+前三家要登录令牌或设备令牌，通达信对不上板块代码，都不绕过。
 """
 
 import asyncio
@@ -20,7 +21,7 @@ from app.services.assistant.tools.live import live_only_reason, upstream_reason
 from app.services.news_flash import NewsFlashService, get_news_service
 from app.utils.market_time import SHANGHAI, shanghai_pit
 
-SOURCE = "东方财富 7x24 快讯与新闻搜索（只有标题，未核实）"
+SOURCE = "东方财富、华尔街见闻、金十数据、财联社电报（只有标题，未核实）"
 MAX_CALLS_PER_TURN = 3
 FLASH_LABEL = "7x24 快讯"
 SEARCH_LABEL = "新闻搜索"
@@ -48,7 +49,8 @@ class NewsFlashArgs(BaseModel):
 class NewsFlashTool:
     name: ClassVar[str] = "news_flash"
     description: ClassVar[str] = (
-        "查此刻的财经快讯和新闻标题（东方财富 7x24 快讯与新闻搜索），带发布时间和原文链接。"
+        "查此刻的财经快讯和新闻标题（东方财富、华尔街见闻、金十、财联社，以及东方财富新闻搜索），"
+        "带发布时间和原文链接。一家来源取不到时用其余几家。"
         "适合「最近有什么消息」「这几天市场在讨论什么」；用 keyword 找某个主题或公司。"
         "只有标题没有正文，只有实时数据，来源没有被系统核对。"
         f"每回合最多查 {MAX_CALLS_PER_TURN} 次。要看政策原文、公告原文不要用它。"
@@ -110,7 +112,12 @@ async def _collect(
 ) -> tuple[list[NewsItem], list[str]]:
     """快讯池和（有关键词时的）新闻搜索并行取；一路失败另一路仍然有用，失败写进说明。"""
 
-    jobs = {FLASH_LABEL: service.flashes()}
+    jobs = {
+        FLASH_LABEL: service.flashes(),
+        "华尔街见闻": service.wallstreet(),
+        "金十数据": service.jin10(),
+        "财联社电报": service.cls(),
+    }
     if keyword:
         jobs[SEARCH_LABEL] = service.search(keyword)
     outcomes = await asyncio.gather(*jobs.values(), return_exceptions=True)
@@ -127,8 +134,9 @@ async def _collect(
         if outcome.stale:
             notes.append(f"{label}是缓存的旧数据（{outcome.stale_reason or '上游暂时取不到'}）")
         for item in outcome.value:
-            # 快讯池是全市场最新的一批，要按关键词在标题里筛；搜索结果本来就是按关键词查的。
-            if label == FLASH_LABEL and keyword and keyword.lower() not in item.title.lower():
+            # 四路快讯都是全市场最新的一批，有关键词时只留标题里含这个词的。
+            # 新闻搜索本身已按关键词查过，标题里不一定逐字出现，不再筛掉。
+            if keyword and label != SEARCH_LABEL and keyword.lower() not in item.title.lower():
                 continue
             items.setdefault(item.code, item)
     if len(errors) == len(jobs):
