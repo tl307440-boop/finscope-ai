@@ -12,6 +12,8 @@
  *                                                             见 api/assistantBlocks.ts）；`: ping` 心跳注释行忽略
  *                                                             （429 限流 / 409 同一条还在生成：显示后端给的原因）
  *  - POST /api/v1/assistant/sessions/{id}/messages/{cid}/cancel  取消未完成的回答
+ *  - POST 同上，body 可带 chart（png/jpg/webp/gif 的 base64）。有图时按技能 chart 解读。
+ *        GET /api/v1/assistant/charts/{client_message_id} 取回这张图。
  *  - GET  /api/v1/analysis/model-status                       模型是否已配置
  *  - GET  /api/v1/watchlists / POST /api/v1/watchlists        自选分组
  *  - GET  /api/v1/instruments/search                          加入自选时解析代码
@@ -21,9 +23,16 @@
  *
  * 没有模型时后端只回一句固定说明；示例问题只填进输入框，不会在前端生成任何回答。
  */
-import { computed, nextTick, onMounted, ref } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
 import { ChatDotRound, Cpu } from "@element-plus/icons-vue"
 import { apiUrl, authorizedFetch, readJson } from "../api/client"
+import {
+  bytesToBase64,
+  chartQuestion,
+  prepareChartFile,
+  sniffChart,
+  type ChartAttachment,
+} from "../api/chartImage"
 import {
   applyEvent,
   EMPTY_EXTRAS,
@@ -68,6 +77,9 @@ interface Turn {
   completionStatus: string
   /** 步骤与渲染块：流式时逐个事件并入，历史消息一次读出；旧消息为空。 */
   extras: ReplyExtras
+  hasChart: boolean
+  /** 本地预览或从接口取回后的对象地址。空字符串表示这轮没有图。 */
+  chartUrl: string
 }
 
 interface StockRow {
@@ -144,6 +156,8 @@ const errorText = ref("")
 const threadEl = ref<HTMLElement | null>(null)
 const sessionPaneEl = ref<HTMLElement | null>(null)
 const composerEl = ref<{ focus: () => void } | null>(null)
+const chartFileEl = ref<HTMLInputElement | null>(null)
+const attachment = ref<ChartAttachment | null>(null)
 
 /** 距底部不超过这一距离时，流式输出才继续跟着滚。 */
 const NEAR_BOTTOM_PX = 80
@@ -421,12 +435,15 @@ async function loadMessages(): Promise<void> {
     refreshToken,
   )
   const payload = await readJson(response)
-  turns.value = listOf(dataOf(payload)?.messages).flatMap(readTurn)
+  const next = listOf(dataOf(payload)?.messages).flatMap(readTurn)
+  revokeChartUrls(turns.value)
+  turns.value = next
+  await hydrateCharts()
 }
 
 function readTurn(value: Record<string, unknown>): Turn[] {
   const turn = parseTurn(value)
-  return turn ? [turn] : []
+  return turn ? [{ ...turn, chartUrl: "" }] : []
 }
 
 function verdictBlocks(turn: Turn): NoticeBlock[] {
@@ -537,12 +554,14 @@ function useExample(text: string): void {
   void nextTick(() => composerEl.value?.focus())
 }
 
-/** 提问：POST 拿 SSE，逐段把 delta 追加到临时气泡。 */
+/** 提问：POST 拿 SSE，逐段把 delta 追加到临时气泡。有走势图时一并提交，空文字用技能默认问题。 */
 async function ask(): Promise<void> {
-  const text = question.value.trim()
+  const typed = question.value.trim()
+  const chart = attachment.value
+  const text = chartQuestion(typed, chart !== null)
   if (!text || !session.accessToken || sending.value) {
     if (!text) {
-      errorText.value = "请输入问题"
+      errorText.value = "请输入问题，或上传一张走势图"
     }
     return
   }
@@ -570,6 +589,8 @@ async function ask(): Promise<void> {
       content: text,
       completionStatus: "completed",
       extras: EMPTY_EXTRAS,
+      hasChart: chart !== null,
+      chartUrl: chart?.previewUrl ?? "",
     },
     {
       id: clientMessageId,
@@ -578,9 +599,12 @@ async function ask(): Promise<void> {
       content: "",
       completionStatus: "streaming",
       extras: EMPTY_EXTRAS,
+      hasChart: false,
+      chartUrl: "",
     },
   ]
   question.value = ""
+  attachment.value = null
   await scrollToLatest(true)
   try {
     const response = await authorizedFetch(
@@ -588,7 +612,13 @@ async function ask(): Promise<void> {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_message_id: clientMessageId, content: text }),
+        body: JSON.stringify({
+          client_message_id: clientMessageId,
+          content: text,
+          ...(chart
+            ? { chart: { media_type: chart.mediaType, data_base64: chart.dataBase64 } }
+            : {}),
+        }),
       },
       session.accessToken,
       refreshToken,
@@ -596,7 +626,8 @@ async function ask(): Promise<void> {
     if (!response.ok) {
       errorText.value = await failureText(response)
       turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
-      question.value = text
+      question.value = typed
+      attachment.value = chart
       return
     }
     await readStream(response)
@@ -612,7 +643,8 @@ async function ask(): Promise<void> {
   } catch {
     errorText.value = "网络连接失败，问题没有发出"
     turns.value = turns.value.filter((turn) => turn.clientMessageId !== clientMessageId)
-    question.value = text
+    question.value = typed
+    attachment.value = chart
   } finally {
     sending.value = false
     streaming.value = false
@@ -702,13 +734,113 @@ function stop(): void {
 }
 
 /** 重新生成：拿最近一条提问重新 POST，后端会按新的 client_message_id 存成新的一条。 */
-function regenerate(): void {
+async function regenerate(): Promise<void> {
   const asked = [...turns.value].reverse().find((turn) => turn.role === "user")
-  if (!asked) {
+  if (!asked || sending.value) {
     return
   }
   question.value = asked.content
+  if (asked.hasChart || asked.chartUrl) {
+    try {
+      attachment.value = await attachmentFromTurn(asked)
+    } catch {
+      errorText.value = "走势图没有重新附上，请再选一次图片"
+      return
+    }
+  }
   void ask()
+}
+
+function pickChart(): void {
+  chartFileEl.value?.click()
+}
+
+async function onChartPicked(event: Event): Promise<void> {
+  const input = event.target
+  if (!(input instanceof HTMLInputElement)) {
+    return
+  }
+  const file = input.files?.[0]
+  input.value = ""
+  if (!file) {
+    return
+  }
+  try {
+    const next = await prepareChartFile(file)
+    if (attachment.value) {
+      URL.revokeObjectURL(attachment.value.previewUrl)
+    }
+    attachment.value = next
+    errorText.value = ""
+  } catch (error) {
+    errorText.value = error instanceof Error ? error.message : "这张图无法使用"
+  }
+}
+
+function clearChart(): void {
+  if (attachment.value) {
+    URL.revokeObjectURL(attachment.value.previewUrl)
+  }
+  attachment.value = null
+}
+
+function revokeChartUrls(rows: Turn[]): void {
+  const keep = attachment.value?.previewUrl
+  for (const row of rows) {
+    if (row.chartUrl.startsWith("blob:") && row.chartUrl !== keep) {
+      URL.revokeObjectURL(row.chartUrl)
+    }
+  }
+}
+
+async function hydrateCharts(): Promise<void> {
+  const pending = turns.value.filter((turn) => turn.role === "user" && turn.hasChart && !turn.chartUrl)
+  await Promise.all(pending.map((turn) => attachChart(turn)))
+}
+
+async function attachChart(turn: Turn): Promise<void> {
+  if (!session.accessToken) {
+    return
+  }
+  const response = await authorizedFetch(
+    `/api/v1/assistant/charts/${turn.clientMessageId}`,
+    { method: "GET" },
+    session.accessToken,
+    refreshToken,
+  )
+  if (!response.ok) {
+    return
+  }
+  turn.chartUrl = URL.createObjectURL(await response.blob())
+}
+
+async function attachmentFromTurn(turn: Turn): Promise<ChartAttachment> {
+  const blob = turn.chartUrl
+    ? await fetch(turn.chartUrl).then((response) => response.blob())
+    : await fetchOwnedChart(turn.clientMessageId)
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  const mediaType = sniffChart(bytes)
+  if (!mediaType) {
+    throw new Error("走势图无法识别")
+  }
+  return {
+    mediaType,
+    dataBase64: bytesToBase64(bytes),
+    previewUrl: turn.chartUrl || URL.createObjectURL(blob),
+  }
+}
+
+async function fetchOwnedChart(clientMessageId: string): Promise<Blob> {
+  const response = await authorizedFetch(
+    `/api/v1/assistant/charts/${clientMessageId}`,
+    { method: "GET" },
+    session.accessToken,
+    refreshToken,
+  )
+  if (!response.ok) {
+    throw new Error("走势图不在了")
+  }
+  return response.blob()
 }
 
 const lastTurn = computed<Turn | null>(() => turns.value[turns.value.length - 1] ?? null)
@@ -1018,6 +1150,13 @@ onMounted(() => {
   void load()
   void loadSidebar()
 })
+
+onBeforeUnmount(() => {
+  revokeChartUrls(turns.value)
+  if (attachment.value) {
+    URL.revokeObjectURL(attachment.value.previewUrl)
+  }
+})
 </script>
 
 <template>
@@ -1025,7 +1164,7 @@ onMounted(() => {
     <PageHeader
       class="assistant-top"
       title="AI 智能投研助手"
-      subtitle="围绕已入库的宏观、行情与财报数据提问，回答可追溯到数据来源"
+      subtitle="围绕已入库数据提问；上传走势图时按读图技能分析，价位只是目测"
     >
       <template #actions>
         <StatusPill :text="modelLabel" :tone="modelTone" dot />
@@ -1128,7 +1267,10 @@ onMounted(() => {
                   />
                 </header>
 
-                <p v-if="turn.role === 'user'" class="doc-text user-text">{{ turn.content }}</p>
+                <template v-if="turn.role === 'user'">
+                  <img v-if="turn.chartUrl" class="chart-shot" :src="turn.chartUrl" alt="上传的走势图" />
+                  <p class="doc-text user-text">{{ turn.content }}</p>
+                </template>
 
                 <template v-else>
                   <ReplySteps :steps="turn.extras.steps" />
@@ -1165,6 +1307,11 @@ onMounted(() => {
           </div>
 
           <form class="composer" @submit.prevent="ask">
+            <div v-if="attachment" class="chart-chip">
+              <img :src="attachment.previewUrl" alt="待发送的走势图" />
+              <span>将按技能 chart 解读这张走势图</span>
+              <el-button size="small" text native-type="button" @click="clearChart">移除</el-button>
+            </div>
             <el-input
               ref="composerEl"
               v-model="question"
@@ -1172,17 +1319,30 @@ onMounted(() => {
               :rows="3"
               resize="none"
               maxlength="2000"
-              placeholder="输入问题，支持宏观、行业、公司、策略等多维度提问…"
+              :placeholder="attachment ? '可补充证券名称或周期，不写也会按技能解读' : '输入问题，支持宏观、行业、公司、策略等多维度提问…'"
               @keydown="onComposerKey"
             />
             <div class="composer-foot">
               <span class="muted hint">
                 <template v-if="errorText"><span class="error-line" role="status">{{ errorText }}</span></template>
-                <template v-else>Enter 发送 · Shift + Enter 换行</template>
+                <template v-else>Enter 发送 · 走势图按技能 chart 解读，不构成交易建议</template>
               </span>
               <div class="composer-right">
-                <el-button v-if="streaming" @click="stop">停止</el-button>
-                <el-button type="primary" native-type="submit" :loading="sending" :disabled="sending || !question.trim()">
+                <input
+                  ref="chartFileEl"
+                  class="file-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif"
+                  @change="onChartPicked"
+                />
+                <el-button native-type="button" :disabled="sending" @click="pickChart">走势图</el-button>
+                <el-button v-if="streaming" native-type="button" @click="stop">停止</el-button>
+                <el-button
+                  type="primary"
+                  native-type="submit"
+                  :loading="sending"
+                  :disabled="sending || !chartQuestion(question, attachment !== null)"
+                >
                   发送
                 </el-button>
               </div>
@@ -1585,10 +1745,41 @@ onMounted(() => {
   margin-top: 10px;
 }
 
+.chart-shot {
+  display: block;
+  max-width: min(100%, 420px);
+  max-height: 240px;
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  object-fit: contain;
+  background: var(--panel);
+}
+
 .composer {
   flex: none;
   border-top: 1px solid var(--line);
   padding: 12px 0 4px;
+}
+
+.chart-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.chart-chip img {
+  width: 72px;
+  height: 48px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.file-input {
+  display: none;
 }
 
 .composer-foot {

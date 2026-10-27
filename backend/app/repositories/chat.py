@@ -376,6 +376,22 @@ class ChatRepository:
                     assistant.finished_at = utc_now()
             return updated
 
+    def owns_client_message(self, user_id: UUID, client_message_id: UUID) -> bool:
+        """这张走势图的回合是否属于该用户。不存在和别人的回合都返回 False。"""
+
+        with Session(self.engine) as session:
+            found = session.scalar(
+                select(ChatMessage.id)
+                .join(ChatSession, ChatSession.id == ChatMessage.session_id)
+                .where(
+                    ChatSession.user_id == user_id,
+                    ChatMessage.client_message_id == client_message_id,
+                    ChatMessage.role == "user",
+                )
+                .limit(1)
+            )
+            return found is not None
+
     def count_assistant_turns_since(self, user_id: UUID, since: datetime) -> int:
         """该用户从 `since` 起的助手消息条数，每日额度据此判断（重启不清零）。"""
 

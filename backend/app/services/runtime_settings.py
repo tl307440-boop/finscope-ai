@@ -102,6 +102,18 @@ MANAGED: tuple[ManagedKey, ...] = (
         "gpt-4o-mini",
     ),
     ManagedKey(
+        "LLM_VISION_MODEL",
+        "llm_vision_model",
+        "读图模型名称",
+        "大模型",
+        False,
+        "text",
+        "AI 助手解读上传走势图时使用，必须支持图片输入。留空则用上面的大模型名称。"
+        "文本问答不会改用这个模型。",
+        "",
+        "gpt-4o-mini",
+    ),
+    ManagedKey(
         "ASSISTANT_ENABLED",
         "assistant_enabled",
         "启用 AI 助手（数据工具）",

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     llm_api_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
+    # 读走势图用的模型。留空则用 llm_model。该模型必须接受图片输入。
+    llm_vision_model: str = ""
     embedding_api_base_url: str = ""
     embedding_api_key: str = ""
     embedding_model: str = ""

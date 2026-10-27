@@ -61,6 +61,8 @@ class ToolModel(Protocol):
         tools: list[dict[str, Any]] | None,
         *,
         timeout: float,
+        read_seconds: float | None = None,
+        max_tokens: int = MAX_TOKENS,
     ) -> ModelReply: ...
 
 
@@ -89,18 +91,22 @@ class OpenAIToolModel:
         *,
         timeout: float,
         tool_choice: Any = "auto",
+        read_seconds: float | None = None,
+        max_tokens: int = MAX_TOKENS,
     ) -> ModelReply:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "temperature": 0,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "stream": True,
         }
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
-        budget = max(1.0, min(timeout, SINGLE_CALL_SECONDS))
+        # 读图要等第一张图的首字节，不能套用普通工具调用的 20 秒首字节上限。
+        cap = SINGLE_CALL_SECONDS if read_seconds is None else max(read_seconds, timeout)
+        budget = max(1.0, min(timeout, cap))
         started = time.monotonic()
         try:
             with self._client.stream(
@@ -111,7 +117,7 @@ class OpenAIToolModel:
                 timeout=httpx.Timeout(
                     budget,
                     connect=min(CONNECT_SECONDS, budget),
-                    read=min(FIRST_BYTE_SECONDS, budget),
+                    read=min(FIRST_BYTE_SECONDS if read_seconds is None else read_seconds, budget),
                 ),
             ) as response:
                 if response.status_code >= 400:

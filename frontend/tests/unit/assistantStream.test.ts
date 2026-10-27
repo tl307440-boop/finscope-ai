@@ -127,6 +127,12 @@ describe("读一条历史消息", () => {
   it("用户消息不带步骤和块", () => {
     const turn = parseTurn({ ...base, role: "user", content: "问题", blocks: [{ type: "notice" }] })
     expect(turn?.extras.blocks).toEqual([])
+    expect(turn?.hasChart).toBe(false)
+  })
+
+  it("带走势图的用户消息记下标记，图片另取", () => {
+    const turn = parseTurn({ ...base, role: "user", content: "看图", has_chart: true })
+    expect(turn?.hasChart).toBe(true)
   })
 
   it("缺 id、缺角色、正文不是字符串才丢弃", () => {

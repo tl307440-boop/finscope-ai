@@ -48,6 +48,8 @@ export interface ParsedTurn {
   content: string
   completionStatus: string
   extras: ReplyExtras
+  /** 用户那一条附了走势图。图片要另请求，历史接口只给这个标记。 */
+  hasChart: boolean
 }
 
 /**
@@ -71,6 +73,7 @@ export function parseTurn(value: Record<string, unknown>): ParsedTurn | null {
     content,
     completionStatus: asString(value.completion_status) ?? "",
     extras: role === "assistant" ? extrasFromMessage(value) : EMPTY_EXTRAS,
+    hasChart: value.has_chart === true,
   }
 }
 

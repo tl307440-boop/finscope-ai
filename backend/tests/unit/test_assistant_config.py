@@ -9,6 +9,7 @@ from pydantic import ValidationError
 def test_the_assistant_is_off_by_default_with_safe_budgets() -> None:
     settings = Settings()
     assert settings.assistant_enabled is False
+    assert settings.llm_vision_model == ""
     assert settings.assistant_max_steps == 4
     assert settings.assistant_fast_path is True
     assert settings.assistant_turn_seconds == 150.0
@@ -38,3 +39,5 @@ def test_a_running_turn_must_not_outlive_the_stale_cutoff() -> None:
 def test_the_switch_is_a_managed_runtime_setting() -> None:
     entry = next(item for item in MANAGED if item.key == "ASSISTANT_ENABLED")
     assert (entry.field, entry.kind, entry.secret) == ("assistant_enabled", "bool", False)
+    vision = next(item for item in MANAGED if item.key == "LLM_VISION_MODEL")
+    assert (vision.field, vision.kind, vision.secret) == ("llm_vision_model", "text", False)

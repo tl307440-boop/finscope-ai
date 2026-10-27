@@ -1,17 +1,20 @@
 from collections.abc import Callable
 from datetime import date, datetime
-from typing import Annotated, Any, cast
+from pathlib import Path
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine
 
 from app.api.deps import get_current_user
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.repositories.chat import ChatRepository, MessageRecord, SessionBusy, SessionRecord
+from app.services.assistant.chart_image import ChartRejected, chart_exists, decode_chart, load_chart
+from app.services.assistant.chart_skill import question_text
 from app.services.assistant.limits import AssistantLimiter
 from app.services.assistant.orchestrator import TurnRunner
 from app.services.assistant.responder import AssistantResponder
@@ -64,9 +67,17 @@ class SessionList(BaseModel):
     sessions: list[SessionItem]
 
 
+class ChartUpload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    media_type: Literal["image/png", "image/jpeg", "image/webp", "image/gif"]
+    data_base64: str = Field(min_length=16, max_length=8_000_000)
+
+
 class MessageCreate(BaseModel):
     client_message_id: UUID
-    content: str = Field(min_length=1, max_length=2000)
+    content: str = Field(default="", max_length=2000)
+    chart: ChartUpload | None = None
 
 
 class MessageItem(BaseModel):
@@ -81,6 +92,7 @@ class MessageItem(BaseModel):
     steps: list[dict[str, Any]] | None = None
     as_of: date | None = None
     grounding: str | None = None
+    has_chart: bool = False
 
 
 class MessageList(BaseModel):
@@ -105,7 +117,15 @@ def _responder(request: Request) -> Responder:
         registry=cast(ToolRegistry, state.assistant_registry),
         config=cast(AssistantConfig, state.assistant_config),
         legacy=_composer(engine),
+        chart_root=_upload_root(request),
     )
+
+
+def _upload_root(request: Request) -> Path:
+    override = getattr(request.app.state, "upload_root", None)
+    if isinstance(override, Path):
+        return override
+    return Path("data/uploads")
 
 
 def _turns(request: Request) -> TurnService:
@@ -184,7 +204,10 @@ def list_messages(
     rows = _repository(request).list_messages(user.id, session_id)
     if rows is None:
         raise AppError(code="NOT_FOUND", message="找不到这个问答", status_code=404)
-    return JSONResponse(status_code=200, content=success_response(request, _messages(rows)))
+    return JSONResponse(
+        status_code=200,
+        content=success_response(request, _messages(rows, user.id, _upload_root(request))),
+    )
 
 
 @router.post("/sessions/{session_id}/messages", summary="发送问题并流式返回已保存的回答")
@@ -195,12 +218,24 @@ def create_message(
     user: Annotated[UserRecord, Depends(get_current_user)],
 ) -> StreamingResponse:
     try:
+        chart = (
+            None
+            if body.chart is None
+            else decode_chart(body.chart.media_type, body.chart.data_base64)
+        )
+        text = question_text(body.content, has_chart=chart is not None)
+    except ChartRejected as exc:
+        raise AppError(code="VALIDATION_ERROR", message=exc.message, status_code=422) from exc
+    except ValueError as exc:
+        raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
+    try:
         events = _turns(request).start(
             user.id,
             session_id,
             body.client_message_id,
-            body.content,
+            text,
             _responder(request),
+            chart,
         )
     except ValueError as exc:
         raise AppError(code="VALIDATION_ERROR", message=str(exc), status_code=422) from exc
@@ -219,6 +254,25 @@ def create_message(
         events,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/charts/{client_message_id}", summary="读取我上传的走势图")
+def get_chart(
+    client_message_id: UUID,
+    request: Request,
+    user: Annotated[UserRecord, Depends(get_current_user)],
+) -> Response:
+    if not _repository(request).owns_client_message(user.id, client_message_id):
+        raise AppError(code="NOT_FOUND", message="找不到这张走势图", status_code=404)
+    loaded = load_chart(_upload_root(request), user.id, client_message_id)
+    if loaded is None:
+        raise AppError(code="NOT_FOUND", message="找不到这张走势图", status_code=404)
+    data, media_type = loaded
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
     )
 
 
@@ -288,7 +342,7 @@ def _sessions(rows: list[SessionRecord]) -> SessionList:
     return SessionList(sessions=[_session(row) for row in rows])
 
 
-def _messages(rows: list[MessageRecord]) -> MessageList:
+def _messages(rows: list[MessageRecord], user_id: UUID, root: Path) -> MessageList:
     return MessageList(
         messages=[
             MessageItem(
@@ -302,6 +356,7 @@ def _messages(rows: list[MessageRecord]) -> MessageList:
                 steps=row.steps,
                 as_of=row.as_of,
                 grounding=row.grounding,
+                has_chart=row.role == "user" and chart_exists(root, user_id, row.client_message_id),
             )
             for row in rows
         ]
