@@ -56,8 +56,9 @@ def test_rejects_wrong_type_text_and_oversized_payloads(kind: str) -> None:
     elif kind == "html":
         media_type, payload = "image/png", base64.b64encode(b"<html>not a chart").decode("ascii")
     elif kind == "oversize":
-        media_type, payload = "image/png", base64.b64encode(PNG + b"\x00" * MAX_CHART_BYTES).decode(
-            "ascii"
+        media_type, payload = (
+            "image/png",
+            base64.b64encode(PNG + b"\x00" * MAX_CHART_BYTES).decode("ascii"),
         )
     else:
         media_type, payload = "image/png", "!!!!"
