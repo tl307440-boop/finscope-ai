@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID
 
 from app.repositories.chat import ChatRepository, TurnExists, TurnExtras
+from app.services.assistant.chart_image import ChartImage
 from app.services.assistant.limits import AssistantLimiter, daily_denial, shanghai_day_start
 from app.services.assistant.orchestrator import Emit, TurnOutcome, TurnRunner
 from app.services.assistant.sse import replay_events
@@ -62,6 +63,7 @@ class TurnInput:
     session_id: UUID
     client_message_id: UUID
     question: str
+    chart: ChartImage | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,7 @@ class TurnService:
         client_message_id: UUID,
         question: str,
         respond: Responder,
+        chart: ChartImage | None = None,
     ) -> Iterator[str]:
         """受理一问并返回事件迭代器。
 
@@ -132,7 +135,7 @@ class TurnService:
             self._limiter.finish(user_id)
             raise SessionNotFound
 
-        turn = TurnInput(user_id, session_id, client_message_id, text)
+        turn = TurnInput(user_id, session_id, client_message_id, text, chart)
 
         def job(emit: Emit) -> TurnOutcome:
             return self._run(turn, respond, emit)
