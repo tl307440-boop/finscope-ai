@@ -76,8 +76,8 @@ export const routes = [
   { path: "/industry/board/:code", name: "industry-board", component: () => import("../views/IndustryBoardView.vue"), props: true },
   { path: "/industry/:id", name: "industry-detail", component: () => import("../views/IndustryDetailView.vue"), props: true },
 
-  // 热点（P2）
-  { path: "/hotspots", name: "hotspots", component: () => import("../views/HotspotsView.vue") },
+  // 热点（已合并至市场行情）
+  { path: "/hotspots", redirect: "/market/indices" },
 
   // AI 问答（P1）
   { path: "/assistant", name: "assistant", component: () => import("../views/AssistantView.vue"), meta: { requiresAuth: true } },
