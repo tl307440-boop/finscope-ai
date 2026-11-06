@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.ashare_panorama import router as ashare_panorama_router
 from app.api.v1.assistant import router as assistant_router
 from app.api.v1.auth import me_router
 from app.api.v1.auth import router as auth_router
@@ -18,6 +19,7 @@ from app.api.v1.industry_market import router as industry_market_router
 from app.api.v1.instruments import router as instrument_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.jobs import router as job_router
+from app.api.v1.jygs_login import router as jygs_login_router
 from app.api.v1.macro import router as macro_router
 from app.api.v1.market import router as market_router
 from app.api.v1.metrics import router as metrics_router
@@ -34,6 +36,7 @@ router.include_router(industry_market_router)
 router.include_router(custom_analysis_router)
 router.include_router(macro_router)
 router.include_router(market_router)
+router.include_router(ashare_panorama_router)
 router.include_router(research_board_router)
 router.include_router(simulation_router)
 router.include_router(filing_router)
@@ -45,6 +48,7 @@ router.include_router(auth_router)
 router.include_router(me_router)
 router.include_router(admin_router)
 router.include_router(integrations_router)
+router.include_router(jygs_login_router)
 router.include_router(analysis_router)
 router.include_router(assistant_router)
 router.include_router(watchlist_router)

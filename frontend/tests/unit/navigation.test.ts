@@ -36,6 +36,26 @@ describe("路由守卫", () => {
     expect(router.currentRoute.value.name).toBe("data-center")
   })
 
+  it("市场行情的四个模块都已注册，且不要求登录", () => {
+    // 只检查路由表，不真正挂载页面（页面依赖图表库，加载很慢）
+    const router = createRouter({ history: createMemoryHistory(), routes })
+    for (const [path, name] of [
+      ["/market/indices", "market-indices"],
+      ["/market/dragon-tiger", "market-dragon-tiger"],
+      ["/market/ladder", "market-ladder"],
+      ["/market/news", "market-news"],
+    ] as const) {
+      const resolved = router.resolve(path)
+      expect(resolved.name).toBe(name)
+      expect(resolved.meta.requiresAuth).toBeFalsy()
+    }
+  })
+
+  it("旧的热点页地址重定向到热点消息", () => {
+    const record = routes.find((r) => r.path === "/hotspots")
+    expect(record?.redirect).toBe("/market/news")
+  })
+
   it("公开运行状态页不要求登录", () => {
     expect(decideNavigation({ fullPath: "/", meta: {} }, { authenticated: false, role: null })).toBe(true)
   })

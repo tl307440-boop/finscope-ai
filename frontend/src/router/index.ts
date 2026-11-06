@@ -36,6 +36,9 @@ export const routes = [
 
   // 市场行情（P0/P1）
   { path: "/market/indices", name: "market-indices", component: () => import("../views/MarketIndicesView.vue") },
+  { path: "/market/dragon-tiger", name: "market-dragon-tiger", component: () => import("../views/DragonTigerView.vue") },
+  { path: "/market/ladder", name: "market-ladder", component: () => import("../views/LimitLadderView.vue") },
+  { path: "/market/news", name: "market-news", component: () => import("../views/HotNewsView.vue") },
   { path: "/market/sectors", name: "market-sectors", component: () => import("../views/MarketSectorsView.vue") },
   { path: "/market/stocks/:symbol", name: "market-stock", component: () => import("../views/QuotesView.vue"), props: true },
 
@@ -77,7 +80,7 @@ export const routes = [
   { path: "/industry/:id", name: "industry-detail", component: () => import("../views/IndustryDetailView.vue"), props: true },
 
   // 热点（已合并至市场行情）
-  { path: "/hotspots", redirect: "/market/indices" },
+  { path: "/hotspots", redirect: "/market/news" },
 
   // AI 问答（P1）
   { path: "/assistant", name: "assistant", component: () => import("../views/AssistantView.vue"), meta: { requiresAuth: true } },

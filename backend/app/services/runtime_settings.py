@@ -176,6 +176,27 @@ MANAGED: tuple[ManagedKey, ...] = (
         "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     ),
     ManagedKey(
+        "JYGS_SESSION",
+        "jygs_session",
+        "韭研公社登录会话（SESSION）",
+        "A 股行情",
+        True,
+        "text",
+        "韭研公社「异动解析」需要登录。推荐在「连板分析」页的韭研面板点「扫码登录」，登录后自动写入这里；"
+        "也可以手动粘贴浏览器里 web-api.jiuyangongshe.com 域的 SESSION Cookie。约两周过期。",
+    ),
+    ManagedKey(
+        "JYGS_SESSION_EXPIRES",
+        "jygs_session_expires",
+        "韭研会话到期时间（自动写入）",
+        "A 股行情",
+        False,
+        "text",
+        "扫码登录时由系统写入（UTC，ISO 格式），用于提前提醒；手动粘贴会话时可以不填。",
+        "",
+        "2026-11-20T08:00:00+00:00",
+    ),
+    ManagedKey(
         "ALLOW_REGISTRATION",
         "allow_registration",
         "开放注册",

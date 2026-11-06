@@ -19,7 +19,12 @@ import SourceFooter from "../components/ui/SourceFooter.vue"
 import StatCard from "../components/ui/StatCard.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
-import HotspotsSection from "./parts/market/HotspotsSection.vue"
+import MarketSplitLayout from "../components/market/MarketSplitLayout.vue"
+import FuturesPositionPanel from "./parts/market/FuturesPositionPanel.vue"
+import GlobalCoreStrip from "./parts/market/GlobalCoreStrip.vue"
+import LeadingSectorsPopularPanel from "./parts/market/LeadingSectorsPopularPanel.vue"
+import SentimentBreadthPanel from "./parts/market/SentimentBreadthPanel.vue"
+import VolumeMarginPanel from "./parts/market/VolumeMarginPanel.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { adjustmentLabel, volumeUnitLabel } from "../api/bars"
 import type { DailyBar } from "../api/bars"
@@ -525,8 +530,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <PageHeader title="市场行情" subtitle="A 股主要指数日线 · 缺失交易日不补价格">
+  <MarketSplitLayout>
+    <PageHeader title="市场行情" subtitle="全球指数 · 短线情绪 · 量能两融 · 期指持仓 · 板块人气 · A 股指数日线">
       <template #actions>
         <span class="filter-label">时间范围</span>
         <el-date-picker
@@ -544,6 +549,12 @@ onMounted(() => {
         <el-button :loading="loading" @click="load">刷新</el-button>
       </template>
     </PageHeader>
+
+    <GlobalCoreStrip />
+    <SentimentBreadthPanel />
+    <VolumeMarginPanel />
+    <FuturesPositionPanel />
+    <LeadingSectorsPopularPanel />
 
     <StateBlock v-if="phase === 'error'" state="error" :message="errorMessage" @retry="load" />
 
@@ -762,10 +773,8 @@ onMounted(() => {
         :stale="meta.stale"
         :note="demoMode ? `当前为${dataModeText(meta.dataMode)}` : '缺失交易日不补价格，页面不承诺实时'"
       />
-
-      <HotspotsSection />
     </template>
-  </div>
+  </MarketSplitLayout>
 </template>
 
 <style scoped>

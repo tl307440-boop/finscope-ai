@@ -2508,3 +2508,78 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 - 新浪行业榜和概念榜只失败一边时，工具仍返回另一边，但说明里不会点名是哪一边失败。
 - 技能只约束模型怎么说；没有用真实模型回放「一家快讯失败后再看热榜和板块」。
 - 上面四家登录之后才能继续看它们自己的页面请求。登录前不接。
+
+## 2026-11-06 市场行情四模块：真实数据全景看板（全景行情 / 龙虎榜 / 连板 / 热点消息）
+
+### 本轮范围
+
+把「市场行情」扩成四个模块，并加右侧个股详情联动面板。**只用真实数据**：上游抓不到的字段为空，界面显示「—」或「暂无数据」，原因写在 `meta.unavailable`；没有任何模拟兜底。
+
+### 变更
+
+- 后端（`/api/v1/ashare/*`，9 个接口，无需登录）：`providers/ashare_panorama.py`（上游地址、请求头、财联社签名）、`schemas/ashare_panorama.py`、`services/ashare_calc.py`（纯计算）、`services/ashare_panorama.py`（取数与缓存）、`api/v1/ashare_panorama.py`。
+- 前端：`api/aSharePanorama.ts` 重写为纯取数层（删除全部本地假数据与浏览器直连东财），新增 `aShareFormat.ts`、`usePanoramaResource.ts`、`dragonTigerGrouping.ts`；新增 `DragonTigerView`、`LimitLadderView`、`HotNewsView`、`LeadingSectorsPopularPanel`、`MarketSplitLayout`、`PanoramaStatusBar`；改造 `GlobalCoreStrip`、`SentimentBreadthPanel`、`VolumeMarginPanel`、`FuturesPositionPanel`、`StockDetailPanel`、`MarketModuleTabs`、`MarketIndicesView`；`/hotspots` 重定向到 `/market/news`。
+- 修复遗留：半成品里 `marketLinkage.ts`、`SeatManagerDrawer.vue`、`StockDetailPanel.vue` 用 `roleTag/styleSummary/watched`，而 `hotMoneySeatsConfig.ts` 是 `category/styleTag`，整个前端编译不过。统一为 `category/styleTag/watched`，本地存储键升到 `finscope.hotMoneySeats.v2`。
+- 删除了原来写死的结论文案（如“亏钱效应处于可控低位”“流动性充沛”）和写死的联动标的（利欧股份等），改成按数据的中性说明；默认选中股由真实数据决定（人气第一 / 最高连板）。
+- 席位字典：23 组（19 位知名游资 + 拉萨天团 + 重点观察/量化 + 外资 + 机构专用），**根据公开资料整理，需要你审阅**；可在「席位管理」里增删。
+
+### 口径与限制（如实标注）
+
+- 晋级率 = 昨日 N 板股今日继续涨停；断板率 = 1 − 整体晋级率；溢价率 = 昨日涨停/连板股今日平均涨跌幅。冲高回落 / 探底回升 = 日内振幅与收盘差 ≥ 10 个百分点。
+- 成交量能用沪深京指数成交额口径；11:30 午盘额来自分时数据；两融“日变动”是余额差，不是净买入，T+1 披露。
+- 期指持仓是中金所各品种榜内席位（前 20）跨月份合约合并，不是全部机构。
+- 热点消息的影响级别与利好/利空/催化是来源重要度 + 关键词规则，仅用于快速筛选。
+- 龙虎榜收盘后（约 17:00）才公布；个股详情里的席位若不是当日，会标「最近一次上榜 日期」。
+- `NOT_IMPLEMENTED`：开盘啦未接入（见下方「韭研公社 / 开盘啦逆向」）；昨日炸板溢价率没有历史序列。韭研公社已在后续小节接入。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_ashare_panorama.py` | 17 通过 |
+| `backend`: `ruff check` / `mypy`（本轮新增文件） | 通过 |
+| `frontend`: `npm run typecheck` | 通过（0 错误） |
+| `frontend`: `npm run build` | 通过 |
+| `frontend`: `vitest run tests/unit/navigation.test.ts tests/unit/dragonTigerGrouping.test.ts` | 16 通过 |
+| `frontend`: `vitest run`（全量） | 381 通过，1 失败：`SimWhatIf.test.ts`（模拟推演的另一条未提交改动，与本轮无关） |
+| 真机浏览器（有头窗口）逐页打开 4 个模块，数据来自真实上游，点击个股联动右侧面板，席位标签跳转龙虎榜 | 通过 |
+
+## 2026-11-06（续）韭研公社 / 开盘啦逆向
+
+### 韭研公社（已接入，需登录态）
+
+- 逆向：网页 Nuxt 前端的接口 `POST web-api.jiuyangongshe.com/jystock-app/api/v1/<path>` 要带 `platform: 3`、`timestamp`（UTC 秒级）、`token`。token 的算法已还原：页面里 `window.__NUXT__` 的 `digest` 用固定密钥 `jiuyangongsheweb`（AES-128-CBC，iv 同密钥）解出时间窗表，当前窗口为 AES 时 token = AES-128-CBC(key=窗口密钥, iv=窗口密钥, "jiuyangongshe"+窗口密钥+timestamp).hex()。用浏览器抓到的 token 对照验证过。窗口表里另有 HMAC / MD5 窗口，没抓到样本，**不猜**：遇到时报「暂不支持」。
+- 匿名可用：`article/rank-board`（热搜股）、`timeline/news`（时间线快讯）；本轮没有接入这两个（公开源已覆盖）。
+- 异动解析 `action/count-pc`、`action/field`、`action/list` 需要登录：请求带 `web-api.jiuyangongshe.com` 域的 `SESSION` Cookie（微信扫码登录后获得，约两周过期）。没有账号密码登录方式。
+- 接入：`providers/jygs.py`（签名、请求头、信封校验）、`services/jygs.py`（时间窗缓存 6 小时、`action/field` 取数与解析，价格单位分、涨幅为百分比 ×100，已换算；没有首封时间且涨幅为 0 视为缺失）、`ASharePanoramaService.jygs_actions()` 与 `GET /api/v1/ashare/jygs-actions?date=`。个股详情新增 `actionSector / actionSectorReason / actionExplain`，连板梯队新增 `actionSector`（涨停原因为空时作兜底显示）。前端：`JygsActionsPanel`（连板分析页底部，按板块展开）与个股详情的「韭研公社异动解析」块。
+- 登录态放本机 `backend/.env` 的 `JYGS_SESSION`（`.env` 已被 `.gitignore` 忽略；`.env.example` 只有空项）。没配置时只写一条说明、不发请求；登录失效写进 `meta.unavailable`（错误码 502，避免前端把 401 当成本站登录过期）。SESSION 值不进日志；后续改进后改为加密入库（见下「改进」小节）。
+- 韭研通常在交易日 12:00 后才发布当天内容；之前为空，页面如实显示「暂无」。
+
+#### 改进：站内扫码登录、加密存库、到期提醒
+
+微信扫码无法完全自动化（必须有人在手机上确认），所以把"手改 `.env`"换成站内流程：
+
+- 会话改为运行时设置：`JYGS_SESSION`（密文）和 `JYGS_SESSION_EXPIRES`（到期时间）加入 `runtime_settings.MANAGED`，加密存 `app_settings` 表，优先于 `.env`（`.env` 仍作兜底），5 秒内生效不用重启；管理员的「密钥与数据源配置」里可手动粘贴并「测试连接」（`integration_probe` 用签名 + `count-pc` 校验）。
+- 站内扫码：`services/jygs_login.py`（`JygsLoginManager`）走 `user/login/wx-pc` → 微信 `qrconnect` 页取二维码 → 长轮询 `lp.open.weixin.qq.com`（408 等待 / 404 已扫 / 405 已确认 / 402 过期 / 403 取消）→ 用 `wx_code` 回调拿 `SESSION` Cookie → `count-pc` 校验后保存；到期时间取 Cookie 的 `expires`。接口 `POST /api/v1/admin/jygs-login`（返回二维码 data URL）、`GET /api/v1/admin/jygs-login/{id}`（进度），仅管理员；保存成功后清空韭研相关缓存。
+- 到期提醒：`GET /api/v1/ashare/jygs-status` 返回 `not_configured / ok / expiring（≤3 天）/ expired / unknown` 与剩余天数（探测结果缓存 5 分钟）；只返回状态，不返回会话值。
+- 前端：`JygsActionsPanel` 在非 ok 状态显示提示条；管理员有「扫码登录」按钮，打开 `JygsLoginDialog`（1.5 秒轮询，过期 / 取消 / 失败可重新获取二维码），非管理员提示联系管理员。
+- 真机验证：独立脚本驱动 `JygsLoginManager` 走完真实扫码（waiting → scanned → 保存成功，到期时间 = 登录后 15 天），随后 `jygs_status()` 返回 `ok`、剩余 14 天，`jygs_actions()` 取到 9 个板块。
+- 未验证：站内弹窗与管理员接口没有在真机上点过——开发库密码校验失败，拿不到管理员登录；这两处只有类型检查与接口层测试。
+
+### 开盘啦（未接入，`BLOCKED`）
+
+- App 接口 `POST apphq.longhuvip.com/w1/api/index.php` 匿名可用的只有板块榜：`c=ZhiShuRanking&a=RealRankingInfo&PhoneOSNew=2&apiv=w31&VerSion=5.11.0.1` 加 `ZSType=7|4`（板块 / 概念）。这部分公开源已覆盖，不接。
+- 连板、涨停原因类接口（如 `c=HomeDingPan&a=DaBanList`）返回的内容被替换成 `longhuvip.com`。用手机开盘啦 App 扫官网二维码登录后拿到了网页端的 `UserID` / `token`（Cookie `user_UserID`、`user_token`），带上去重试，仍然是占位文本，说明网页端会话换不到这类 App 数据。
+- 官网 www.kaipanla.com 的前端脚本里一共只有 14 个接口（`ForumsMsgJX`、`PCNewsFlash`、`Theme/InfoIntr`、`CompanyNotice`、`AnnouncementList` 等），是资讯 / 研报 / 公告 / 题材简介站，没有连板、涨停原因、竞价这类行情数据；主机为 `pcarticle` / `pclhb` / `pchis` / `login.kaipanla.com`。
+- 结论：开盘啦网页端没有本项目需要的字段，App 端需要 App 自己的设备令牌，我没有伪造。保持 `BLOCKED`，不接入；涨停原因由同花顺 + 韭研公社覆盖。登录探测用的浏览器配置和 Cookie 已删除。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_jygs.py`（15 条：签名往返、非 AES 窗口拒绝、过期窗口、信封、单位换算、服务层三条路径、扫码流程四种结果、状态与不泄漏） | 通过 |
+| `backend`: `pytest tests/unit` 全量 | 通过 |
+| `backend`: `ruff check` / `ruff format --check` / `mypy app` | 本轮文件通过；`ruff check` 仍有一条与本轮无关的 `services/assistant/tools/simulation.py` E501 |
+| `frontend`: `vue-tsc --noEmit` | 通过 |
+| `frontend`: `vitest run tests/unit/jygsActions.test.ts` | 4 通过；全量仍只有无关的 `SimWhatIf.test.ts` 1 个失败 |
+| 真机（有头 Chrome）连板分析页：韭研面板 9 个板块 / 35 只，与韭研官网页面的「全部异动解析 · 35」一致；点击个股后右侧详情出现异动解析正文 | 通过 |
