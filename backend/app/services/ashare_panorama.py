@@ -12,16 +12,18 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time
 from time import monotonic
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import get_settings
 from app.providers import ashare_panorama as src
 from app.providers import eastmoney_boards as em
 from app.providers import eastmoney_sentiment as es
+from app.providers import sina_market as sina
 from app.providers import tencent_quote as tq
 from app.providers.errors import ProviderError
 from app.schemas.ashare_panorama import (
@@ -32,6 +34,9 @@ from app.schemas.ashare_panorama import (
     FuturesRow,
     GlobalQuote,
     GlobalQuotesPayload,
+    IndexDailyBar,
+    IndexDetailPayload,
+    IndexIntradayPoint,
     IntradayPoint,
     JygsActionsPayload,
     JygsSector,
@@ -87,6 +92,11 @@ _GLOBAL: tuple[tuple[str, str, str, str, str], ...] = (
     ("101.GC00Y", "GC00Y", "COMEX黄金", "黄金", "大宗商品"),
     ("102.CL00Y", "CL00Y", "NYMEX原油", "原油", "大宗商品"),
 )
+_NEW_YORK = ZoneInfo("America/New_York")
+_INDEX_BARS = 90
+_INDEX_QUOTE_FIELDS = "f2,f3,f4,f6,f12,f13,f14,f15,f16,f17,f18"
+# 外盘期货主连在新浪的品种代码（腾讯没有期货分时 / 日 K，日 K 只能靠新浪兜底）。
+_SINA_FUTURES = {"101.GC00Y": "GC", "102.CL00Y": "CL"}
 # 成交额用市场口径指数：上证指数≈沪市，深证成指/深证综指≈深市，北证50≈北交所，创业板综、科创综指。
 _VOLUME_INDEXES: tuple[tuple[str, str, str], ...] = (
     ("sh", "上证市场", "1.000001"),
@@ -384,7 +394,9 @@ class ASharePanoramaService:
         acc.source(source)
         return cached.value
 
-    async def _tencent_quotes(self, acc: _Acc, secids: list[str]) -> dict[str, calc.Doc]:
+    async def _tencent_quotes(
+        self, acc: _Acc, secids: list[str], ttl: int | None = None
+    ) -> dict[str, calc.Doc]:
         """用腾讯报价补东财 ulist 取不到的行（键名、键格式与 `parse_ulist` 一致）。"""
 
         codes = {code: secid for secid in secids if (code := tq.tencent_code(secid))}
@@ -396,7 +408,7 @@ class ASharePanoramaService:
             return tq.parse_quotes(await self.gateway.get(tq.quote_url(ordered), tq.HEADERS))
 
         quotes = await self._tencent(
-            acc, f"报价:{','.join(ordered)}", self._ttl(), load, "腾讯财经 行情"
+            acc, f"报价:{','.join(ordered)}", ttl or self._ttl(), load, "腾讯财经 行情"
         )
         if not quotes:
             return {}
@@ -407,7 +419,7 @@ class ASharePanoramaService:
         }
 
     async def _quotes(
-        self, acc: _Acc, label: str, secids: list[str], fields: str
+        self, acc: _Acc, label: str, secids: list[str], fields: str, ttl: int | None = None
     ) -> dict[str, calc.Doc]:
         out: dict[str, calc.Doc] = {}
         unique = list(dict.fromkeys(secids))
@@ -418,13 +430,14 @@ class ASharePanoramaService:
                 label,
                 src.ulist_url(batch, fields),
                 src.EM_HEADERS,
+                ttl=ttl,
                 source="东方财富 行情",
             )
             if doc is not None:
                 out.update(calc.parse_ulist(calc.as_doc(doc)))
                 continue
             # 东财 push2 在部分机房连不上：改用腾讯报价；腾讯也取不到时保留东财的失败原因。
-            fallback = await self._tencent_quotes(acc, batch)
+            fallback = await self._tencent_quotes(acc, batch, ttl)
             if fallback:
                 acc.unavailable.pop(label, None)
                 out.update(fallback)
@@ -492,6 +505,165 @@ class ASharePanoramaService:
             meta=acc.meta(
                 self._local().date().isoformat(), "intraday" if self._live() else "close"
             ),
+        )
+
+    # ───────────── 1b. 指数 / 商品详情：行情头 + 分时 + 日 K ─────────────
+
+    def _index_live(self, secid: str) -> bool:
+        """该品种所在市场此刻是否在交易（只看星期与钟点，不管节假日）。"""
+
+        if secid.startswith(("0.", "1.")):
+            return self._live()
+        if secid == "100.HSI":
+            local = self._local()
+            return local.weekday() < 5 and time(9, 15) <= local.time() <= time(16, 10)
+        ny = self.now().astimezone(_NEW_YORK)
+        weekday, clock = ny.weekday(), ny.time()
+        if secid.startswith("100."):
+            return weekday < 5 and time(9, 30) <= clock <= time(16, 5)
+        # 外盘期货：美东周日 18:00 开盘到周五 17:00 收盘，每天 17:00–18:00 休市。
+        if weekday == 5 or (weekday == 6 and clock < time(18, 0)):
+            return False
+        if weekday == 4 and clock >= time(17, 0):
+            return False
+        return not time(17, 0) <= clock < time(18, 0)
+
+    def _market_day(self, secid: str) -> str:
+        if secid == "100.HSI" or secid.startswith(("0.", "1.")):
+            return self._local().date().isoformat()
+        return self.now().astimezone(_NEW_YORK).date().isoformat()
+
+    async def index_detail(self, raw_code: str) -> IndexDetailPayload:
+        """点击全球指数卡片后的详情：现价与开高低收、分时、近 90 根日 K。
+
+        东财优先，push2 / push2his 不可达时回退腾讯（A 股 / 港股 / 美股指数分时与日 K）；
+        黄金、原油腾讯没有分时与日 K，日 K 再回退新浪，分时留空并写明原因。
+        """
+
+        secid, _short, symbol, name, category = _index_row(raw_code)
+        acc = _Acc()
+        commodity = secid in _SINA_FUTURES
+        live = self._index_live(secid)
+        ttl = _TTL_LIVE if live else _TTL_IDLE
+        quotes, trend_doc, kline_doc = await asyncio.gather(
+            self._quotes(acc, "指数行情", [secid], _INDEX_QUOTE_FIELDS, ttl),
+            self._doc(
+                acc,
+                "指数分时",
+                src.trends_url(secid),
+                src.EM_HEADERS,
+                ttl=ttl,
+                source="东方财富 分时",
+            ),
+            self._doc(
+                acc,
+                "指数日K",
+                src.daily_kline_url(secid, _INDEX_BARS),
+                src.EM_HEADERS,
+                ttl=120 if live else _TTL_IDLE,
+                source="东方财富 日K",
+            ),
+        )
+        quote = quotes.get(secid, {})
+        price = calc.num(quote.get("f2"))
+        if price is None:
+            acc.unavailable.setdefault("指数行情", "该来源暂无行情")
+
+        intraday, minute_day = _em_index_points(trend_doc)
+        if not intraday:
+            reason = acc.unavailable.get("指数分时") or "东方财富暂无分时数据"
+            if commodity:
+                acc.unavailable["指数分时"] = (
+                    f"{reason}；腾讯财经没有 COMEX / NYMEX 期货分时接口，分时暂不可用"
+                )
+            else:
+                minutes = await self._tencent_minutes(acc, secid, ttl=ttl)
+                intraday = _tencent_index_points(minutes, secid) if minutes else []
+                minute_day = minutes.day if minutes and intraday else None
+                if intraday:
+                    acc.unavailable.pop("指数分时", None)
+                else:
+                    acc.unavailable["指数分时"] = f"{reason}；腾讯财经分时也取不到"
+
+        daily = _em_index_bars(kline_doc)
+        if not daily:
+            reason = acc.unavailable.get("指数日K") or "东方财富暂无日K数据"
+            if commodity:
+                daily = await self._sina_futures_daily(acc, _SINA_FUTURES[secid])
+                if daily:
+                    acc.notes.append("新浪全球期货日K不含成交量，日K成交量为空。")
+            else:
+                daily = await self._tencent_index_daily(acc, tq.tencent_code(secid))
+            if daily:
+                acc.unavailable.pop("指数日K", None)
+            else:
+                tail = "新浪财经" if commodity else "腾讯财经"
+                acc.unavailable["指数日K"] = f"{reason}；{tail}日K也取不到"
+
+        trade_day = minute_day or (daily[-1].date if daily else None)
+        session: Session = "unknown"
+        if trade_day is not None:
+            on_today = commodity or trade_day == self._market_day(secid)
+            session = "intraday" if live and on_today else "close"
+        if category == "大宗商品":
+            acc.notes.append("取 COMEX 黄金 / NYMEX 原油主连合约，成交量为合约张数。")
+        elif category == "海外指数":
+            acc.notes.append(
+                "分时时间统一为北京时间（美股由美东时间换算）；"
+                "成交量口径随来源而异（东财 / 腾讯不同），只宜看相对量能。"
+            )
+        else:
+            acc.notes.append("成交量单位为手。")
+        return IndexDetailPayload(
+            code=symbol,
+            name=name,
+            category=category,  # type: ignore[arg-type]
+            price=price,
+            change=calc.num(quote.get("f4")),
+            changePct=calc.num(quote.get("f3")),
+            open=calc.num(quote.get("f17")),
+            high=calc.num(quote.get("f15")),
+            low=calc.num(quote.get("f16")),
+            preClose=calc.num(quote.get("f18")),
+            amountYuan=calc.num(quote.get("f6")) or None,
+            intraday=intraday,
+            dailyBars=daily,
+            meta=acc.meta(trade_day, session),
+        )
+
+    async def _tencent_index_daily(self, acc: _Acc, tcode: str | None) -> list[IndexDailyBar]:
+        """指数日 K：腾讯不复权日 K，多取一根用来算第一根的涨跌幅。"""
+
+        if tcode is None:
+            return []
+        bars = await self._tencent_daily(acc, tcode, _INDEX_BARS + 1)
+        return _with_change(
+            [
+                IndexDailyBar(
+                    date=b.day,
+                    open=b.open,
+                    close=b.close,
+                    low=b.low,
+                    high=b.high,
+                    volume=b.volume if b.volume > 0 else None,
+                )
+                for b in bars or []
+            ]
+        )
+
+    async def _sina_futures_daily(self, acc: _Acc, symbol: str) -> list[IndexDailyBar]:
+        async def load() -> list[sina.FuturesBar]:
+            payload = await self.gateway.get(sina.futures_daily_url(symbol), sina.SINA_HEADERS)
+            return sina.parse_futures_daily(payload)[-(_INDEX_BARS + 1) :]
+
+        bars: list[sina.FuturesBar] | None = await self._tencent(
+            acc, f"新浪期货日K:{symbol}", 600, load, "新浪财经 期货日K"
+        )
+        return _with_change(
+            [
+                IndexDailyBar(date=b.day, open=b.open, close=b.close, low=b.low, high=b.high)
+                for b in bars or []
+            ]
         )
 
     # ───────────── 2. 短线情绪 ─────────────
@@ -830,7 +1002,7 @@ class ASharePanoramaService:
         )
 
     async def _tencent_minutes(
-        self, acc: _Acc, secid: str, is_secid: bool = True
+        self, acc: _Acc, secid: str, is_secid: bool = True, ttl: int | None = None
     ) -> tq.Minutes | None:
         code = tq.tencent_code(secid) if is_secid else secid
         if code is None:
@@ -840,7 +1012,7 @@ class ASharePanoramaService:
             return tq.parse_minutes(await self.gateway.get(tq.minute_url(code), tq.HEADERS), code)
 
         minutes: tq.Minutes | None = await self._tencent(
-            acc, f"分时:{code}", self._ttl(), load, "腾讯财经 分时"
+            acc, f"分时:{code}", ttl or self._ttl(), load, "腾讯财经 分时"
         )
         return minutes
 
@@ -1963,6 +2135,109 @@ def _dedupe(items: list[NewsItem]) -> list[NewsItem]:
         if key and key not in seen:
             seen[key] = item
     return sorted(seen.values(), key=lambda i: i.timestamp, reverse=True)
+
+
+# ───────────── 指数 / 商品详情解析（模块级，便于离线测试） ─────────────
+
+
+def _index_row(raw_code: str) -> tuple[str, str, str, str, str]:
+    """按全球核心指数列表里的代码（如 `000001.SH`、`COMEX黄金`）找品种；找不到 404。"""
+
+    key = raw_code.strip().upper()
+    for row in _GLOBAL:
+        if row[2].upper() == key:
+            return row
+    raise ProviderError(code="NOT_FOUND", message="没有找到这个指数或商品", status_code=404)
+
+
+def _em_index_points(doc: Any | None) -> tuple[list[IndexIntradayPoint], str | None]:
+    """东财分时（ndays=1，整段都是当前交易日；美股跨北京时间午夜，所以不按日期再截）。
+
+    东财均价取 0 表示没有（开盘第一分钟），记为空；全程成交量为 0 说明该品种不给量，记为空。
+    """
+
+    if doc is None:
+        return [], None
+    rows = calc.parse_trends(calc.as_doc(doc)).rows
+    has_volume = any(row.volume > 0 for row in rows)
+    points = [
+        IndexIntradayPoint(
+            time=row.clock,
+            price=row.price,
+            avgPrice=row.avg if row.avg > 0 else None,
+            volume=row.volume if has_volume else None,
+        )
+        for row in rows
+    ]
+    return points, (rows[0].day if rows else None)
+
+
+def _tencent_index_points(minutes: tq.Minutes, secid: str) -> list[IndexIntradayPoint]:
+    """腾讯分时：成交量是累计值，逐分钟取差；指数没有均价，留空。
+
+    - A 股：收盘后腾讯会补一个 15:30 的重复点，丢掉。
+    - 港股：收盘后最后一点的时钟是快照时间（如 18:05），它就是收盘价，记在 16:00。
+    - 美股：时钟是美东时间，换成北京时间，与东财口径一致。
+    """
+
+    hong_kong = secid == "100.HSI"
+    us = secid.startswith("100.") and not hong_kong
+    has_volume = any(bar.volume is not None for bar in minutes.bars)
+    points: list[IndexIntradayPoint] = []
+    previous = 0.0
+    for bar in minutes.bars:
+        clock = bar.clock
+        if not hong_kong and not us and clock > "15:00":
+            continue
+        if hong_kong and clock > "16:00":
+            clock = "16:00"
+        elif us:
+            clock = _us_clock_to_shanghai(minutes.day, clock)
+        volume: float | None = None
+        if has_volume:
+            cumulative = bar.volume if bar.volume is not None else previous
+            volume = max(cumulative - previous, 0.0)
+            previous = cumulative
+        points.append(IndexIntradayPoint(time=clock, price=bar.price, volume=volume))
+    return points
+
+
+def _us_clock_to_shanghai(day: str, clock: str) -> str:
+    local = datetime.fromisoformat(f"{day}T{clock}:00").replace(tzinfo=_NEW_YORK)
+    return local.astimezone(SHANGHAI).strftime("%H:%M")
+
+
+def _em_index_bars(doc: Any | None) -> list[IndexDailyBar]:
+    if doc is None:
+        return []
+    return _with_change(
+        [
+            IndexDailyBar(
+                date=b.day,
+                open=b.open,
+                close=b.close,
+                low=b.low,
+                high=b.high,
+                volume=b.volume if b.volume > 0 else None,
+                changePct=b.change_pct,
+            )
+            for b in calc.parse_klines(calc.as_doc(doc))
+        ]
+    )
+
+
+def _with_change(bars: Sequence[IndexDailyBar]) -> list[IndexDailyBar]:
+    """上游没给涨跌幅的，用相邻两根收盘价算；第一根没有前收就保持为空；取最近 90 根。"""
+
+    out: list[IndexDailyBar] = []
+    previous: float | None = None
+    for bar in bars:
+        pct = bar.changePct
+        if pct is None and previous:
+            pct = round((bar.close / previous - 1) * 100, 2)
+        out.append(bar.model_copy(update={"changePct": pct}))
+        previous = bar.close
+    return out[-_INDEX_BARS:]
 
 
 # ───────────── 小工具 ─────────────

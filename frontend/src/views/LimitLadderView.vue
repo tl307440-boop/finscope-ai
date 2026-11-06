@@ -107,7 +107,7 @@ function sealText(stock: LadderStock): string {
                 :key="s.code"
                 type="button"
                 class="ld-stock"
-                :class="{ selected: linkageStore.selectedStockCode === s.code }"
+                :class="{ selected: linkageStore.isStockActive(s.code) }"
                 :title="s.reason"
                 @click="linkageStore.selectStock(s.code)"
               >

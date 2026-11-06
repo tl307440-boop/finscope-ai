@@ -48,6 +48,25 @@ async def read_global_quotes(request: Request, service: Service) -> JSONResponse
         raise _upstream(error) from error
 
 
+@router.get("/ashare/index-detail", summary="全球核心指数 / 商品详情：行情头、分时与近 90 根日K")
+async def read_index_detail(
+    request: Request,
+    service: Service,
+    code: Annotated[
+        str,
+        Query(
+            min_length=1,
+            max_length=32,
+            description="全球行情的 symbol，如 000001.SH、HSI.HK、COMEX黄金",
+        ),
+    ],
+) -> JSONResponse:
+    try:
+        return _ok(request, await service.index_detail(code))
+    except ProviderError as error:
+        raise _upstream(error) from error
+
+
 @router.get(
     "/ashare/sentiment", summary="短线情绪：涨跌分布、涨停炸板、连板晋级、极端波动与接力溢价"
 )

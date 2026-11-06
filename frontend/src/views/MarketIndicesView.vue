@@ -7,7 +7,7 @@
  * 先用 /instruments/search 换到 instrument id，再取 /market/bars/{id} 的日线。
  * 没有入库的日期不会补价格，图上与表里只画真实返回的交易日。
  */
-import { computed, onMounted, ref } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { DataLine, Histogram, TrendCharts } from "@element-plus/icons-vue"
 import { VChart } from "../charts"
 import DeltaValue from "../components/ui/DeltaValue.vue"
@@ -27,6 +27,7 @@ import LeadingSectorsPopularPanel from "./parts/market/LeadingSectorsPopularPane
 import SentimentBreadthPanel from "./parts/market/SentimentBreadthPanel.vue"
 import VolumeMarginPanel from "./parts/market/VolumeMarginPanel.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
+import { useMarketLinkageStore } from "../stores/marketLinkage"
 import { adjustmentLabel, volumeUnitLabel } from "../api/bars"
 import type { DailyBar } from "../api/bars"
 import { asNumber, asRecord, asString, dataOf, formatAmount, formatMoment, scaleAmount } from "../api/json"
@@ -525,8 +526,18 @@ function rowClass({ row }: { row: { symbol: string } }): string {
   return row.symbol === activeSymbol.value ? "is-active-row" : ""
 }
 
+const linkageStore = useMarketLinkageStore()
+
+// 进来时用户还没点过个股 / 指数：右侧默认显示上证指数，不空着（在 setup 里选，首帧就不会闪一下空状态）；
+// 离开页面时撤掉这个默认选中，免得龙虎榜、连板、热点消息页的右侧凭空出现一个指数。用户自己点过的不会被撤。
+linkageStore.ensureDefaultIndex("000001.SH")
+
 onMounted(() => {
   void load()
+})
+
+onBeforeUnmount(() => {
+  linkageStore.releaseDefaultIndex()
 })
 </script>
 

@@ -2737,3 +2737,56 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 | 未拖动时的默认外观 | 样式按 `b67b06c` 的紧凑版还原；行情总览整页高度在 2560 宽下基线约 4340px、现在约 4335px。其余三页只做了截图目检，没有逐像素对比 |
 
 > 说明：happy-dom 里不解析 `flex-basis: calc(... var(--gap) ...)`，单测只验证百分比与手柄逻辑，真实浏览器里的排布效果以 Playwright 实拖为准。
+
+## 2026-11-06（续六）点全球指数卡片：右侧出分时和日K
+
+### 本轮范围
+
+点「全球核心指数与大宗商品」某张卡片后，右侧详情从个股面板切到该指数 / 商品的行情头、分时、近 90 根日 K。只用真实上游；没有的字段是 `null` / 空数组，并写进 `meta.unavailable`，页面显示「—」或空状态文案，不造数。
+
+### 后端：`GET /api/v1/ashare/index-detail?code=`
+
+- 路由：`backend/app/api/v1/ashare_panorama.py`。`code` 是全球行情的 symbol（`000001.SH`、`HSI.HK`、`NDX.US`、`COMEX黄金` 等），大小写不敏感；不在这 10 个品种里的（例如把上证指数写成平安银行 `000001.SZ`）返回 404。
+- 服务：`ASharePanoramaService.index_detail`。上游顺序：**东方财富优先 → 腾讯回退**；黄金 / 原油（COMEX / NYMEX 主连）腾讯没有分时也没有日 K，**日 K 再走新浪** `GlobalFuturesService.getGlobalFuturesDailyKLine`。
+- 响应走既有 `success_response`（`exclude_none=True`），缺字段直接省略而不是填 0。
+- 日 K 日期升序、最多 90 根；腾讯 / 新浪多取一根用来算第一根涨跌幅，最早一根的 `changePct` 可能为 `null`。新浪期货日 K 成交量恒为 0，记成 `volume: null` 并在 `meta.notes` 写明。
+- 腾讯 `as_em_row` 补上 `f17`（今开），指数详情的开高低收才能从腾讯行情里取到。
+
+### 前端：指数模式 vs 个股模式
+
+- 新增 `IndexDetailPanel.vue`：只显示行情头、开高低收、分时、日 K（没有封单、涨停原因、龙虎榜席位这些个股专属块）。点卡片走 `fetchIndexDetail`，**不调** `fetchStockDetail`。
+- `marketLinkage`：`selectIndex` 保存完整 symbol（`NDX.US`、`COMEX黄金`，不做 6 位截断），切到指数模式并把个股高亮清掉；`selectStock` 覆盖指数、回到个股模式。`isStockActive` 统一比较选中高亮（列表里带 `.SZ` / `.SH` 的代码也能对上；指数模式下个股全部不高亮）。
+- 右侧已收起时点指数会自动展开。总览页 `ensureDefaultIndex("000001.SH")`：进来时用户还没点过，右侧默认上证，不空着；离开总览页会撤掉这个「默认选中」，用户自己点过的指数会保留。
+- 黄金 / 原油分时空状态直接用 `meta.unavailable["指数分时"]` 的文案，不写死「暂无」。
+- 分时 / 日 K 图表抽到共用的 `detailCharts.ts`：均价、成交量上游没给就不画对应的线 / 柱（不画成一条 0）。
+
+### NDX 映射修正
+
+东财 `100.NDX` 是**纳斯达克综合指数**，腾讯对应 `usIXIC`（`usIXIC.OQ` 分时），不是 Nasdaq-100 的 `usNDX`。现价应在综合指数量级（约 24315），不是纳指 100 的约 28000。全球行情卡片与指数详情共用这张映射。
+
+### 诚实缺项 / 已知局限
+
+| 项 | 说明 |
+| --- | --- |
+| 黄金 / 原油分时 | 腾讯没有 COMEX / NYMEX 期货分时接口。东财 push2 在生产不可达时 `intraday=[]`，`meta.unavailable["指数分时"]` 写明原因。`NOT_IMPLEMENTED`：没有第二条期货分时源。 |
+| 美股分时跨午夜 | 时间是北京时间（美东 09:30 → 22:30，16:00 → 次日 05:00）。按接口返回的**数组顺序**画，不按 `HH:MM` 字符串排序，否则 05:00 会被排到开盘前面。 |
+| 新浪期货日 K 在 ECS | 本机单测用预置 JSONP，不连网。**生产 ECS 上 `stock2.finance.sina.com.cn` 是否可达未验证**；不通则黄金 / 原油日 K 也会空，`unavailable` 会写「新浪财经日K也取不到」。 |
+| 切到涨停梯队 | 总览页的默认上证会在离开时撤掉；连板页 `watch` 到最高板龙头且用户从没点过个股时，会 `selectStock` 把右侧切回个股。从总览点完指数再切到连板，会被那页的默认个股接管。龙虎榜没有这种自动选股。 |
+| 商品日 K 成交量 | 新浪全球期货日 K 不含成交量，柱状图不画。 |
+
+### 变更文件
+
+- 后端：`api/v1/ashare_panorama.py`、`schemas/ashare_panorama.py`、`services/ashare_panorama.py`、`providers/tencent_quote.py`、`providers/sina_market.py`、`tests/unit/test_ashare_index_detail.py`
+- 前端：`api/aSharePanorama.ts`、`stores/marketLinkage.ts`、`components/market/{IndexDetailPanel.vue,detailCharts.ts,MarketSplitLayout.vue,StockDetailPanel.vue}`、`views/{MarketIndicesView,LimitLadderView,DragonTigerView}.vue`、`views/parts/market/{GlobalCoreStrip,LeadingSectorsPopularPanel}.vue`、`tests/unit/{marketLinkageIndex,detailCharts,IndexDetailPanel}.test.ts`
+
+### 验证（提交前，本机）
+
+| 命令 | 结果 |
+| --- | --- |
+| `PYTHONPATH=finscope-ai-pr/backend`，主 venv：`ruff check .` / `ruff format --check .` | 通过（511 个文件已格式化） |
+| 同上：`mypy app` | 通过（308 个源文件） |
+| 同上：`pytest tests/unit/test_ashare_index_detail.py` | 13 passed（东财优先、屏蔽 push2 回退腾讯、NDX→usIXIC、美股跨午夜顺序、商品分时留空+新浪日 K、全上游失败写 unavailable、未知代码 404、路由 camelCase） |
+| `npx vue-tsc --noEmit` | 通过 |
+| `npx vitest run` | 63 个文件 / 441 个用例通过（基线 60 / 408；新增联动 11、图表 7、指数面板 15） |
+
+生产接口与有头 Chrome 点击验证在分支部署之后做，见本轮收尾汇报。

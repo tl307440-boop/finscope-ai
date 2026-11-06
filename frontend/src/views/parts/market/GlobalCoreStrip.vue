@@ -2,7 +2,7 @@
   <MarketPanel
     box-id="indices.global"
     title="全球核心指数与大宗商品"
-    subtitle="A 股宽基 · 港美核心指数 · 黄金 / 原油；迷你图为当日分时"
+    subtitle="A 股宽基 · 港美核心指数 · 黄金 / 原油；迷你图为当日分时 · 点击卡片在右侧查看分时与日K"
     info="价格、涨跌幅与分时均为公开行情；拿不到的品种显示「—」并在下方「缺项」里说明原因"
     tone="cyan"
     :icon="Connection"
@@ -35,7 +35,14 @@
           v-for="item in filteredQuotes"
           :key="item.code"
           class="quote-card"
-          :class="cardTone(item.changePct)"
+          :class="[cardTone(item.changePct), { 'is-selected': linkageStore.activeIndexCode === item.symbol }]"
+          role="button"
+          tabindex="0"
+          :aria-pressed="linkageStore.activeIndexCode === item.symbol"
+          :title="`点击在右侧查看 ${item.name} 的分时与日K`"
+          @click="linkageStore.selectIndex(item.symbol)"
+          @keydown.enter.prevent="linkageStore.selectIndex(item.symbol)"
+          @keydown.space.prevent="linkageStore.selectIndex(item.symbol)"
         >
           <div class="q-top">
             <span class="q-name">{{ item.name }}</span>
@@ -76,7 +83,9 @@ import MarketPanel from "../../../components/market/MarketPanel.vue"
 import MiniSpark from "../../../components/ui/MiniSpark.vue"
 import SectionTabs from "../../../components/ui/SectionTabs.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
+import { useMarketLinkageStore } from "../../../stores/marketLinkage"
 
+const linkageStore = useMarketLinkageStore()
 const { data, state, error, reload } = usePanoramaResource(fetchGlobalQuotes, { pollMs: 60_000 })
 
 const categories = ["全部", "A股宽基", "海外指数", "大宗商品"] as const
@@ -116,14 +125,28 @@ function fmtPrice(value: number | null): string {
   border-left: 3px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--panel-soft);
+  cursor: pointer;
   transition:
     border-color 0.15s ease,
+    background 0.15s ease,
     transform 0.15s ease;
 }
 
 .quote-card:hover {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-soft));
+}
+
+.quote-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 右侧正在显示的这一张：和领涨板块 / 人气股的选中行一致，用主题色底 + 描边 */
+.quote-card.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
 }
 
 .quote-card.border-rise {

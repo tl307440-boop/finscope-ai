@@ -252,6 +252,7 @@ import { VChart } from "../../charts"
 import type { SeatCategory } from "../../config/hotMoneySeatsConfig"
 import { useMarketLinkageStore } from "../../stores/marketLinkage"
 import StateBlock from "../ui/StateBlock.vue"
+import { buildIntradayOption, buildKlineOption } from "./detailCharts"
 import PanoramaStatusBar from "./PanoramaStatusBar.vue"
 import ResizableBox from "./ResizableBox.vue"
 
@@ -330,183 +331,16 @@ function roleBadgeClass(category: SeatCategory): string {
 
 const intradayOption = computed<EChartsOption>(() => {
   const pts = detail.value?.intraday ?? []
-  const times = pts.map((p) => p.time)
-  const prices = pts.map((p) => p.price)
-  const avgs = pts.map((p) => p.avgPrice)
-  const vols = pts.map((p) => p.volume)
-  const isUp = (detail.value?.changePct ?? 0) >= 0
-  const mainColor = isUp ? "#f6465d" : "#1fc37d"
-
-  return {
-    animation: false,
-    tooltip: { trigger: "axis" },
-    grid: [
-      { left: 42, right: 12, top: 10, height: "58%" },
-      { left: 42, right: 12, top: "74%", height: "20%" },
-    ],
-    xAxis: [
-      {
-        type: "category",
-        data: times,
-        boundaryGap: false,
-        axisLabel: { show: false },
-        axisLine: { lineStyle: { color: "rgba(148,163,184,0.25)" } },
-      },
-      {
-        type: "category",
-        gridIndex: 1,
-        data: times,
-        axisLabel: { fontSize: 10, color: "#64748b" },
-        axisLine: { lineStyle: { color: "rgba(148,163,184,0.25)" } },
-      },
-    ],
-    yAxis: [
-      {
-        scale: true,
-        splitNumber: 3,
-        axisLabel: { fontSize: 10, color: "#64748b" },
-        splitLine: { lineStyle: { color: "rgba(148,163,184,0.14)", type: "dashed" } },
-      },
-      { gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, splitLine: { show: false } },
-    ],
-    series: [
-      {
-        name: "分时现价",
-        type: "line",
-        data: prices,
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1.8, color: mainColor },
-        areaStyle: {
-          color: isUp ? "rgba(246, 70, 93, 0.14)" : "rgba(31, 195, 125, 0.14)",
-        },
-      },
-      {
-        name: "分时均价",
-        type: "line",
-        data: avgs,
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1.3, color: "#f59e0b", type: "dashed" },
-      },
-      {
-        name: "成交量",
-        type: "bar",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: vols,
-        itemStyle: {
-          color: (params) => {
-            const idx = params.dataIndex
-            if (idx === 0) return mainColor
-            return (prices[idx] ?? 0) >= (prices[idx - 1] ?? 0) ? "#f6465d" : "#1fc37d"
-          },
-        },
-      },
-    ],
-  }
-})
-
-function calcMA(dayCount: number, closes: number[]): (number | null)[] {
-  return closes.map((_, idx) => {
-    if (idx < dayCount - 1) return null
-    let sum = 0
-    for (let i = 0; i < dayCount; i++) {
-      sum += closes[idx - i] ?? 0
-    }
-    return Number((sum / dayCount).toFixed(2))
+  return buildIntradayOption({
+    times: pts.map((p) => p.time),
+    prices: pts.map((p) => p.price),
+    avgs: pts.map((p) => p.avgPrice),
+    vols: pts.map((p) => p.volume),
+    isUp: (detail.value?.changePct ?? 0) >= 0,
   })
-}
-
-const klineOption = computed<EChartsOption>(() => {
-  const bars = detail.value?.dailyBars ?? []
-  const dates = bars.map((b) => b.date.slice(5))
-  const ohlc = bars.map((b) => [b.open, b.close, b.low, b.high])
-  const closes = bars.map((b) => b.close)
-
-  return {
-    animation: false,
-    tooltip: { trigger: "axis" },
-    grid: [
-      { left: 42, right: 12, top: 10, height: "58%" },
-      { left: 42, right: 12, top: "74%", height: "20%" },
-    ],
-    xAxis: [
-      {
-        type: "category",
-        data: dates,
-        axisLabel: { show: false },
-        axisLine: { lineStyle: { color: "rgba(148,163,184,0.25)" } },
-      },
-      {
-        type: "category",
-        gridIndex: 1,
-        data: dates,
-        axisLabel: { fontSize: 10, color: "#64748b" },
-        axisLine: { lineStyle: { color: "rgba(148,163,184,0.25)" } },
-      },
-    ],
-    yAxis: [
-      {
-        scale: true,
-        splitNumber: 3,
-        axisLabel: { fontSize: 10, color: "#64748b" },
-        splitLine: { lineStyle: { color: "rgba(148,163,184,0.14)", type: "dashed" } },
-      },
-      { gridIndex: 1, splitNumber: 2, axisLabel: { show: false }, splitLine: { show: false } },
-    ],
-    series: [
-      {
-        name: "日K",
-        type: "candlestick",
-        data: ohlc,
-        itemStyle: {
-          color: "#f6465d",
-          color0: "#1fc37d",
-          borderColor: "#f6465d",
-          borderColor0: "#1fc37d",
-        },
-      },
-      {
-        name: "MA5",
-        type: "line",
-        data: calcMA(5, closes),
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1.2, color: "#f59e0b" },
-      },
-      {
-        name: "MA10",
-        type: "line",
-        data: calcMA(10, closes),
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1.2, color: "#3b82f6" },
-      },
-      {
-        name: "MA20",
-        type: "line",
-        data: calcMA(20, closes),
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1.2, color: "#a855f7" },
-      },
-      {
-        name: "成交量",
-        type: "bar",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: bars.map((b) => b.volume),
-        itemStyle: {
-          color: (params) => {
-            const b = bars[params.dataIndex]
-            return b && b.close >= b.open ? "#f6465d" : "#1fc37d"
-          },
-        },
-      },
-    ],
-  }
 })
+
+const klineOption = computed<EChartsOption>(() => buildKlineOption(detail.value?.dailyBars ?? []))
 </script>
 
 <style scoped>

@@ -44,6 +44,44 @@ class GlobalQuotesPayload(BaseModel):
     meta: PanoramaMeta
 
 
+class IndexIntradayPoint(BaseModel):
+    """指数 / 商品分时点：均价、成交量上游没给时为 None（不倒推）。"""
+
+    time: str
+    price: float
+    avgPrice: float | None = None
+    volume: float | None = None
+
+
+class IndexDailyBar(BaseModel):
+    """指数 / 商品日 K：成交量上游没给时为 None；涨跌幅优先取上游，否则用相邻收盘价算。"""
+
+    date: str
+    open: float
+    close: float
+    low: float
+    high: float
+    volume: float | None = None
+    changePct: float | None = None
+
+
+class IndexDetailPayload(BaseModel):
+    code: str
+    name: str
+    category: Literal["A股宽基", "海外指数", "大宗商品"]
+    price: float | None = None
+    change: float | None = None
+    changePct: float | None = None
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    preClose: float | None = None
+    amountYuan: float | None = None
+    intraday: list[IndexIntradayPoint] = Field(default_factory=list)
+    dailyBars: list[IndexDailyBar] = Field(default_factory=list)
+    meta: PanoramaMeta
+
+
 # ───────────── 短线情绪 ─────────────
 
 

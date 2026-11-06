@@ -851,3 +851,94 @@ export function fetchStockDetail(code: string): Promise<StockDetailData> {
     meta: parseMeta(d.meta),
   }))
 }
+
+// ───────────── 全球指数 / 商品详情（分时 + 日K） ─────────────
+
+/** 指数 / 商品分时点：均价、成交量上游没给时为 null（不要当 0 画）。 */
+export interface IndexIntradayPoint {
+  time: string
+  price: number
+  avgPrice: number | null
+  volume: number | null
+}
+
+/** 指数 / 商品日 K：成交量（黄金、原油日 K 没有）、涨跌幅（最早一根可能没有）可能为 null。 */
+export interface IndexDailyBar {
+  date: string
+  open: number
+  close: number
+  low: number
+  high: number
+  volume: number | null
+  changePct: number | null
+}
+
+export interface IndexDetailData {
+  /** 全球行情里的 symbol，如 000001.SH、HSI.HK、NDX.US、COMEX黄金。 */
+  code: string
+  name: string
+  category: GlobalQuoteItem["category"]
+  price: number | null
+  change: number | null
+  changePct: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  preClose: number | null
+  amountYuan: number | null
+  /** 分时（海外品种为北京时间，美股跨午夜）；商品在腾讯兜底时为空，原因见 meta.unavailable["指数分时"]。 */
+  intraday: IndexIntradayPoint[]
+  /** 近 90 根日 K，日期升序。 */
+  dailyBars: IndexDailyBar[]
+  meta: PanoramaMeta
+}
+
+function parseIndexBar(r: Rec): IndexDailyBar | null {
+  const open = asNumber(r.open)
+  const close = asNumber(r.close)
+  const low = asNumber(r.low)
+  const high = asNumber(r.high)
+  if (open === null || close === null || low === null || high === null) return null
+  return {
+    date: str(r.date),
+    open,
+    close,
+    low,
+    high,
+    volume: asNumber(r.volume),
+    changePct: asNumber(r.changePct),
+  }
+}
+
+export function parseIndexDetail(d: Rec): IndexDetailData {
+  return {
+    code: str(d.code),
+    name: str(d.name),
+    category: parseCategory(d.category),
+    price: asNumber(d.price),
+    change: asNumber(d.change),
+    changePct: asNumber(d.changePct),
+    open: asNumber(d.open),
+    high: asNumber(d.high),
+    low: asNumber(d.low),
+    preClose: asNumber(d.preClose),
+    amountYuan: asNumber(d.amountYuan),
+    intraday: recList(d.intraday, (r) => {
+      const price = asNumber(r.price)
+      return price === null
+        ? null
+        : {
+            time: str(r.time),
+            price,
+            avgPrice: asNumber(r.avgPrice),
+            volume: asNumber(r.volume),
+          }
+    }),
+    dailyBars: recList(d.dailyBars, parseIndexBar),
+    meta: parseMeta(d.meta),
+  }
+}
+
+export function fetchIndexDetail(code: string): Promise<IndexDetailData> {
+  return load(`/api/v1/ashare/index-detail?code=${encodeURIComponent(code)}`, parseIndexDetail)
+}

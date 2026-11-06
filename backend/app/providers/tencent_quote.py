@@ -41,13 +41,14 @@ _CONCEPT_URL = "https://proxy.finance.qq.com/cgi/cgi-bin/rank/pt/getRank"
 # 东财的 secid（市场.代码）里海外指数、商品期货在腾讯的写法。
 _OVERSEAS = {
     "100.HSI": "hkHSI",
-    "100.NDX": "usNDX",
+    # 东财的 100.NDX 是「纳斯达克综合指数」（与腾讯 usIXIC 同价），不是纳指 100（usNDX）。
+    "100.NDX": "usIXIC",
     "100.SPX": "usINX",
     "101.GC00Y": "hf_GC",
     "102.CL00Y": "hf_CL",
 }
 # 美股指数的分时接口要带交易所后缀。
-_US_MINUTE = {"usNDX": "usNDX.OQ", "usINX": "usINX.N"}
+_US_MINUTE = {"usNDX": "usNDX.OQ", "usIXIC": "usIXIC.OQ", "usINX": "usINX.N"}
 _WAN = 1e4
 _YI = 1e8
 
@@ -104,6 +105,7 @@ class Quote:
     high: float | None = None
     low: float | None = None
     amplitude_pct: float | None = None
+    open: float | None = None
 
 
 def parse_quotes(payload: bytes) -> dict[str, Quote]:
@@ -138,6 +140,7 @@ def parse_quotes(payload: bytes) -> dict[str, Quote]:
             high=_number(fields[33]),
             low=_number(fields[34]),
             amplitude_pct=_scaled(fields, 43, 1.0) if is_cn else None,
+            open=_number(fields[5]),
         )
     return out
 
@@ -166,6 +169,7 @@ def _future(local: str, body: str) -> Quote | None:
         prev_close=prev,
         high=_number(fields[4]),
         low=_number(fields[5]),
+        open=_number(fields[8]),
     )
 
 
@@ -192,6 +196,7 @@ def as_em_row(quote: Quote, secid: str) -> dict[str, Any]:
         "f14": quote.name,
         "f15": quote.high,
         "f16": quote.low,
+        "f17": quote.open,
         "f18": quote.prev_close,
         "f21": quote.float_cap_yuan,
     }

@@ -3,7 +3,6 @@
  * 领涨板块 + 人气股。点击任意个股联动右侧个股详情。
  * 人气股来自同花顺人气榜，板块来自东方财富概念板块涨幅榜，均为实时/当日收盘数据。
  */
-import { watch } from "vue"
 import { Flag, Star } from "@element-plus/icons-vue"
 
 import { fetchLeading } from "../../../api/aSharePanorama"
@@ -16,15 +15,7 @@ import { useMarketLinkageStore } from "../../../stores/marketLinkage"
 const linkageStore = useMarketLinkageStore()
 const { data, state, error, reload } = usePanoramaResource(fetchLeading, { pollMs: 60_000 })
 
-// 第一次进入页面时默认选中人气第一的个股，避免右侧面板空着；用户选过就不再覆盖。
-watch(
-  data,
-  (value) => {
-    const first = value?.popularStocks[0]
-    if (first && !linkageStore.selectedStockCode) linkageStore.selectStock(first.code)
-  },
-  { immediate: true },
-)
+// 行情总览的右侧默认显示上证指数（见 MarketIndicesView），这里不再默认选人气第一的个股。
 </script>
 
 <template>
@@ -122,7 +113,7 @@ watch(
               v-for="p in data.popularStocks"
               :key="p.code"
               class="clickable"
-              :class="{ active: linkageStore.selectedStockCode === p.code }"
+              :class="{ active: linkageStore.isStockActive(p.code) }"
               @click="linkageStore.selectStock(p.code)"
             >
               <td class="num muted">{{ p.rank }}</td>

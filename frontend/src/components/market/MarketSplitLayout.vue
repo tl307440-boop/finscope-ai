@@ -10,12 +10,15 @@
  */
 import { onBeforeUnmount, ref } from "vue"
 
+import { useMarketLinkageStore } from "../../stores/marketLinkage"
 import SeatManagerDrawer from "../../views/parts/market/SeatManagerDrawer.vue"
+import IndexDetailPanel from "./IndexDetailPanel.vue"
 import MarketModuleTabs from "./MarketModuleTabs.vue"
 import { MAX_SIDE, MIN_SIDE, layoutState, persistLayout, resetAllLayout, setSideWidth } from "./panelLayout"
 import StockDetailPanel from "./StockDetailPanel.vue"
 
-const detailOpen = ref(true)
+// 右侧面板的展开 / 收起记在联动 store 里：点全球指数卡片时要能把收起的面板打开
+const linkageStore = useMarketLinkageStore()
 const dragging = ref(false)
 let dragStartX = 0
 let dragStartWidth = 0
@@ -85,21 +88,21 @@ onBeforeUnmount(() => {
       >
         重置布局
       </button>
-      <button type="button" class="msl-toggle" @click="detailOpen = !detailOpen">
-        {{ detailOpen ? "收起个股详情 ▶" : "◀ 展开个股详情" }}
+      <button type="button" class="msl-toggle" @click="linkageStore.toggleDetailOpen()">
+        {{ linkageStore.detailOpen ? "收起个股详情 ▶" : "◀ 展开个股详情" }}
       </button>
     </div>
 
     <div
       class="msl-body"
-      :class="{ 'is-collapsed': !detailOpen, 'is-dragging': dragging }"
+      :class="{ 'is-collapsed': !linkageStore.detailOpen, 'is-dragging': dragging }"
       :style="bodyStyle()"
     >
       <div class="msl-main">
         <slot />
       </div>
       <div
-        v-if="detailOpen"
+        v-if="linkageStore.detailOpen"
         class="msl-resizer"
         role="separator"
         aria-orientation="vertical"
@@ -113,8 +116,10 @@ onBeforeUnmount(() => {
       >
         <span class="msl-grip" aria-hidden="true" />
       </div>
-      <div v-if="detailOpen" ref="sideEl" class="msl-side">
-        <StockDetailPanel />
+      <div v-if="linkageStore.detailOpen" ref="sideEl" class="msl-side">
+        <!-- 最近一次点的是全球指数 / 商品卡片就显示指数详情，否则显示个股详情 -->
+        <IndexDetailPanel v-if="linkageStore.activeIndexCode" />
+        <StockDetailPanel v-else />
       </div>
     </div>
 

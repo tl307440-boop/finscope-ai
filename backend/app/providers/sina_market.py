@@ -65,6 +65,56 @@ class SinaQuote:
     quote_time: str
 
 
+@dataclass(frozen=True)
+class FuturesBar:
+    """外盘期货主连日 K（价格单位同合约报价）。新浪全球期货日 K 的成交量恒为 0，视为没有。"""
+
+    day: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+_FUTURES_DAILY_URL = (
+    "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+    "GlobalFuturesService.getGlobalFuturesDailyKLine"
+)
+
+
+def futures_daily_url(symbol: str) -> str:
+    """外盘期货主连日 K（`GC` COMEX 黄金、`CL` NYMEX 原油）；一次返回全部历史，由调用方截取。"""
+
+    return f"{_FUTURES_DAILY_URL}?symbol={symbol}"
+
+
+def parse_futures_daily(payload: bytes) -> list[FuturesBar]:
+    """`/*…*/ var t=([{"date","open","high","low","close",…},…]);`，按日期升序。"""
+
+    text = payload.decode("utf-8", errors="replace")
+    start, end = text.find("[{"), text.rfind("}]")
+    if start < 0 or end < start:
+        raise _payload_error("期货日K")
+    try:
+        rows = cast(object, json.loads(text[start : end + 2]))
+    except json.JSONDecodeError as exc:
+        raise _payload_error("期货日K") from exc
+    if not isinstance(rows, list):
+        raise _payload_error("期货日K")
+    bars: list[FuturesBar] = []
+    for raw in cast(list[object], rows):
+        if not isinstance(raw, dict):
+            continue
+        row = cast(dict[str, object], raw)
+        day = row.get("date")
+        values = [_number(row.get(key)) for key in ("open", "high", "low", "close")]
+        if not isinstance(day, str) or any(value is None for value in values):
+            continue
+        open_, high, low, close = (float(value) for value in values if value is not None)
+        bars.append(FuturesBar(day, open_, high, low, close))
+    return sorted(bars, key=lambda bar: bar.day)
+
+
 def rank_url(sort: str, count: int) -> str:
     if sort not in ("changepercent", "amount"):
         raise ProviderError(code="VALIDATION_ERROR", message="不支持的排序字段", status_code=422)

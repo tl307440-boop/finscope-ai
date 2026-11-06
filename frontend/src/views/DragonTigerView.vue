@@ -162,7 +162,7 @@ function capsuleTone(net: number): string {
                   class="dt-capsule"
                   :class="[
                     capsuleTone(s.netWan),
-                    { selected: linkageStore.selectedStockCode === s.code },
+                    { selected: linkageStore.isStockActive(s.code) },
                   ]"
                   :title="`${s.reason}\n${s.branches.join('\n')}`"
                   @click="linkageStore.selectStock(s.code)"
