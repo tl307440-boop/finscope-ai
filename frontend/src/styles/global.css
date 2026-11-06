@@ -112,7 +112,8 @@
 
 .page {
   width: 100%;
-  max-width: 1760px;
+  /* 2K 屏（可用宽度约 2300px）原来卡在 1760px，两边各白白空出近 300px；放宽到 2200px。 */
+  max-width: 2200px;
   margin: 0 auto;
   padding: 18px 22px 28px;
 }

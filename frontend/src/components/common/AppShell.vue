@@ -91,6 +91,9 @@ const groups = computed<NavGroup[]>(() => {
       icon: Histogram,
       primary: "/market/indices",
       children: [
+        { index: "/market/dragon-tiger", label: "龙虎榜分析" },
+        { index: "/market/ladder", label: "连板分析" },
+        { index: "/market/news", label: "热点消息" },
         { index: "/market/sectors", label: "板块排行" },
         { index: "/market/temperature", label: "市场温度" },
       ],

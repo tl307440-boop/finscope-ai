@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     tiingo_api_key: str = ""
     sec_user_agent: str = "FinScopeAI research-admin@example.com"
     tushare_token: str = ""
+    # 韭研公社扫码登录后 web-api.jiuyangongshe.com 域的 SESSION Cookie 值（约两周过期）。
+    # 个人登录态：只放本机 .env，不入库、不进日志；留空则不接入异动解析。
+    jygs_session: str = ""
+    # 会话到期时间（ISO，UTC）：界面扫码登录时自动写入，用来提前提醒；手填 / 环境变量时留空。
+    jygs_session_expires: str = ""
     llm_api_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""

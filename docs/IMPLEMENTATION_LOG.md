@@ -2508,3 +2508,285 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 - 新浪行业榜和概念榜只失败一边时，工具仍返回另一边，但说明里不会点名是哪一边失败。
 - 技能只约束模型怎么说；没有用真实模型回放「一家快讯失败后再看热榜和板块」。
 - 上面四家登录之后才能继续看它们自己的页面请求。登录前不接。
+
+## 2026-11-06 市场行情四模块：真实数据全景看板（全景行情 / 龙虎榜 / 连板 / 热点消息）
+
+### 本轮范围
+
+把「市场行情」扩成四个模块，并加右侧个股详情联动面板。**只用真实数据**：上游抓不到的字段为空，界面显示「—」或「暂无数据」，原因写在 `meta.unavailable`；没有任何模拟兜底。
+
+### 变更
+
+- 后端（`/api/v1/ashare/*`，9 个接口，无需登录）：`providers/ashare_panorama.py`（上游地址、请求头、财联社签名）、`schemas/ashare_panorama.py`、`services/ashare_calc.py`（纯计算）、`services/ashare_panorama.py`（取数与缓存）、`api/v1/ashare_panorama.py`。
+- 前端：`api/aSharePanorama.ts` 重写为纯取数层（删除全部本地假数据与浏览器直连东财），新增 `aShareFormat.ts`、`usePanoramaResource.ts`、`dragonTigerGrouping.ts`；新增 `DragonTigerView`、`LimitLadderView`、`HotNewsView`、`LeadingSectorsPopularPanel`、`MarketSplitLayout`、`PanoramaStatusBar`；改造 `GlobalCoreStrip`、`SentimentBreadthPanel`、`VolumeMarginPanel`、`FuturesPositionPanel`、`StockDetailPanel`、`MarketModuleTabs`、`MarketIndicesView`；`/hotspots` 重定向到 `/market/news`。
+- 修复遗留：半成品里 `marketLinkage.ts`、`SeatManagerDrawer.vue`、`StockDetailPanel.vue` 用 `roleTag/styleSummary/watched`，而 `hotMoneySeatsConfig.ts` 是 `category/styleTag`，整个前端编译不过。统一为 `category/styleTag/watched`，本地存储键升到 `finscope.hotMoneySeats.v2`。
+- 删除了原来写死的结论文案（如“亏钱效应处于可控低位”“流动性充沛”）和写死的联动标的（利欧股份等），改成按数据的中性说明；默认选中股由真实数据决定（人气第一 / 最高连板）。
+- 席位字典：23 组（19 位知名游资 + 拉萨天团 + 重点观察/量化 + 外资 + 机构专用），**根据公开资料整理，需要你审阅**；可在「席位管理」里增删。
+
+### 口径与限制（如实标注）
+
+- 晋级率 = 昨日 N 板股今日继续涨停；断板率 = 1 − 整体晋级率；溢价率 = 昨日涨停/连板股今日平均涨跌幅。冲高回落 / 探底回升 = 日内振幅与收盘差 ≥ 10 个百分点。
+- 成交量能用沪深京指数成交额口径；11:30 午盘额来自分时数据；两融“日变动”是余额差，不是净买入，T+1 披露。
+- 期指持仓是中金所各品种榜内席位（前 20）跨月份合约合并，不是全部机构。
+- 热点消息的影响级别与利好/利空/催化是来源重要度 + 关键词规则，仅用于快速筛选。
+- 龙虎榜收盘后（约 17:00）才公布；个股详情里的席位若不是当日，会标「最近一次上榜 日期」。
+- `NOT_IMPLEMENTED`：开盘啦未接入（见下方「韭研公社 / 开盘啦逆向」）；昨日炸板溢价率没有历史序列。韭研公社已在后续小节接入。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_ashare_panorama.py` | 17 通过 |
+| `backend`: `ruff check` / `mypy`（本轮新增文件） | 通过 |
+| `frontend`: `npm run typecheck` | 通过（0 错误） |
+| `frontend`: `npm run build` | 通过 |
+| `frontend`: `vitest run tests/unit/navigation.test.ts tests/unit/dragonTigerGrouping.test.ts` | 16 通过 |
+| `frontend`: `vitest run`（全量） | 381 通过，1 失败：`SimWhatIf.test.ts`（模拟推演的另一条未提交改动，与本轮无关） |
+| 真机浏览器（有头窗口）逐页打开 4 个模块，数据来自真实上游，点击个股联动右侧面板，席位标签跳转龙虎榜 | 通过 |
+
+## 2026-11-06（续）韭研公社 / 开盘啦逆向
+
+### 韭研公社（已接入，需登录态）
+
+- 逆向：网页 Nuxt 前端的接口 `POST web-api.jiuyangongshe.com/jystock-app/api/v1/<path>` 要带 `platform: 3`、`timestamp`（UTC 秒级）、`token`。token 的算法已还原：页面里 `window.__NUXT__` 的 `digest` 用固定密钥 `jiuyangongsheweb`（AES-128-CBC，iv 同密钥）解出时间窗表，当前窗口为 AES 时 token = AES-128-CBC(key=窗口密钥, iv=窗口密钥, "jiuyangongshe"+窗口密钥+timestamp).hex()。用浏览器抓到的 token 对照验证过。窗口表里另有 HMAC / MD5 窗口，没抓到样本，**不猜**：遇到时报「暂不支持」。
+- 匿名可用：`article/rank-board`（热搜股）、`timeline/news`（时间线快讯）；本轮没有接入这两个（公开源已覆盖）。
+- 异动解析 `action/count-pc`、`action/field`、`action/list` 需要登录：请求带 `web-api.jiuyangongshe.com` 域的 `SESSION` Cookie（微信扫码登录后获得，约两周过期）。没有账号密码登录方式。
+- 接入：`providers/jygs.py`（签名、请求头、信封校验）、`services/jygs.py`（时间窗缓存 6 小时、`action/field` 取数与解析，价格单位分、涨幅为百分比 ×100，已换算；没有首封时间且涨幅为 0 视为缺失）、`ASharePanoramaService.jygs_actions()` 与 `GET /api/v1/ashare/jygs-actions?date=`。个股详情新增 `actionSector / actionSectorReason / actionExplain`，连板梯队新增 `actionSector`（涨停原因为空时作兜底显示）。前端：`JygsActionsPanel`（连板分析页底部，按板块展开）与个股详情的「韭研公社异动解析」块。
+- 登录态放本机 `backend/.env` 的 `JYGS_SESSION`（`.env` 已被 `.gitignore` 忽略；`.env.example` 只有空项）。没配置时只写一条说明、不发请求；登录失效写进 `meta.unavailable`（错误码 502，避免前端把 401 当成本站登录过期）。SESSION 值不进日志；后续改进后改为加密入库（见下「改进」小节）。
+- 韭研通常在交易日 12:00 后才发布当天内容；之前为空，页面如实显示「暂无」。
+
+#### 改进：站内扫码登录、加密存库、到期提醒
+
+微信扫码无法完全自动化（必须有人在手机上确认），所以把"手改 `.env`"换成站内流程：
+
+- 会话改为运行时设置：`JYGS_SESSION`（密文）和 `JYGS_SESSION_EXPIRES`（到期时间）加入 `runtime_settings.MANAGED`，加密存 `app_settings` 表，优先于 `.env`（`.env` 仍作兜底），5 秒内生效不用重启；管理员的「密钥与数据源配置」里可手动粘贴并「测试连接」（`integration_probe` 用签名 + `count-pc` 校验）。
+- 站内扫码：`services/jygs_login.py`（`JygsLoginManager`）走 `user/login/wx-pc` → 微信 `qrconnect` 页取二维码 → 长轮询 `lp.open.weixin.qq.com`（408 等待 / 404 已扫 / 405 已确认 / 402 过期 / 403 取消）→ 用 `wx_code` 回调拿 `SESSION` Cookie → `count-pc` 校验后保存；到期时间取 Cookie 的 `expires`。接口 `POST /api/v1/admin/jygs-login`（返回二维码 data URL）、`GET /api/v1/admin/jygs-login/{id}`（进度），仅管理员；保存成功后清空韭研相关缓存。
+- 到期提醒：`GET /api/v1/ashare/jygs-status` 返回 `not_configured / ok / expiring（≤3 天）/ expired / unknown` 与剩余天数（探测结果缓存 5 分钟）；只返回状态，不返回会话值。
+- 前端：`JygsActionsPanel` 在非 ok 状态显示提示条；管理员有「扫码登录」按钮，打开 `JygsLoginDialog`（1.5 秒轮询，过期 / 取消 / 失败可重新获取二维码），非管理员提示联系管理员。
+- 真机验证：独立脚本驱动 `JygsLoginManager` 走完真实扫码（waiting → scanned → 保存成功，到期时间 = 登录后 15 天），随后 `jygs_status()` 返回 `ok`、剩余 14 天，`jygs_actions()` 取到 9 个板块。
+- 未验证：站内弹窗与管理员接口没有在真机上点过——开发库密码校验失败，拿不到管理员登录；这两处只有类型检查与接口层测试。
+
+### 开盘啦（未接入，`BLOCKED`）
+
+- App 接口 `POST apphq.longhuvip.com/w1/api/index.php` 匿名可用的只有板块榜：`c=ZhiShuRanking&a=RealRankingInfo&PhoneOSNew=2&apiv=w31&VerSion=5.11.0.1` 加 `ZSType=7|4`（板块 / 概念）。这部分公开源已覆盖，不接。
+- 连板、涨停原因类接口（如 `c=HomeDingPan&a=DaBanList`）返回的内容被替换成 `longhuvip.com`。用手机开盘啦 App 扫官网二维码登录后拿到了网页端的 `UserID` / `token`（Cookie `user_UserID`、`user_token`），带上去重试，仍然是占位文本，说明网页端会话换不到这类 App 数据。
+- 官网 www.kaipanla.com 的前端脚本里一共只有 14 个接口（`ForumsMsgJX`、`PCNewsFlash`、`Theme/InfoIntr`、`CompanyNotice`、`AnnouncementList` 等），是资讯 / 研报 / 公告 / 题材简介站，没有连板、涨停原因、竞价这类行情数据；主机为 `pcarticle` / `pclhb` / `pchis` / `login.kaipanla.com`。
+- 结论：开盘啦网页端没有本项目需要的字段，App 端需要 App 自己的设备令牌，我没有伪造。保持 `BLOCKED`，不接入；涨停原因由同花顺 + 韭研公社覆盖。登录探测用的浏览器配置和 Cookie 已删除。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_jygs.py`（15 条：签名往返、非 AES 窗口拒绝、过期窗口、信封、单位换算、服务层三条路径、扫码流程四种结果、状态与不泄漏） | 通过 |
+| `backend`: `pytest tests/unit` 全量 | 通过 |
+| `backend`: `ruff check` / `ruff format --check` / `mypy app` | 本轮文件通过；`ruff check` 仍有一条与本轮无关的 `services/assistant/tools/simulation.py` E501 |
+| `frontend`: `vue-tsc --noEmit` | 通过 |
+| `frontend`: `vitest run tests/unit/jygsActions.test.ts` | 4 通过；全量仍只有无关的 `SimWhatIf.test.ts` 1 个失败 |
+| 真机（有头 Chrome）连板分析页：韭研面板 9 个板块 / 35 只，与韭研官网页面的「全部异动解析 · 35」一致；点击个股后右侧详情出现异动解析正文 | 通过 |
+
+## 2026-11-06（续二）生产服务器连不上东财 push2：腾讯行情备用通道
+
+### 现象与定位
+
+- 分支部署到生产站后，行情四个模块几乎全空，`meta.unavailable` 里是「交易日历：上游连接中断」。交易日历是所有页面的前置条件，取不到时连板梯队、韭研异动解析都不会去取数。
+- 在生产服务器（阿里云杭州）上用 curl 实测（带 `Referer: https://quote.eastmoney.com/`，10 秒超时）：
+
+| 域名 | 结果 |
+| --- | --- |
+| `push2his.eastmoney.com`、`7.push2his…`、`28.push2his…` | 连接失败（`000`） |
+| `push2.eastmoney.com`、`82.push2…`、`1.push2…`、`push2delay.eastmoney.com` | 连接失败（`000`） |
+| `push2ex.eastmoney.com`（涨停池） | 200 |
+| `web.ifzq.gtimg.cn`、`qt.gtimg.cn`（腾讯） | 200 |
+| `www.jiuyangongshe.com` | 200 |
+| `hq.sinajs.cn` | 403（缺 Referer，本轮未使用） |
+
+  数字镜像域名也全部不通，所以不能靠换东财域名解决。`datacenter.eastmoney.com`（龙虎榜、期指持仓、两融）线上本来就是通的。
+
+### 变更
+
+- 新增 `backend/app/providers/tencent_quote.py`：腾讯报价（`qt.gtimg.cn`，GBK）、日 K（`fqkline`）、分时（`minute/query`）的地址与解析。
+- `ASharePanoramaService`：
+  - 交易日历优先用腾讯上证指数日 K，失败再回退东财；
+  - `_quotes()`（全球行情、昨日炸板今日行情、人气股行情、断板股行情、资讯关联行情）在东财失败时用腾讯报价补，行结构转成东财 `f2/f3/f4/f6/f8/f12/f13/f14/f21`，下游不用区分来源；
+  - 成交额：东财日 K / 分时失败时，用腾讯分时的当日累计成交额（含午盘 11:30 累计）；北证 50 腾讯分时不覆盖，退一步取报价里的当日成交额（没有午盘累计，所以「全市场午盘」为空）。
+- 来源在 `meta.sources` 里写明（「腾讯财经 日K / 行情 / 分时」），回退成功时不再把对应项记为不可用；腾讯也失败时保留东财的失败原因。
+
+### 限制（如实标注，不造假）
+
+- 腾讯没有商品期货：黄金、原油仍为空（`meta.unavailable` 点名）。
+- 腾讯日 K 没有成交额，分时只有当日：历史日成交额、「昨日同一时点」对比为空，成交额走势图只有今天一个点。
+- 分时迷你图、涨幅排名中位数、振幅榜（冲高回落 / 探底回升）、个股详情的东财部分（概念板块、分时、日 K 90 日）仍依赖 push2，线上暂无数据，页面写明「上游连接中断」。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_tencent_quote.py`（代码映射、报价单位与行结构、坏行忽略、日 K / 分时解析、坏响应、日历回退、全球行情点名缺失商品、成交额只取今天与北证退一步） | 通过 |
+| `backend`: `pytest tests/unit` 全量 / `ruff check` / `ruff format --check` / `mypy app` | 通过 |
+| 本机真实网络，仅屏蔽 `push2` / `push2his`：全球行情 8 个指数有价、成交额沪深创科四项有值、连板分析交易日 2026-11-06 且梯队 5 层、情绪页涨停 32 只 / 上涨 678 家 | 通过 |
+
+## 2026-11-06（续三）腾讯备用通道补全：商品、迷你图、历史成交额、中位数、振幅榜、概念资金、个股详情
+
+### 新增来源（均为「东财优先，失败再用腾讯」，`meta.sources` 写明来源）
+
+| 缺的数据 | 腾讯来源 | 换算 / 口径差异 |
+| --- | --- | --- |
+| 黄金、原油 | `qt.gtimg.cn/q=hf_GC,hf_CL`（COMEX 黄金、NYMEX 原油主连，GBK） | 涨跌额 = 现价 − 昨结；腾讯没有期货分时，迷你图仍为空 |
+| 指数迷你图 | `minute/query`（A 股）、`hkMinute/query`（恒指）、`UsMinute/query`（纳指、标普） | A 股 / 港股为累计量，分时点直接取价；美股只有价格 |
+| 历史日成交额（走势图） | `newfqkline/get` 日 K 的第 9 列（万元） | 万元 × 1e4 → 元，页面再换算亿元；北证 50 日 K 有额 |
+| 昨日同一时点（午盘对比） | `day/query` 近 5 日分时的累计额 | 取今天与上一交易日 11:30 的累计成交额；北证 50 分时没有成交额，其午盘对比和全市场午盘对比为空 |
+| 涨幅中位数 | `proxy.finance.qq.com … getBoardRankList`（全 A，按涨幅排序） | 用 `total` 定位中位名次（偶数个取中间两位平均）；腾讯全 A 口径与东财略有出入，写在 `meta.notes` |
+| 冲高回落 / 探底回升 | 同一接口按振幅排序，取振幅 ≥ 9% 的候选，再用报价的最高 / 最低 / 昨收重算 | 冲高回落 = 最高涨幅 − 收盘涨幅 ≥ 10；探底回升 = 收盘涨幅 − 最低涨幅 ≥ 10（两者都要求振幅 ≥ 10，所以 9% 候选不漏） |
+| 概念板块主力净流入 | `proxy.finance.qq.com … pt/getRank?board_type=gn` 的 `zljlr` | 万元 → 亿元；按板块名与同花顺对应，去掉「概念」后缀作别名；名称对不上的（如 PPP概念 ↔ PPP模式）留空 |
+| 个股详情 | 报价（价、昨收、涨跌、换手、流通市值）、`minute/query`、`newfqkline` 前复权日 K | 分时累计量逐分钟取差分；均价 = 累计额 ÷ (累计手数 × 100)；日 K 涨跌幅由相邻前复权收盘算出，所以多取一根，只留 90 根；收盘后腾讯补的 15:30 重复点丢弃 |
+
+另：交易日历、`_days` 的日 K 改走 `newfqkline`（`web.ifzq.gtimg.cn`，生产实测可达）。
+
+### 仍然取不到 / 留空
+
+- 个股详情的「所属概念板块」：腾讯没有对应接口，保持为空。
+- 黄金、原油迷你图：腾讯没有期货分时。
+- 北证 50 的午盘对比：腾讯 5 日分时对北证没有成交额。
+- 中位数、振幅榜、概念资金依赖 `proxy.finance.qq.com`；该域名在生产服务器上的可达性以线上接口的 `meta.unavailable` 为准（见下方线上验证）。
+
+### 验证
+
+- `backend/tests/unit/test_tencent_quote.py` 共 18 个：腾讯代码映射、报价 / 期货 / 日 K / 分时 / 5 日分时 / 排名解析（预置字节样本，不连网）、坏响应，以及屏蔽 push2 后的服务降级（日历、全球行情含商品与迷你图、历史成交额与午盘对比、成交额报价兜底、中位数、冲高回落、概念资金、个股详情、未知代码 404）。
+- `ruff check` / `ruff format --check` / `mypy app` / `pytest tests/unit` 全部通过。
+- 本机真实网络仅屏蔽 `push2` / `push2his`：黄金 4070.22（−1.05%）、原油 90.33（−0.21%）、8 个指数迷你图各 40 点、近 7 日成交额、午盘对比、中位数 −1.74%、冲高回落 12 只 / 探底回升 50 只、概念资金 5 个有值、茅台分时 267 点 + 日 K 90 根。
+
+## 2026-11-06（续四）市场行情页面样式统一：沿用站内 PanelCard 风格
+
+### 问题
+
+新增的市场行情面板长得「像一坨」、没有区块分隔线。根因：样式里引用了 14 个设计令牌里并不存在的 CSS 变量（`--bg-card`、`--bg-surface`、`--border`、`--text-primary`、`--shadow-sm` 等），浏览器当成未定义，于是背景、边框、层级全部丢失。
+
+### 改动（仅前端样式 / 结构，不改接口与数据）
+
+- 令牌改用站内真实变量（`--panel` / `--panel-soft` / `--line` / `--line-soft` / `--text-strong` / `--muted` / `--faint` / `--accent` / `--rise` / `--fall` …，见 `styles/tokens.css`），明暗两套主题都生效。
+- 新增 `components/market/MarketPanel.vue`：包一层站内 `PanelCard`（色块图标 + 标题 + ⓘ + 右上角操作），副标题在头部下方，底部统一数据状态条（和正文之间有分隔线）。
+- 新增 `components/market/PanelSection.vue`：卡片内部的小节标题（竖条 + 标题 + 说明 + 渐隐分隔线），让同一张卡里不同区域一眼分得开。
+- `PanoramaStatusBar.vue` 重做：一行徽标 + 交易日 / 更新时间 / 来源；「缺项 N」「口径说明」折叠展开，不再把一长串说明平铺在卡片底部。
+- 已转换：全球核心指数、情绪与盘面广度（3 个小节）、成交量能 / 两融（两张等高卡）、股指期货持仓（表格可纵向滚动、表头吸顶；条形图按行数撑高，负值标签放条左侧，不再压住机构名）、领涨板块 / 人气股（按容器宽度切单双列）、韭研公社异动解析、连板分析（KPI 换成站内 `StatCard`，断板表限高滚动）。
+- 龙虎榜、热点消息：筛选区、席位卡 / 消息卡改成站内渐变卡片 + 头部分隔线，字号从 10–11px 提到 12–13px。
+
+### 验证
+
+- `vue-tsc --noEmit`、`vitest run`（58 个文件 / 380 个用例）通过。
+- 有头 Chrome 对 `/market/indices`、`/market/ladder`、`/market/dragon-tiger`、`/market/news` 做深色截图，`/market/indices` 另做浅色截图（接生产 API 的真实数据），逐卡检查。
+
+## 2026-11-06（续五）市场行情四页：每个框边缘可拖动
+
+### 起因与处理
+
+用户看了上一版「整体按屏宽放大」后反馈：要的不是比例放大，而是**每个框都能在边缘拉动**；整体放大之后反而看不下数据。
+
+- 先把放大撤回到紧凑基线 `b67b06c` 的密度（字号 11–12px、图表高度 170–200px 全部还原），没有保留任何「显示大小」开关。
+- 只留下三样不属于放大的东西：`global.css` 的 `.page` 最大宽度 2200px（超宽屏不再两边留白过大）、右侧个股详情的拖动分隔条（默认宽度 `clamp(400px, 22vw, 520px)`）、韭研异动「展开全文 / 收起」与详情底部来源条。
+- 然后做一套通用的「框边缘拖动」机制，四个页面的框都套上。
+
+### 怎么用
+
+| 位置 | 光标 | 效果 |
+| --- | --- | --- |
+| 框右边缘 | `col-resize` | 改宽度。右边紧挨着同一行的另一个框时，两个框**共用一条分隔条**（一增一减，总宽不变）；右边没有框时只改自己，最宽长到这一行的剩余空位 |
+| 框下边缘 | `row-resize` | 改高度。变矮之后框内**内部滚动**，表头保持吸顶；图表跟着变高并重绘 |
+| 右下角 | `nwse-resize` | 宽高一起拖，角上有小握把图标 |
+| 双击任意一条边 | — | 这个框（以及共用分隔条的邻居）回默认 |
+| 聚焦手柄后按方向键 | — | 微调（Shift 加大步长），Enter / Delete 恢复 |
+| 工具栏「重置布局」 | — | 四个页面所有自定义尺寸 + 右侧详情宽度全部回默认，并清掉本地记录 |
+
+- 热区 8px（角 16px），不盖内容按钮和滚动条；悬停 / 拖动时边缘用 `--accent` 高亮；拖动期间才 `user-select: none`。
+- 把一个框拖窄后，下面还是默认整行宽的那个框会自动流上来，宽度 = 剩余空位；用户自己调过的框不会被动。
+- 宽度记成百分比（三位小数，保证三等分的框共用分隔条后一行仍放得下），最小约 320px。
+- 高度很大的框（热点消息列表默认 1 万多像素）拖动带增益，一把就能拖到合适高度，不用从页尾拖十几次。
+- ≤1280px 单列：不能改宽度（右边缘与角隐藏），仍可改高度。
+- 记录存在 `localStorage` 的 `finscope.market.layout.v1`（一个 JSON，按稳定的框 id 存）；写不进去（隐私模式、配额满）时降级为只在本次会话生效。
+
+### 哪些框能拖
+
+| 页面 | 能拖宽 + 高 | 只能拖高 |
+| --- | --- | --- |
+| 行情总览 | 全球核心指数、情绪广度、成交量能、两融（成交量能与两融共用分隔条）、期货持仓、领涨板块、人气股（二者共用分隔条）、指数走势图卡、行情概览表 | 右栏三张卡（区间、均线、基差）；右栏整列只能改宽度 |
+| 龙虎榜 | 席位卡（每张一个）、汇总卡（三张共用分隔条）、全部上榜个股（展开时） | — |
+| 连板分析 | 连板梯队、断板、韭研异动 | — |
+| 热点消息 | 筛选区、消息列表（高度 = 列表视口，超出内部滚动） | — |
+| 右侧个股详情 | — | 分时卡、日 K 卡、席位列表 |
+
+### 机制实现
+
+- `components/market/panelLayout.ts`：模块级响应式状态 + 纯算术（取整、夹取、`computeWidthDrag`、`widthToBasis`、增益）+ localStorage 读写 / 重置，四个页面共用。
+- `components/market/ResizableBox.vue`：外层包一层，负责手柄、Pointer Events（`setPointerCapture`，松手才写盘）、邻居判断（同一行 `offsetTop` 一致才算）、拖完补一个 `resize` 事件让 ECharts 重画。
+- `MarketPanel.vue` 根节点换成 `ResizableBox`；其余各面板按 `.mk-box.is-h`（用户拖过高度）切换成「头 / 尾固定，中间内部滚动，图表（`mk-fill`）撑满」。面板内部的响应式改成容器查询（`@container mk`），框被拖窄时内部列数跟着变，而不是看整个窗口宽度。
+- 踩到的坑：图表画布有固定像素宽高，会反过来把 grid 列 / flex 项撑住，框拖窄、拖矮之后图表缩不回去。已经给情绪广度的图表加 `minmax(0, …)` 与 `contain: size`；拖高再拖矮的缩回行为用 Playwright 实拖复核过。
+
+### 没有做成可拖的（以及原因）
+
+- 总览页顶部 4 张 `StatCard`、连板分析顶部 `ld-kpis`：本来就是一行等高的小卡，拖它们没有意义。
+- 龙虎榜筛选栏 / 页脚、热点消息页脚与历史热点区、页头、来源脚注：内容固定，不适合拖。
+- 右侧详情整体的高度：跟随页面，只做了宽度分隔条和内部三块的高度。
+- 热点消息筛选区拖窄后，下面的消息列表会按通用规则流上来排在旁边，这是通用机制的结果，没有为它单独特判。
+
+### 验证
+
+| 项目 | 结果 |
+| --- | --- |
+| `npx vue-tsc --noEmit` | 通过 |
+| `npx vitest run` | 60 个文件 / 408 个用例通过（基线 58 / 380，新增 `panelLayout.test.ts` 19 个、`ResizableBox.test.ts` 9 个：宽高夹取、共用分隔条总宽不变、拖动与双击恢复、键盘、没有 id 不可拖、localStorage 写入 / 读取 / 脏数据 / 写失败、重置） |
+| 有头 Chrome + Playwright 实拖（2560×1300 深色为主，另做 1440×900、1200×800 浅色单列、浅色截图） | 下边缘拖高 / 拖矮、右边缘拖窄后邻框流到旁边、共用分隔条、角拖动、双击恢复、刷新后保持、「重置布局」都符合预期；图表随框变高并重绘（成交量 169→329、情绪广度 108→359、期货持仓 338→538、详情分时 176→376），拖矮后能缩回；龙虎榜「全部上榜个股」表头吸顶；点击个股联动、详情收起 / 展开、成交量能页签切换正常（轮询刷新没有单独测） |
+| 未拖动时的默认外观 | 样式按 `b67b06c` 的紧凑版还原；行情总览整页高度在 2560 宽下基线约 4340px、现在约 4335px。其余三页只做了截图目检，没有逐像素对比 |
+
+> 说明：happy-dom 里不解析 `flex-basis: calc(... var(--gap) ...)`，单测只验证百分比与手柄逻辑，真实浏览器里的排布效果以 Playwright 实拖为准。
+
+## 2026-11-06（续六）点全球指数卡片：右侧出分时和日K
+
+### 本轮范围
+
+点「全球核心指数与大宗商品」某张卡片后，右侧详情从个股面板切到该指数 / 商品的行情头、分时、近 90 根日 K。只用真实上游；没有的字段是 `null` / 空数组，并写进 `meta.unavailable`，页面显示「—」或空状态文案，不造数。
+
+### 后端：`GET /api/v1/ashare/index-detail?code=`
+
+- 路由：`backend/app/api/v1/ashare_panorama.py`。`code` 是全球行情的 symbol（`000001.SH`、`HSI.HK`、`NDX.US`、`COMEX黄金` 等），大小写不敏感；不在这 10 个品种里的（例如把上证指数写成平安银行 `000001.SZ`）返回 404。
+- 服务：`ASharePanoramaService.index_detail`。上游顺序：**东方财富优先 → 腾讯回退**；黄金 / 原油（COMEX / NYMEX 主连）腾讯没有分时也没有日 K，**日 K 再走新浪** `GlobalFuturesService.getGlobalFuturesDailyKLine`。
+- 响应走既有 `success_response`（`exclude_none=True`），缺字段直接省略而不是填 0。
+- 日 K 日期升序、最多 90 根；腾讯 / 新浪多取一根用来算第一根涨跌幅，最早一根的 `changePct` 可能为 `null`。新浪期货日 K 成交量恒为 0，记成 `volume: null` 并在 `meta.notes` 写明。
+- 腾讯 `as_em_row` 补上 `f17`（今开），指数详情的开高低收才能从腾讯行情里取到。
+
+### 前端：指数模式 vs 个股模式
+
+- 新增 `IndexDetailPanel.vue`：只显示行情头、开高低收、分时、日 K（没有封单、涨停原因、龙虎榜席位这些个股专属块）。点卡片走 `fetchIndexDetail`，**不调** `fetchStockDetail`。
+- `marketLinkage`：`selectIndex` 保存完整 symbol（`NDX.US`、`COMEX黄金`，不做 6 位截断），切到指数模式并把个股高亮清掉；`selectStock` 覆盖指数、回到个股模式。`isStockActive` 统一比较选中高亮（列表里带 `.SZ` / `.SH` 的代码也能对上；指数模式下个股全部不高亮）。
+- 右侧已收起时点指数会自动展开。总览页 `ensureDefaultIndex("000001.SH")`：进来时用户还没点过，右侧默认上证，不空着；离开总览页会撤掉这个「默认选中」，用户自己点过的指数会保留。
+- 黄金 / 原油分时空状态直接用 `meta.unavailable["指数分时"]` 的文案，不写死「暂无」。
+- 分时 / 日 K 图表抽到共用的 `detailCharts.ts`：均价、成交量上游没给就不画对应的线 / 柱（不画成一条 0）。
+
+### NDX 映射修正
+
+东财 `100.NDX` 是**纳斯达克综合指数**，腾讯对应 `usIXIC`（`usIXIC.OQ` 分时），不是 Nasdaq-100 的 `usNDX`。现价应在综合指数量级（约 24315），不是纳指 100 的约 28000。全球行情卡片与指数详情共用这张映射。
+
+### 诚实缺项 / 已知局限
+
+| 项 | 说明 |
+| --- | --- |
+| 黄金 / 原油分时 | 腾讯没有 COMEX / NYMEX 期货分时接口。东财 push2 在生产不可达时 `intraday=[]`，`meta.unavailable["指数分时"]` 写明原因。`NOT_IMPLEMENTED`：没有第二条期货分时源。 |
+| 美股分时跨午夜 | 时间是北京时间（美东 09:30 → 22:30，16:00 → 次日 05:00）。按接口返回的**数组顺序**画，不按 `HH:MM` 字符串排序，否则 05:00 会被排到开盘前面。 |
+| 新浪期货日 K 在 ECS | 本机单测用预置 JSONP，不连网。**生产 ECS 上 `stock2.finance.sina.com.cn` 是否可达未验证**；不通则黄金 / 原油日 K 也会空，`unavailable` 会写「新浪财经日K也取不到」。 |
+| 切到涨停梯队 | 总览页的默认上证会在离开时撤掉；连板页 `watch` 到最高板龙头且用户从没点过个股时，会 `selectStock` 把右侧切回个股。从总览点完指数再切到连板，会被那页的默认个股接管。龙虎榜没有这种自动选股。 |
+| 商品日 K 成交量 | 新浪全球期货日 K 不含成交量，柱状图不画。 |
+
+### 变更文件
+
+- 后端：`api/v1/ashare_panorama.py`、`schemas/ashare_panorama.py`、`services/ashare_panorama.py`、`providers/tencent_quote.py`、`providers/sina_market.py`、`tests/unit/test_ashare_index_detail.py`
+- 前端：`api/aSharePanorama.ts`、`stores/marketLinkage.ts`、`components/market/{IndexDetailPanel.vue,detailCharts.ts,MarketSplitLayout.vue,StockDetailPanel.vue}`、`views/{MarketIndicesView,LimitLadderView,DragonTigerView}.vue`、`views/parts/market/{GlobalCoreStrip,LeadingSectorsPopularPanel}.vue`、`tests/unit/{marketLinkageIndex,detailCharts,IndexDetailPanel}.test.ts`
+
+### 验证（提交前，本机）
+
+| 命令 | 结果 |
+| --- | --- |
+| `PYTHONPATH=finscope-ai-pr/backend`，主 venv：`ruff check .` / `ruff format --check .` | 通过（511 个文件已格式化） |
+| 同上：`mypy app` | 通过（308 个源文件） |
+| 同上：`pytest tests/unit/test_ashare_index_detail.py` | 13 passed（东财优先、屏蔽 push2 回退腾讯、NDX→usIXIC、美股跨午夜顺序、商品分时留空+新浪日 K、全上游失败写 unavailable、未知代码 404、路由 camelCase） |
+| `npx vue-tsc --noEmit` | 通过 |
+| `npx vitest run` | 63 个文件 / 441 个用例通过（基线 60 / 408；新增联动 11、图表 7、指数面板 15） |
+
+生产接口与有头 Chrome 点击验证在分支部署之后做，见本轮收尾汇报。
