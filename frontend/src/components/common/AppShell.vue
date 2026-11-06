@@ -30,7 +30,6 @@ import {
   Star,
   Sunny,
   TrendCharts,
-  Trophy,
 } from "@element-plus/icons-vue"
 import GlobalSearch from "./GlobalSearch.vue"
 import { fetchSystemStatus, formatShanghai, reasonText, type SystemSnapshot } from "../../api/health"
@@ -113,13 +112,6 @@ const groups = computed<NavGroup[]>(() => {
       icon: DataBoard,
       primary: "/industry",
       children: [{ index: "/industry/pulse", label: "轮动与情绪" }],
-    },
-    {
-      key: "hotspots",
-      label: "市场热点",
-      icon: Trophy,
-      primary: "/hotspots",
-      children: [],
     },
     {
       key: "assistant",

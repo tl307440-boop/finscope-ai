@@ -19,6 +19,7 @@ import SourceFooter from "../components/ui/SourceFooter.vue"
 import StatCard from "../components/ui/StatCard.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
+import HotspotsSection from "./parts/market/HotspotsSection.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
 import { adjustmentLabel, volumeUnitLabel } from "../api/bars"
 import type { DailyBar } from "../api/bars"
@@ -761,6 +762,8 @@ onMounted(() => {
         :stale="meta.stale"
         :note="demoMode ? `当前为${dataModeText(meta.dataMode)}` : '缺失交易日不补价格，页面不承诺实时'"
       />
+
+      <HotspotsSection />
     </template>
   </div>
 </template>
