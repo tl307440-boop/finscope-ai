@@ -2583,3 +2583,44 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 | `frontend`: `vue-tsc --noEmit` | 通过 |
 | `frontend`: `vitest run tests/unit/jygsActions.test.ts` | 4 通过；全量仍只有无关的 `SimWhatIf.test.ts` 1 个失败 |
 | 真机（有头 Chrome）连板分析页：韭研面板 9 个板块 / 35 只，与韭研官网页面的「全部异动解析 · 35」一致；点击个股后右侧详情出现异动解析正文 | 通过 |
+
+## 2026-11-06（续二）生产服务器连不上东财 push2：腾讯行情备用通道
+
+### 现象与定位
+
+- 分支部署到生产站后，行情四个模块几乎全空，`meta.unavailable` 里是「交易日历：上游连接中断」。交易日历是所有页面的前置条件，取不到时连板梯队、韭研异动解析都不会去取数。
+- 在生产服务器（阿里云杭州）上用 curl 实测（带 `Referer: https://quote.eastmoney.com/`，10 秒超时）：
+
+| 域名 | 结果 |
+| --- | --- |
+| `push2his.eastmoney.com`、`7.push2his…`、`28.push2his…` | 连接失败（`000`） |
+| `push2.eastmoney.com`、`82.push2…`、`1.push2…`、`push2delay.eastmoney.com` | 连接失败（`000`） |
+| `push2ex.eastmoney.com`（涨停池） | 200 |
+| `web.ifzq.gtimg.cn`、`qt.gtimg.cn`（腾讯） | 200 |
+| `www.jiuyangongshe.com` | 200 |
+| `hq.sinajs.cn` | 403（缺 Referer，本轮未使用） |
+
+  数字镜像域名也全部不通，所以不能靠换东财域名解决。`datacenter.eastmoney.com`（龙虎榜、期指持仓、两融）线上本来就是通的。
+
+### 变更
+
+- 新增 `backend/app/providers/tencent_quote.py`：腾讯报价（`qt.gtimg.cn`，GBK）、日 K（`fqkline`）、分时（`minute/query`）的地址与解析。
+- `ASharePanoramaService`：
+  - 交易日历优先用腾讯上证指数日 K，失败再回退东财；
+  - `_quotes()`（全球行情、昨日炸板今日行情、人气股行情、断板股行情、资讯关联行情）在东财失败时用腾讯报价补，行结构转成东财 `f2/f3/f4/f6/f8/f12/f13/f14/f21`，下游不用区分来源；
+  - 成交额：东财日 K / 分时失败时，用腾讯分时的当日累计成交额（含午盘 11:30 累计）；北证 50 腾讯分时不覆盖，退一步取报价里的当日成交额（没有午盘累计，所以「全市场午盘」为空）。
+- 来源在 `meta.sources` 里写明（「腾讯财经 日K / 行情 / 分时」），回退成功时不再把对应项记为不可用；腾讯也失败时保留东财的失败原因。
+
+### 限制（如实标注，不造假）
+
+- 腾讯没有商品期货：黄金、原油仍为空（`meta.unavailable` 点名）。
+- 腾讯日 K 没有成交额，分时只有当日：历史日成交额、「昨日同一时点」对比为空，成交额走势图只有今天一个点。
+- 分时迷你图、涨幅排名中位数、振幅榜（冲高回落 / 探底回升）、个股详情的东财部分（概念板块、分时、日 K 90 日）仍依赖 push2，线上暂无数据，页面写明「上游连接中断」。
+
+### 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `backend`: `pytest tests/unit/test_tencent_quote.py`（代码映射、报价单位与行结构、坏行忽略、日 K / 分时解析、坏响应、日历回退、全球行情点名缺失商品、成交额只取今天与北证退一步） | 通过 |
+| `backend`: `pytest tests/unit` 全量 / `ruff check` / `ruff format --check` / `mypy app` | 通过 |
+| 本机真实网络，仅屏蔽 `push2` / `push2his`：全球行情 8 个指数有价、成交额沪深创科四项有值、连板分析交易日 2026-11-06 且梯队 5 层、情绪页涨停 32 只 / 上涨 678 家 | 通过 |

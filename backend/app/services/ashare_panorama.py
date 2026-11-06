@@ -22,6 +22,7 @@ from app.core.config import get_settings
 from app.providers import ashare_panorama as src
 from app.providers import eastmoney_boards as em
 from app.providers import eastmoney_sentiment as es
+from app.providers import tencent_quote as tq
 from app.providers.errors import ProviderError
 from app.schemas.ashare_panorama import (
     BrokenStreak,
@@ -205,8 +206,22 @@ class ASharePanoramaService:
         return cached.value
 
     async def _days(self, acc: _Acc) -> list[str]:
-        """最近交易日列表（升序）：取自上证指数日 K，盘中最后一天就是今天。"""
+        """最近交易日列表（升序）：取自上证指数日 K，盘中最后一天就是今天。
 
+        先用腾讯日 K（生产服务器连不上东财 push2his），失败再试东财。
+        """
+
+        code = "sh000001"
+
+        async def load_days() -> list[str]:
+            payload = await self.gateway.get(tq.kline_url(code, _KLINE_DAYS), tq.HEADERS)
+            return tq.parse_kline_days(payload, code)
+
+        tencent_days: list[str] | None = await self._tencent(
+            acc, "交易日历", 300, load_days, "腾讯财经 日K"
+        )
+        if tencent_days:
+            return tencent_days
         doc = await self._doc(
             acc,
             "交易日历",
@@ -350,21 +365,69 @@ class ASharePanoramaService:
         acc.source(jygs.SOURCE_NAME)
         return cached.value
 
+    async def _tencent(
+        self,
+        acc: _Acc,
+        label: str,
+        ttl: int,
+        load: Callable[[], Awaitable[Any]],
+        source: str,
+    ) -> Any | None:
+        """腾讯行情的备用通道：成功返回数据并记来源，失败返回 None（不写 `unavailable`）。"""
+
+        try:
+            cached: Cached[Any] = await self.cache.get(f"ashare:tencent:{label}", ttl, load)
+        except ProviderError:
+            return None
+        acc.fetched.append(cached.fetched_at)
+        acc.stale = acc.stale or cached.stale
+        acc.source(source)
+        return cached.value
+
+    async def _tencent_quotes(self, acc: _Acc, secids: list[str]) -> dict[str, calc.Doc]:
+        """用腾讯报价补东财 ulist 取不到的行（键名、键格式与 `parse_ulist` 一致）。"""
+
+        codes = {code: secid for secid in secids if (code := tq.tencent_code(secid))}
+        if not codes:
+            return {}
+        ordered = sorted(codes)
+
+        async def load() -> dict[str, tq.Quote]:
+            return tq.parse_quotes(await self.gateway.get(tq.quote_url(ordered), tq.HEADERS))
+
+        quotes = await self._tencent(
+            acc, f"报价:{','.join(ordered)}", self._ttl(), load, "腾讯财经 行情"
+        )
+        if not quotes:
+            return {}
+        return {
+            codes[code]: tq.as_em_row(quote, codes[code])
+            for code, quote in quotes.items()
+            if code in codes
+        }
+
     async def _quotes(
         self, acc: _Acc, label: str, secids: list[str], fields: str
     ) -> dict[str, calc.Doc]:
         out: dict[str, calc.Doc] = {}
         unique = list(dict.fromkeys(secids))
         for start in range(0, len(unique), 80):
+            batch = unique[start : start + 80]
             doc = await self._doc(
                 acc,
                 label,
-                src.ulist_url(unique[start : start + 80], fields),
+                src.ulist_url(batch, fields),
                 src.EM_HEADERS,
                 source="东方财富 行情",
             )
             if doc is not None:
                 out.update(calc.parse_ulist(calc.as_doc(doc)))
+                continue
+            # 东财 push2 在部分机房连不上：改用腾讯报价；腾讯也取不到时保留东财的失败原因。
+            fallback = await self._tencent_quotes(acc, batch)
+            if fallback:
+                acc.unavailable.pop(label, None)
+                out.update(fallback)
         return out
 
     # ───────────── 1. 全球核心指数 ─────────────
@@ -410,6 +473,10 @@ class ASharePanoramaService:
             )
         if not quotes:
             acc.unavailable.setdefault("全球行情", _UNAVAILABLE_NEWS)
+        else:
+            for item in items:
+                if item.price is None:
+                    acc.unavailable.setdefault(item.name, "该来源暂无行情")
         return GlobalQuotesPayload(
             quotes=items,
             meta=acc.meta(
@@ -649,6 +716,35 @@ class ASharePanoramaService:
                     noon_prev[key] = (
                         calc.amount_until(rows, dates[-2], _NOON) if len(dates) >= 2 else None
                     )
+        # 东财日 K / 分时连不上时，改用腾讯分时的「当日累计成交额」：只有今天，没有历史日、
+        # 没有昨日同一时点，对应字段保持为空。
+        fallback_used = False
+        for key, name, secid in _VOLUME_INDEXES:
+            if key in amounts or key in noon_today:
+                continue
+            minutes = await self._tencent_minutes(acc, secid)
+            if minutes is not None and minutes.total_amount is not None:
+                amounts[key] = {minutes.day: minutes.total_amount}
+                noon_today[key] = (
+                    minutes.amount_until(_NOON)
+                    if session != "intraday" or self._local().strftime("%H:%M") >= _NOON
+                    else None
+                )
+            else:
+                # 腾讯分时不覆盖北交所：退一步取报价里的当日成交额（没有午盘累计）。
+                quote = (await self._tencent_quotes(acc, [secid])).get(secid, {})
+                total = calc.num(quote.get("f6"))
+                if day is None or total is None:
+                    continue
+                amounts[key] = {day.isoformat(): total}
+            fallback_used = True
+            acc.unavailable.pop(f"日K {name}", None)
+            acc.unavailable.pop(f"分时 {name}", None)
+        if fallback_used:
+            acc.notes.append(
+                "东方财富日 K / 分时在本服务器连不上，成交额改用腾讯分时的当日累计；"
+                "历史日成交额和「昨日同一时点」对比暂缺。"
+            )
         volumes = self._volume_series(amounts, noon_today, noon_prev, days[-7:])
         margins = await self._margins(acc)
         return VolumeMarginPayload(
@@ -656,6 +752,19 @@ class ASharePanoramaService:
             margins=margins,
             meta=acc.meta(day.isoformat() if day else None, session),
         )
+
+    async def _tencent_minutes(self, acc: _Acc, secid: str) -> tq.Minutes | None:
+        code = tq.tencent_code(secid)
+        if code is None:
+            return None
+
+        async def load() -> tq.Minutes:
+            return tq.parse_minutes(await self.gateway.get(tq.minute_url(code), tq.HEADERS), code)
+
+        minutes: tq.Minutes | None = await self._tencent(
+            acc, f"分时:{code}", self._ttl(), load, "腾讯财经 分时"
+        )
+        return minutes
 
     @staticmethod
     def _volume_series(
