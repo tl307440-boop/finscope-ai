@@ -448,9 +448,16 @@ class ASharePanoramaService:
                 for row in _GLOBAL
             ),
         )
+        # 东财分时连不上的，改用腾讯分时（A 股 / 港股 / 美股指数有；商品期货没有分时，留空）。
+        fallback = await asyncio.gather(
+            *(
+                self._tencent_minutes(acc, row[0]) if doc is None else _none()
+                for row, doc in zip(_GLOBAL, trend_docs, strict=True)
+            )
+        )
         items: list[GlobalQuote] = []
-        for (secid, code, symbol, name, category), trend_doc in zip(
-            _GLOBAL, trend_docs, strict=True
+        for (secid, code, symbol, name, category), trend_doc, minutes in zip(
+            _GLOBAL, trend_docs, fallback, strict=True
         ):
             row = quotes.get(secid, {})
             spark: list[float] = []
@@ -458,6 +465,9 @@ class ASharePanoramaService:
                 latest = calc.latest_day_rows(calc.parse_trends(calc.as_doc(trend_doc)))
                 spark = [round(p.price, 4) for p in latest]
                 spark = calc.downsample(spark, 40)
+            elif minutes is not None and minutes.bars:
+                spark = calc.downsample([round(b.price, 4) for b in minutes.bars], 40)
+                acc.unavailable.pop(f"分时 {name}", None)
             items.append(
                 GlobalQuote(
                     code=code,
@@ -567,6 +577,30 @@ class ASharePanoramaService:
             meta=acc.meta(day.isoformat(), session),
         )
 
+    async def _median_tencent(self, acc: _Acc) -> float | None:
+        """东财排名取不到时：用腾讯 A 股涨幅榜取中间一名（偶数只取中间两名均值）。"""
+
+        async def load() -> float | None:
+            head = await self.gateway.get(tq.rank_url("priceRatio", 0, 1), tq.HEADERS)
+            total, _ = tq.parse_rank(head)
+            values: list[float | None] = []
+            for rank in sorted({(total - 1) // 2, total // 2}) if total > 0 else []:
+                page = await self.gateway.get(tq.rank_url("priceRatio", rank, 1), tq.HEADERS)
+                rows = tq.parse_rank(page)[1]
+                values.append(rows[0].change_pct if rows else None)
+            return calc.mean_of(values)
+
+        median: float | None = await self._tencent(
+            acc, "涨幅中位数", self._ttl(), load, "腾讯财经 涨幅榜"
+        )
+        if median is not None:
+            acc.unavailable.pop("涨幅排名", None)
+            acc.notes.append(
+                "东方财富涨幅排名在本服务器连不上：涨跌幅中位数取腾讯 A 股涨幅榜的中间名次，"
+                "样本范围可能与东财口径略有差异。"
+            )
+        return median
+
     async def _median(self, acc: _Acc, active: int) -> float | None:
         values: list[float | None] = []
         for page, index in calc.median_rank_pages(active):
@@ -577,10 +611,42 @@ class ASharePanoramaService:
                 src.EM_HEADERS,
                 source="东方财富 行情",
             )
+            if doc is None:
+                return await self._median_tencent(acc)
             rows = calc.as_list(calc.as_doc(calc.as_doc(doc).get("data")).get("diff"))
             if index < len(rows):
                 values.append(calc.num(calc.as_doc(rows[index]).get("f3")))
         return calc.mean_of(values)
+
+    async def _swings_tencent(self, acc: _Acc) -> list[calc.Swing] | None:
+        """东财振幅榜取不到时：腾讯振幅榜筛出振幅 ≥ 9% 的候选（冲高回落 / 探底回升必然振幅 ≥ 10%），
+        再用腾讯报价取这些股票的最高 / 最低 / 昨收，口径与东财一致。"""
+
+        async def load() -> list[calc.Swing]:
+            codes: list[str] = []
+            for offset in range(0, 600, 200):
+                page = await self.gateway.get(tq.rank_url("amplitude", offset, 200), tq.HEADERS)
+                rows = tq.parse_rank(page)[1]
+                codes += [r.code for r in rows if (r.amplitude_pct or 0) >= 9.0]
+                if len(rows) < 200 or (rows[-1].amplitude_pct or 0) < 9.0:
+                    break
+            rows_out: list[calc.Doc] = []
+            for start in range(0, len(codes), 80):
+                batch = codes[start : start + 80]
+                quotes = tq.parse_quotes(await self.gateway.get(tq.quote_url(batch), tq.HEADERS))
+                rows_out += [tq.as_em_row(q, f"0.{q.code}") for q in quotes.values()]
+            return calc.swing_rows(rows_out)
+
+        swings: list[calc.Swing] | None = await self._tencent(
+            acc, "振幅榜", self._ttl(), load, "腾讯财经 振幅榜"
+        )
+        if swings is not None:
+            acc.unavailable.pop("振幅榜", None)
+            acc.notes.append(
+                "东方财富振幅榜在本服务器连不上：冲高回落 / 探底回升取腾讯振幅榜（振幅≥9%候选）"
+                "再按最高 / 最低 / 昨收重算；行业列由同花顺涨停原因补充，没有则为空。"
+            )
+        return swings
 
     async def _swings(self, acc: _Acc) -> list[calc.Swing] | None:
         rows: list[calc.Doc] = []
@@ -593,7 +659,9 @@ class ASharePanoramaService:
                 source="东方财富 行情",
             )
             if doc is None:
-                return None if not rows else calc.swing_rows(rows)
+                if not rows:
+                    return await self._swings_tencent(acc)
+                return calc.swing_rows(rows)
             batch = [
                 calc.as_doc(r)
                 for r in calc.as_list(calc.as_doc(calc.as_doc(doc).get("data")).get("diff"))
@@ -716,34 +784,42 @@ class ASharePanoramaService:
                     noon_prev[key] = (
                         calc.amount_until(rows, dates[-2], _NOON) if len(dates) >= 2 else None
                     )
-        # 东财日 K / 分时连不上时，改用腾讯分时的「当日累计成交额」：只有今天，没有历史日、
-        # 没有昨日同一时点，对应字段保持为空。
+        # 东财日 K / 分时连不上时：历史日成交额取腾讯日 K（成交额，万元），午盘累计与「上一交易日
+        # 同一时点」取腾讯 5 日分时；腾讯没有的字段（如北证 50 分时没有成交额）保持为空。
         fallback_used = False
+        noon_ready = session != "intraday" or self._local().strftime("%H:%M") >= _NOON
         for key, name, secid in _VOLUME_INDEXES:
-            if key in amounts or key in noon_today:
+            if key in amounts:
                 continue
-            minutes = await self._tencent_minutes(acc, secid)
-            if minutes is not None and minutes.total_amount is not None:
-                amounts[key] = {minutes.day: minutes.total_amount}
-                noon_today[key] = (
-                    minutes.amount_until(_NOON)
-                    if session != "intraday" or self._local().strftime("%H:%M") >= _NOON
-                    else None
-                )
-            else:
-                # 腾讯分时不覆盖北交所：退一步取报价里的当日成交额（没有午盘累计）。
+            code = tq.tencent_code(secid)
+            if code is None:
+                continue
+            bars = await self._tencent_daily(acc, code, 9) or []
+            history = {b.day: b.amount_yuan for b in bars if b.amount_yuan is not None}
+            five = await self._tencent_five_day(acc, code) or []
+            if five:
+                noon_today[key] = five[-1].amount_until(_NOON) if noon_ready else None
+                if len(five) >= 2:
+                    noon_prev[key] = five[-2].amount_until(_NOON)
+                if five[-1].total_amount is not None:
+                    history.setdefault(five[-1].day, five[-1].total_amount)
+            if not history and day is not None:
+                # 日 K 与分时都没有：退一步取报价里的当日成交额（没有历史、没有午盘累计）。
                 quote = (await self._tencent_quotes(acc, [secid])).get(secid, {})
                 total = calc.num(quote.get("f6"))
-                if day is None or total is None:
-                    continue
-                amounts[key] = {day.isoformat(): total}
+                if total is not None:
+                    history[day.isoformat()] = total
+            if not history:
+                continue
+            amounts[key] = history
             fallback_used = True
             acc.unavailable.pop(f"日K {name}", None)
             acc.unavailable.pop(f"分时 {name}", None)
         if fallback_used:
             acc.notes.append(
-                "东方财富日 K / 分时在本服务器连不上，成交额改用腾讯分时的当日累计；"
-                "历史日成交额和「昨日同一时点」对比暂缺。"
+                "东方财富日 K / 分时在本服务器连不上：历史日成交额取腾讯日 K，午盘累计与上一交易日"
+                "同一时点取腾讯 5 日分时；北证 50 的腾讯分时没有成交额，"
+                "其午盘对比与全市场午盘对比为空。"
             )
         volumes = self._volume_series(amounts, noon_today, noon_prev, days[-7:])
         margins = await self._margins(acc)
@@ -753,8 +829,10 @@ class ASharePanoramaService:
             meta=acc.meta(day.isoformat() if day else None, session),
         )
 
-    async def _tencent_minutes(self, acc: _Acc, secid: str) -> tq.Minutes | None:
-        code = tq.tencent_code(secid)
+    async def _tencent_minutes(
+        self, acc: _Acc, secid: str, is_secid: bool = True
+    ) -> tq.Minutes | None:
+        code = tq.tencent_code(secid) if is_secid else secid
         if code is None:
             return None
 
@@ -765,6 +843,29 @@ class ASharePanoramaService:
             acc, f"分时:{code}", self._ttl(), load, "腾讯财经 分时"
         )
         return minutes
+
+    async def _tencent_five_day(self, acc: _Acc, code: str) -> list[tq.Minutes] | None:
+        async def load() -> list[tq.Minutes]:
+            return tq.parse_five_day(
+                await self.gateway.get(tq.five_day_url(code), tq.HEADERS), code
+            )
+
+        five: list[tq.Minutes] | None = await self._tencent(
+            acc, f"五日分时:{code}", self._ttl(), load, "腾讯财经 分时"
+        )
+        return five
+
+    async def _tencent_daily(
+        self, acc: _Acc, code: str, limit: int, adjust: str = ""
+    ) -> list[tq.DayBar] | None:
+        async def load() -> list[tq.DayBar]:
+            payload = await self.gateway.get(tq.kline_url(code, limit, adjust), tq.HEADERS)
+            return tq.parse_daily(payload, code)
+
+        bars: list[tq.DayBar] | None = await self._tencent(
+            acc, f"日K:{code}:{limit}:{adjust}", 120, load, "腾讯财经 日K"
+        )
+        return bars
 
     @staticmethod
     def _volume_series(
@@ -968,6 +1069,8 @@ class ASharePanoramaService:
             calc.text(calc.as_doc(r).get("f14")): calc.to_yi(calc.as_doc(r).get("f62"))
             for r in calc.as_list(calc.as_doc(calc.as_doc(flow_doc).get("data")).get("diff"))
         }
+        if flow_doc is None:
+            flows = await self._concept_flows_tencent(acc)
         sectors: list[LeadingSector] = []
         if blocks_doc is not None:
             blocks = calc.parse_ths_blocks(calc.as_doc(blocks_doc))
@@ -985,7 +1088,7 @@ class ASharePanoramaService:
                         name=b.name,
                         changePct=b.change_pct,
                         limitUpCount=b.limit_up_num,
-                        netInflowYi=flows.get(b.name),
+                        netInflowYi=flows.get(b.name, flows.get(b.name.removesuffix("概念"))),
                         leaderCode=calc.suffix_code(b.leader_code) if b.leader_code else "",
                         leaderName=b.leader_name,
                         leaderChangePct=b.leader_change,
@@ -998,6 +1101,39 @@ class ASharePanoramaService:
             popularStocks=popular,
             meta=acc.meta(day.isoformat() if day else None, session),
         )
+
+    async def _concept_flows_tencent(self, acc: _Acc) -> dict[str, float | None]:
+        """东财概念板块资金取不到时：腾讯概念板块榜的主力净流入（万元 → 亿元），按板块名对应。"""
+
+        async def load() -> dict[str, float | None]:
+            flows: dict[str, float | None] = {}
+            offset = 0
+            while offset < 800:
+                page = await self.gateway.get(tq.concept_rank_url(offset, 200), tq.HEADERS)
+                total, rows = tq.parse_rank(page)
+                for row in rows:
+                    value = (
+                        None if row.net_inflow_wan is None else round(row.net_inflow_wan / 1e4, 2)
+                    )
+                    flows[row.name] = value
+                    # 同花顺叫「风电」，腾讯叫「风电概念」：去掉「概念」后缀再登记一个别名
+                    flows.setdefault(row.name.removesuffix("概念"), value)
+                offset += 200
+                if offset >= total or not rows:
+                    break
+            return flows
+
+        flows: dict[str, float | None] | None = await self._tencent(
+            acc, "概念板块资金", 60, load, "腾讯财经 概念板块"
+        )
+        if not flows:
+            return {}
+        acc.unavailable.pop("概念板块资金", None)
+        acc.notes.append(
+            "东方财富概念板块资金在本服务器连不上：主力净流入取腾讯概念板块榜（万元换算为亿元），"
+            "按板块名称对应，名称对不上的板块留空。"
+        )
+        return flows
 
     async def _popular(
         self, acc: _Acc, day: date | None, hot_doc: Any | None
@@ -1411,7 +1547,10 @@ class ASharePanoramaService:
                 source="东方财富 数据中心 龙虎榜",
             ),
         )
+        tcode = tq.a_share_code(code)
         quote = calc.as_doc(calc.as_doc(quote_doc).get("data"))
+        if not quote:
+            quote = await self._tencent_detail_quote(acc, tcode)
         if not quote:
             raise ProviderError(code="NOT_FOUND", message="没有找到这只股票", status_code=404)
         trend = calc.parse_trends(calc.as_doc(trend_doc)) if trend_doc else None
@@ -1423,7 +1562,22 @@ class ASharePanoramaService:
             if trend
             else []
         )
-        bars = calc.parse_klines(calc.as_doc(kline_doc)) if kline_doc else []
+        if trend_doc is None:
+            intraday = await self._tencent_intraday(acc, tcode)
+        daily = [
+            DailyBar(
+                date=b.day,
+                open=b.open,
+                close=b.close,
+                low=b.low,
+                high=b.high,
+                volume=b.volume,
+                changePct=b.change_pct if b.change_pct is not None else 0.0,
+            )
+            for b in (calc.parse_klines(calc.as_doc(kline_doc)) if kline_doc else [])
+        ]
+        if kline_doc is None:
+            daily = await self._tencent_daily_bars(acc, tcode)
         pool = (
             {r.code: r for r in (await self._pool(acc, "limit_up", day, "涨停池") or [])}
             if day
@@ -1465,24 +1619,90 @@ class ASharePanoramaService:
             actionSectorReason=action.sector_reason if action else "",
             actionExplain=action.explain if action else "",
             intraday=intraday,
-            dailyBars=[
-                DailyBar(
-                    date=b.day,
-                    open=b.open,
-                    close=b.close,
-                    low=b.low,
-                    high=b.high,
-                    volume=b.volume,
-                    changePct=b.change_pct if b.change_pct is not None else 0.0,
-                )
-                for b in bars
-            ],
+            dailyBars=daily,
             lhbDate=lhb_day.isoformat() if lhb_day else None,
             lhbReason=lhb_reason,
             buySeats=buys,
             sellSeats=sells,
             meta=acc.meta(day.isoformat() if day else None, session),
         )
+
+    async def _tencent_detail_quote(self, acc: _Acc, tcode: str) -> calc.Doc:
+        """个股详情的行情头部：东财取不到时用腾讯报价，键名对齐东财个股详情字段。
+        腾讯没有行业与概念板块，所以 `f127 / f129` 缺失（板块标签为空）。"""
+
+        async def load() -> dict[str, tq.Quote]:
+            return tq.parse_quotes(await self.gateway.get(tq.quote_url([tcode]), tq.HEADERS))
+
+        quotes: dict[str, tq.Quote] | None = await self._tencent(
+            acc, f"个股报价:{tcode}", self._ttl(), load, "腾讯财经 行情"
+        )
+        quote = (quotes or {}).get(tcode)
+        if quote is None or quote.price is None:
+            return {}
+        acc.unavailable.pop("个股详情", None)
+        row: calc.Doc = {
+            "f58": quote.name,
+            "f43": quote.price,
+            "f60": quote.prev_close,
+            "f170": quote.change_pct,
+            "f168": quote.turnover_pct,
+            "f117": quote.float_cap_yuan,
+        }
+        return row
+
+    async def _tencent_intraday(self, acc: _Acc, tcode: str) -> list[IntradayPoint]:
+        """个股分时：腾讯分时是累计量 / 累计额，逐分钟成交量取差分，均价 = 累计额 ÷ 累计股数。"""
+
+        minutes = await self._tencent_minutes(acc, tcode, is_secid=False)
+        if minutes is None or not minutes.bars:
+            return []
+        acc.unavailable.pop("个股分时", None)
+        points: list[IntradayPoint] = []
+        previous = 0.0
+        for bar in minutes.bars:
+            if bar.clock > "15:00":  # 收盘后腾讯还会补一个 15:30 的重复点
+                continue
+            cumulative = bar.volume if bar.volume is not None else previous
+            average = (
+                bar.amount_yuan / (cumulative * 100)
+                if bar.amount_yuan is not None and cumulative > 0
+                else bar.price
+            )
+            points.append(
+                IntradayPoint(
+                    time=bar.clock,
+                    price=bar.price,
+                    avgPrice=round(average, 4),
+                    volume=max(cumulative - previous, 0.0),
+                )
+            )
+            previous = cumulative
+        return points
+
+    async def _tencent_daily_bars(self, acc: _Acc, tcode: str) -> list[DailyBar]:
+        """个股日 K：腾讯前复权日 K；涨跌幅由相邻两日前复权收盘价算出，所以多取一根。"""
+
+        bars = await self._tencent_daily(acc, tcode, 91, "qfq")
+        if not bars:
+            return []
+        acc.unavailable.pop("个股日K", None)
+        out: list[DailyBar] = []
+        for previous, bar in zip(bars, bars[1:], strict=False):
+            if not previous.close:
+                continue
+            out.append(
+                DailyBar(
+                    date=bar.day,
+                    open=bar.open,
+                    close=bar.close,
+                    low=bar.low,
+                    high=bar.high,
+                    volume=bar.volume,
+                    changePct=round((bar.close / previous.close - 1) * 100, 2),
+                )
+            )
+        return out[-90:]
 
     async def _stock_lhb(
         self, acc: _Acc, code: str, day: date | None
