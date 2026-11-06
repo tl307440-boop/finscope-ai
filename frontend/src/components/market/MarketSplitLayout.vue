@@ -51,9 +51,9 @@ const detailOpen = ref(true)
   padding: 3px 10px;
   font-size: 11.5px;
   border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
 }
 

@@ -4,11 +4,12 @@
  * 人气股来自同花顺人气榜，板块来自东方财富概念板块涨幅榜，均为实时/当日收盘数据。
  */
 import { watch } from "vue"
+import { Flag, Star } from "@element-plus/icons-vue"
 
 import { fetchLeading } from "../../../api/aSharePanorama"
 import { fmtPct, fmtWan, fmtYi, toneClass } from "../../../api/aShareFormat"
 import { usePanoramaResource } from "../../../api/usePanoramaResource"
-import PanoramaStatusBar from "../../../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../../../components/market/MarketPanel.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
 import { useMarketLinkageStore } from "../../../stores/marketLinkage"
 
@@ -27,7 +28,7 @@ watch(
 </script>
 
 <template>
-  <section class="leading-panel" aria-label="领涨板块与人气股">
+  <section class="leading-wrap" aria-label="领涨板块与人气股">
     <StateBlock
       v-if="!data"
       :state="state === 'error' ? 'error' : 'loading'"
@@ -36,19 +37,23 @@ watch(
       :rows="4"
       @retry="reload"
     />
-    <template v-else>
-      <div class="lp-grid">
-        <div class="lp-card">
-          <div class="lp-head">
-            <span class="lp-title">领涨板块</span>
-            <span class="lp-sub">概念板块涨幅榜 · 点击领涨股联动个股详情</span>
-          </div>
-          <StateBlock
-            v-if="data.leadingSectors.length === 0"
-            state="empty"
-            message="上游没有返回板块数据"
-          />
-          <table v-else class="lp-table">
+    <div v-else class="lp-grid">
+      <MarketPanel
+        title="领涨板块"
+        subtitle="概念板块涨幅榜 · 点击领涨股联动右侧个股详情"
+        info="板块来自东方财富概念板块涨幅榜；主力净流入单位：亿元"
+        tone="orange"
+        :icon="Flag"
+        :meta="data.meta"
+        :refresh-error="error"
+      >
+        <StateBlock
+          v-if="data.leadingSectors.length === 0"
+          state="empty"
+          message="上游没有返回板块数据"
+        />
+        <div v-else class="lp-table-wrap">
+          <table class="lp-table">
             <thead>
               <tr>
                 <th>板块</th>
@@ -81,18 +86,22 @@ watch(
             </tbody>
           </table>
         </div>
+      </MarketPanel>
 
-        <div class="lp-card">
-          <div class="lp-head">
-            <span class="lp-title">人气股</span>
-            <span class="lp-sub">同花顺人气榜 · 点击个股联动详情</span>
-          </div>
-          <StateBlock
-            v-if="data.popularStocks.length === 0"
-            state="empty"
-            message="上游没有返回人气榜数据"
-          />
-          <table v-else class="lp-table">
+      <MarketPanel
+        title="人气股"
+        subtitle="同花顺人气榜 · 点击个股联动右侧详情"
+        info="人气排名来自同花顺热股榜；封单金额单位：万元 / 亿元"
+        tone="danger"
+        :icon="Star"
+      >
+        <StateBlock
+          v-if="data.popularStocks.length === 0"
+          state="empty"
+          message="上游没有返回人气榜数据"
+        />
+        <div v-else class="lp-table-wrap">
+          <table class="lp-table">
             <thead>
               <tr>
                 <th class="num">#</th>
@@ -125,131 +134,125 @@ watch(
             </tbody>
           </table>
         </div>
-      </div>
-      <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
-    </template>
+      </MarketPanel>
+    </div>
   </section>
 </template>
-
 <style scoped>
-.leading-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+/* 按本栏实际宽度（而不是屏幕宽度）切单双列：右侧个股详情展开时主栏只有约 1100px */
+.leading-wrap {
+  container-type: inline-size;
 }
 
 .lp-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--gap, 14px);
+  align-items: start;
 }
 
-.lp-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 12px 14px;
-  min-width: 0;
-  overflow-x: auto;
+@container (max-width: 1180px) {
+  .lp-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
-.lp-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.lp-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.lp-sub {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+.lp-table-wrap {
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
 }
 
 .lp-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
 }
 
 .lp-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
   text-align: left;
+  font-size: 12px;
   font-weight: 600;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--border);
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .lp-table td {
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
+}
+
+.lp-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .lp-table .num {
   text-align: right;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
 }
 
 .lp-table .strong {
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .lp-table .reason {
-  max-width: 180px;
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .lp-table tr.clickable {
   cursor: pointer;
 }
 
-.lp-table tr.clickable:hover,
-.lp-table tr.active {
-  background: var(--accent-subtle);
+.lp-table tbody tr:hover td,
+.lp-table tr.active td {
+  background: var(--accent-soft);
 }
 
 .code {
   margin-left: 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  font-family: var(--font-num);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
 }
 
 .streak {
   margin-left: 4px;
-  padding: 0 5px;
+  padding: 0 6px;
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--rise);
-  background: rgba(246, 70, 93, 0.12);
+  background: color-mix(in srgb, var(--rise) 12%, transparent);
 }
 
 .muted {
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .link-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 0;
   border: 0;
   background: none;
   font: inherit;
-  color: var(--text-primary);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -263,11 +266,5 @@ watch(
 
 .is-fall {
   color: var(--fall);
-}
-
-@media (max-width: 1440px) {
-  .lp-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 </style>

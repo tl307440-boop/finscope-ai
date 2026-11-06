@@ -4,12 +4,13 @@
  * 数据需后端配置 JYGS_SESSION（扫码登录后的会话）；没配置或登录失效时如实说明，不造数。
  */
 import { computed, ref } from "vue"
+import { Notebook } from "@element-plus/icons-vue"
 
 import { fetchJygsActions, fetchJygsStatus, type JygsSector } from "../../../api/aSharePanorama"
 import { fmtNum, fmtPct, toneClass } from "../../../api/aShareFormat"
 import { usePanoramaResource } from "../../../api/usePanoramaResource"
 import JygsLoginDialog from "../../../components/market/JygsLoginDialog.vue"
-import PanoramaStatusBar from "../../../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../../../components/market/MarketPanel.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
 import { useSessionStore } from "../../../stores/auth"
 import { useMarketLinkageStore } from "../../../stores/marketLinkage"
@@ -41,6 +42,14 @@ function toggle(sector: JygsSector): void {
   opened.value = next
 }
 
+const panelSubtitle = computed(() => {
+  const d = data.value
+  if (d && d.sectors.length) {
+    return `${d.tradeDate} · ${d.sectors.length} 个板块 · ${d.totalStocks} 只 · 点击板块展开，点击个股联动右侧详情`
+  }
+  return "人工整理的涨停 / 异动原因（交易日 12:00 后更新）"
+})
+
 const emptyMessage = computed(() => {
   const meta = data.value?.meta
   if (!meta) return ""
@@ -52,18 +61,15 @@ const emptyMessage = computed(() => {
 </script>
 
 <template>
-  <section class="jg-card" aria-label="韭研公社异动解析">
-    <header class="jg-head">
-      <span class="jg-title">韭研公社 · 异动解析</span>
-      <span class="jg-sub">
-        <template v-if="data && data.sectors.length">
-          {{ data.tradeDate }} · {{ data.sectors.length }} 个板块 · {{ data.totalStocks }} 只 ·
-          点击板块展开，点击个股联动右侧详情
-        </template>
-        <template v-else>人工整理的涨停 / 异动原因（交易日 12:00 后更新）</template>
-      </span>
-    </header>
-
+  <MarketPanel
+    title="韭研公社 · 异动解析"
+    :subtitle="panelSubtitle"
+    info="韭研公社人工整理的涨停 / 异动原因，需要管理员扫码登录后才有数据"
+    tone="violet"
+    :icon="Notebook"
+    :meta="data?.meta ?? null"
+    :refresh-error="error"
+  >
     <div v-if="needsLogin && status.data.value" class="jg-login" :class="`is-${status.data.value.state}`">
       <span class="jg-login-text">{{ status.data.value.message }}</span>
       <el-button v-if="isAdmin" size="small" type="primary" @click="loginOpen = true">
@@ -84,7 +90,7 @@ const emptyMessage = computed(() => {
     <template v-else>
       <StateBlock v-if="data.sectors.length === 0" state="empty" :message="emptyMessage" />
       <div v-else class="jg-list">
-        <div v-for="sector in data.sectors" :key="sector.name" class="jg-sector">
+        <div v-for="sector in data.sectors" :key="sector.name" class="jg-sector" :class="{ open: opened.has(sector.name) }">
           <button type="button" class="jg-sector-head" @click="toggle(sector)">
             <b>{{ sector.name }}</b>
             <span class="jg-count">{{ sector.stocks.length }}</span>
@@ -110,95 +116,87 @@ const emptyMessage = computed(() => {
           </table>
         </div>
       </div>
-      <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
     </template>
-  </section>
+  </MarketPanel>
 </template>
 
 <style scoped>
-.jg-card {
-  background: var(--bg-surface, var(--bg-elevated));
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 14px;
-}
-
-.jg-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.jg-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.jg-sub {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
 .jg-login {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  font-size: 12px;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  font-size: 13px;
 }
 
 .jg-login.is-expiring {
-  border-color: var(--warning, #d9a441);
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel-soft));
 }
 
-.jg-login.is-expired {
-  border-color: var(--danger, #e5484d);
+.jg-login.is-expired,
+.jg-login.is-not_configured {
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel-soft));
 }
 
 .jg-login-text {
   flex: 1;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .jg-login-hint {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .jg-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .jg-sector {
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   overflow: hidden;
+}
+
+.jg-sector.open {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
 }
 
 .jg-sector-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 0;
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  font-size: 13px;
+  background: var(--panel-soft);
+  color: var(--text-strong);
+  font-size: 14px;
   text-align: left;
   cursor: pointer;
 }
 
+.jg-sector-head:hover {
+  background: var(--accent-soft);
+}
+
 .jg-count {
-  color: var(--danger, #e5484d);
+  min-width: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+  font-size: 12px;
   font-weight: 600;
+  line-height: 20px;
+  text-align: center;
 }
 
 .jg-reason {
@@ -207,8 +205,8 @@ const emptyMessage = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .jg-arrow {
@@ -219,17 +217,19 @@ const emptyMessage = computed(() => {
 .jg-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .jg-table td {
-  padding: 6px 10px;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
   vertical-align: top;
 }
 
 .jg-table .num {
   text-align: right;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -240,19 +240,22 @@ const emptyMessage = computed(() => {
 .jg-table .strong {
   white-space: nowrap;
   font-weight: 600;
+  color: var(--text-strong);
 }
 
 .jg-table .code {
+  font-family: var(--font-num);
+  font-size: 12px;
   font-weight: 400;
-  color: var(--text-secondary);
+  color: var(--faint);
 }
 
 .jg-table .clickable {
   cursor: pointer;
 }
 
-.jg-table .clickable:hover {
-  background: var(--bg-elevated);
+.jg-table .clickable:hover td {
+  background: var(--accent-soft);
 }
 
 .jg-table .explain {
@@ -260,6 +263,6 @@ const emptyMessage = computed(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 </style>

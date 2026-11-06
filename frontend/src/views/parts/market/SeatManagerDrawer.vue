@@ -234,8 +234,8 @@ function handleQuickAddBranch(seatId: string): void {
 }
 
 .seat-form-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px;
   display: flex;
@@ -246,7 +246,7 @@ function handleQuickAddBranch(seatId: string): void {
 .form-card-title {
   font-size: 13px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .form-grid {
@@ -263,7 +263,7 @@ function handleQuickAddBranch(seatId: string): void {
 
 .form-field label {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .seat-input,
@@ -272,9 +272,9 @@ function handleQuickAddBranch(seatId: string): void {
   width: 100%;
   padding: 6px 9px;
   border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-card);
-  color: var(--text-primary);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
   font-size: 12px;
 }
 
@@ -300,9 +300,9 @@ function handleQuickAddBranch(seatId: string): void {
 .btn-ghost {
   padding: 6px 10px;
   border-radius: 6px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-card);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
   font-size: 11.5px;
   cursor: pointer;
 }
@@ -315,7 +315,7 @@ function handleQuickAddBranch(seatId: string): void {
 
 .seat-count-stat {
   font-size: 11.5px;
-  color: var(--text-tertiary);
+  color: var(--faint);
   white-space: nowrap;
 }
 
@@ -326,10 +326,10 @@ function handleQuickAddBranch(seatId: string): void {
 }
 
 .seat-group-item {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px 11px;
-  background: var(--bg-card);
+  background: var(--panel);
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -355,7 +355,7 @@ function handleQuickAddBranch(seatId: string): void {
 
 .sg-name {
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .sg-role {
@@ -368,7 +368,7 @@ function handleQuickAddBranch(seatId: string): void {
 
 .sg-style {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .sg-ops {
@@ -402,16 +402,16 @@ function handleQuickAddBranch(seatId: string): void {
   gap: 4px;
   padding: 2px 8px;
   border-radius: 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .branch-del {
   cursor: pointer;
   font-style: normal;
-  color: var(--text-tertiary);
+  color: var(--faint);
   font-weight: 700;
 }
 
@@ -430,18 +430,18 @@ function handleQuickAddBranch(seatId: string): void {
   padding: 2px 6px;
   font-size: 11px;
   border-radius: 4px;
-  border: 1px dashed var(--border-strong);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  border: 1px dashed var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
 }
 
 .mini-add-btn {
   padding: 2px 6px;
   font-size: 11px;
   border-radius: 4px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
 }
 </style>

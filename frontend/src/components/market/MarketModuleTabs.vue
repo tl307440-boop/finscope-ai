@@ -81,10 +81,10 @@ function isTabActive(target: string): boolean {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
   flex-wrap: wrap;
 }
 
@@ -102,19 +102,19 @@ function isTabActive(target: string): boolean {
   padding: 7px 14px;
   border-radius: 10px;
   border: 1px solid transparent;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  background: var(--panel-soft);
+  color: var(--muted);
   text-decoration: none;
   transition: all 0.16s ease;
 }
 
 .module-tab-item:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
+  color: var(--text);
+  border-color: var(--line);
 }
 
 .module-tab-item.active {
-  background: var(--accent-subtle);
+  background: var(--accent-soft);
   color: var(--accent);
   border-color: rgba(37, 99, 235, 0.32);
   font-weight: 600;
@@ -134,7 +134,7 @@ function isTabActive(target: string): boolean {
 
 .tab-subtitle {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .module-tab-item.active .tab-subtitle {
@@ -158,15 +158,15 @@ function isTabActive(target: string): boolean {
 
 .quick-label {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .quick-stock-pill {
   padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   font-size: 11px;
   cursor: pointer;
   transition: all 0.14s ease;
@@ -183,9 +183,9 @@ function isTabActive(target: string): boolean {
 .seat-config-btn {
   padding: 5px 11px;
   border-radius: 8px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;

@@ -4,13 +4,15 @@
  * 口径：N 进 N+1 晋级率 = 昨日 N 板个股今日继续涨停的比例；断板率 = 1 − 整体晋级率。
  */
 import { computed, watch } from "vue"
+import { Trophy, Warning } from "@element-plus/icons-vue"
 
 import { fetchLadder, type LadderStock } from "../api/aSharePanorama"
 import { fmtNum, fmtPct, fmtWan, toneClass } from "../api/aShareFormat"
 import { usePanoramaResource } from "../api/usePanoramaResource"
 import MarketSplitLayout from "../components/market/MarketSplitLayout.vue"
-import PanoramaStatusBar from "../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../components/market/MarketPanel.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
+import StatCard from "../components/ui/StatCard.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import { useMarketLinkageStore } from "../stores/marketLinkage"
 import JygsActionsPanel from "./parts/market/JygsActionsPanel.vue"
@@ -22,11 +24,11 @@ const kpis = computed(() => {
   const d = data.value
   if (!d) return []
   return [
-    { label: "整体晋级率", value: d.overallPromotionRatePct, sub: "昨日连板今日继续涨停", tone: "rise" },
-    { label: "整体断板率", value: d.overallBrokenRatePct, sub: "1 − 整体晋级率", tone: "fall" },
-    { label: "1进2", value: d.rate1To2Pct, sub: d.count1To2Text, tone: "" },
-    { label: "2进3", value: d.rate2To3Pct, sub: d.count2To3Text, tone: "" },
-    { label: "3进4+", value: d.rate3To4PlusPct, sub: d.count3To4PlusText, tone: "" },
+    { label: "整体晋级率", value: d.overallPromotionRatePct, sub: "昨日连板今日继续涨停", tone: "danger" },
+    { label: "整体断板率", value: d.overallBrokenRatePct, sub: "1 − 整体晋级率", tone: "ok" },
+    { label: "1进2", value: d.rate1To2Pct, sub: d.count1To2Text, tone: "accent" },
+    { label: "2进3", value: d.rate2To3Pct, sub: d.count2To3Text, tone: "accent" },
+    { label: "3进4+", value: d.rate3To4PlusPct, sub: d.count3To4PlusText, tone: "accent" },
   ]
 })
 
@@ -67,23 +69,26 @@ function sealText(stock: LadderStock): string {
     <template v-else>
       <!-- 晋级率 KPI -->
       <div class="ld-kpis">
-        <div v-for="k in kpis" :key="k.label" class="ld-kpi">
-          <span class="ld-kpi-label">{{ k.label }}</span>
-          <b class="ld-kpi-val" :class="k.tone === 'rise' ? 'is-rise' : k.tone === 'fall' ? 'is-fall' : ''">
-            {{ fmtPct(k.value, 1, false) }}
-          </b>
-          <span class="ld-kpi-sub">{{ k.sub || " " }}</span>
-        </div>
+        <StatCard
+          v-for="k in kpis"
+          :key="k.label"
+          :title="k.label"
+          :value="fmtPct(k.value, 1, false)"
+          :caption="k.sub || ''"
+          :tone="k.tone as 'danger' | 'ok' | 'accent'"
+        />
       </div>
 
       <!-- 梯队矩阵 -->
-      <section class="ld-card">
-        <header class="ld-card-head">
-          <span class="ld-title">连板梯队</span>
-          <span class="ld-sub">
-            最高 {{ highestTier ? highestTier.streak : "—" }} 板 · 点击个股联动右侧详情
-          </span>
-        </header>
+      <MarketPanel
+        title="连板梯队"
+        :subtitle="`最高 ${highestTier ? highestTier.streak : '—'} 板 · 点击个股联动右侧详情`"
+        info="N 进 N+1 晋级率 = 昨日 N 板个股今日继续涨停的比例；断板率 = 1 − 整体晋级率"
+        tone="danger"
+        :icon="Trophy"
+        :meta="data.meta"
+        :refresh-error="error"
+      >
         <StateBlock
           v-if="data.tiers.length === 0"
           state="empty"
@@ -119,53 +124,54 @@ function sealText(stock: LadderStock): string {
             </div>
           </div>
         </div>
-      </section>
+      </MarketPanel>
 
       <!-- 断板股 -->
-      <section class="ld-card">
-        <header class="ld-card-head">
-          <span class="ld-title">昨日连板 · 今日断板</span>
-          <span class="ld-sub">昨日 2 板及以上、今日未能涨停的个股</span>
-        </header>
+      <MarketPanel
+        title="昨日连板 · 今日断板"
+        subtitle="昨日 2 板及以上、今日未能涨停的个股"
+        tone="warn"
+        :icon="Warning"
+      >
         <StateBlock
           v-if="data.brokenStreaks.length === 0"
           state="empty"
           message="今日没有断板个股，或上游数据未返回（原因见页面底部状态条）"
         />
-        <table v-else class="ld-table">
-          <thead>
-            <tr>
-              <th>个股</th>
-              <th class="num">昨日高度</th>
-              <th class="num">现价</th>
-              <th class="num">今日涨跌</th>
-              <th class="num">距日内高点回落</th>
-              <th class="num">换手</th>
-              <th>板块 / 题材</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="b in data.brokenStreaks"
-              :key="b.code"
-              class="clickable"
-              @click="linkageStore.selectStock(b.code)"
-            >
-              <td class="strong">{{ b.name }} <span class="code">{{ b.code }}</span></td>
-              <td class="num">{{ b.yesterdayStreak }} 板</td>
-              <td class="num">{{ fmtNum(b.price) }}</td>
-              <td class="num" :class="toneClass(b.changePct)">{{ fmtPct(b.changePct) }}</td>
-              <td class="num is-fall">{{ fmtPct(b.drawdownFromHighPct, 2, false) }}</td>
-              <td class="num">{{ fmtPct(b.turnoverPct, 2, false) }}</td>
-              <td class="reason" :title="b.reason">{{ b.sector || b.reason || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+        <div v-else class="ld-table-wrap">
+          <table class="ld-table">
+            <thead>
+              <tr>
+                <th>个股</th>
+                <th class="num">昨日高度</th>
+                <th class="num">现价</th>
+                <th class="num">今日涨跌</th>
+                <th class="num">距日内高点回落</th>
+                <th class="num">换手</th>
+                <th>板块 / 题材</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="b in data.brokenStreaks"
+                :key="b.code"
+                class="clickable"
+                @click="linkageStore.selectStock(b.code)"
+              >
+                <td class="strong">{{ b.name }} <span class="code">{{ b.code }}</span></td>
+                <td class="num">{{ b.yesterdayStreak }} 板</td>
+                <td class="num">{{ fmtNum(b.price) }}</td>
+                <td class="num" :class="toneClass(b.changePct)">{{ fmtPct(b.changePct) }}</td>
+                <td class="num is-fall">{{ fmtPct(b.drawdownFromHighPct, 2, false) }}</td>
+                <td class="num">{{ fmtPct(b.turnoverPct, 2, false) }}</td>
+                <td class="reason" :title="b.reason">{{ b.sector || b.reason || "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </MarketPanel>
 
       <JygsActionsPanel />
-
-      <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
     </template>
   </MarketSplitLayout>
 </template>
@@ -174,75 +180,29 @@ function sealText(stock: LadderStock): string {
 .ld-kpis {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.ld-kpi {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 11px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.ld-kpi-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
-}
-
-.ld-kpi-val {
-  font-family: var(--font-mono);
-  font-size: 22px;
-  color: var(--text-primary);
-}
-
-.ld-kpi-sub {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  min-height: 1.2em;
-}
-
-.ld-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 12px 14px;
-  overflow-x: auto;
-}
-
-.ld-card-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.ld-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.ld-sub {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+  gap: var(--gap, 14px);
 }
 
 .ld-matrix {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .ld-tier {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed var(--border);
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ld-tier:first-child {
+  padding-top: 0;
+}
+
+.ld-tier:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 
 .ld-tier-label {
@@ -251,38 +211,40 @@ function sealText(stock: LadderStock): string {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-radius: 8px;
-  background: rgba(246, 70, 93, 0.08);
+  border: 1px solid color-mix(in srgb, var(--rise) 28%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--rise) 10%, transparent);
   color: var(--rise);
 }
 
 .ld-tier-label b {
-  font-size: 16px;
+  font-size: 17px;
 }
 
 .ld-tier-label span {
-  font-size: 11px;
-  opacity: 0.8;
+  font-size: 12px;
+  opacity: 0.85;
 }
 
 .ld-tier-stocks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
 }
 
 .ld-stock {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  width: 190px;
-  padding: 7px 10px;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 12px;
   text-align: left;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
   font: inherit;
   cursor: pointer;
+  transition: border-color 0.15s ease;
 }
 
 .ld-stock:hover {
@@ -290,7 +252,8 @@ function sealText(stock: LadderStock): string {
 }
 
 .ld-stock.selected {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .ls-top {
@@ -300,78 +263,103 @@ function sealText(stock: LadderStock): string {
 }
 
 .ls-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .ls-pct {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-num);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .ls-theme {
-  font-size: 11.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ls-meta {
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  padding-top: 4px;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--faint);
+}
+
+.ld-table-wrap {
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
 }
 
 .ld-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
 }
 
 .ld-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
   text-align: left;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .ld-table td {
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
+}
+
+.ld-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .ld-table .num {
   text-align: right;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
 }
 
 .ld-table .strong {
   font-weight: 600;
+  color: var(--text-strong);
 }
 
 .ld-table .reason {
-  max-width: 220px;
+  max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .ld-table tr.clickable {
   cursor: pointer;
 }
 
-.ld-table tr.clickable:hover {
-  background: var(--accent-subtle);
+.ld-table tr.clickable:hover td {
+  background: var(--accent-soft);
 }
 
 .code {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  margin-left: 4px;
+  font-family: var(--font-num);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--faint);
 }
 
 .is-rise {
@@ -382,7 +370,13 @@ function sealText(stock: LadderStock): string {
   color: var(--fall);
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
+  .ld-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
   .ld-kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

@@ -223,7 +223,9 @@ function capsuleTone(net: number): string {
         </div>
       </template>
 
-      <PanoramaStatusBar :meta="data.meta" :refresh-error="failure" />
+      <div class="dt-foot">
+        <PanoramaStatusBar :meta="data.meta" :refresh-error="failure" />
+      </div>
     </template>
   </MarketSplitLayout>
 </template>
@@ -233,52 +235,73 @@ function capsuleTone(net: number): string {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--panel-top), var(--panel));
+  box-shadow: var(--shadow-card);
+}
+
+.dt-foot {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
 }
 
 .dt-filter-label {
-  font-size: 12px;
-  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .dt-chip {
-  padding: 3px 10px;
-  font-size: 11.5px;
+  padding: 4px 12px;
+  font-size: 12.5px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.dt-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .dt-chip.active {
-  background: var(--accent-subtle);
+  background: var(--accent-soft);
   color: var(--accent);
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   font-weight: 600;
 }
 
 .dt-coverage {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .dt-rows {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--gap, 14px);
 }
 
 .dt-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--panel-top), var(--panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .dt-card-head {
@@ -287,6 +310,8 @@ function capsuleTone(net: number): string {
   justify-content: space-between;
   gap: 10px;
   flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .dt-card-title {
@@ -297,19 +322,19 @@ function capsuleTone(net: number): string {
 }
 
 .dt-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .dt-style {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .dt-badge {
-  padding: 1px 7px;
-  font-size: 10.5px;
+  padding: 1px 8px;
+  font-size: 11.5px;
   font-weight: 600;
   border-radius: 999px;
 }
@@ -348,17 +373,17 @@ function capsuleTone(net: number): string {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
 }
 
 .dt-net-label,
 .dt-bs {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .dt-net b {
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .dt-capsules {
@@ -371,43 +396,44 @@ function capsuleTone(net: number): string {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 12px;
+  padding: 6px 14px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
   font: inherit;
-  font-size: 12px;
-  color: var(--text-primary);
+  font-size: 13px;
+  color: var(--text);
   cursor: pointer;
 }
 
 .dt-capsule.cap-buy {
-  background: rgba(246, 70, 93, 0.09);
-  border-color: rgba(246, 70, 93, 0.4);
+  background: color-mix(in srgb, var(--rise) 9%, transparent);
+  border-color: color-mix(in srgb, var(--rise) 40%, transparent);
 }
 
 .dt-capsule.cap-sell {
-  background: rgba(31, 195, 125, 0.09);
-  border-color: rgba(31, 195, 125, 0.4);
+  background: color-mix(in srgb, var(--fall) 9%, transparent);
+  border-color: color-mix(in srgb, var(--fall) 40%, transparent);
 }
 
 .dt-capsule.selected {
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .cap-name {
   font-weight: 700;
+  color: var(--text-strong);
 }
 
 .cap-pct,
 .cap-amt,
 .cap-net {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-family: var(--font-num);
+  font-size: 12.5px;
 }
 
 .cap-amt {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .cap-buy .cap-net {
@@ -421,33 +447,34 @@ function capsuleTone(net: number): string {
 .dt-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: var(--gap, 14px);
 }
 
 .dt-sum-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px;
+  background: linear-gradient(180deg, var(--panel-top), var(--panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .dt-sum-label {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .dt-sum-net {
-  font-family: var(--font-mono);
-  font-size: 20px;
+  font-family: var(--font-num);
+  font-size: 22px;
 }
 
 .dt-sum-sub {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .dt-all {
@@ -458,42 +485,52 @@ function capsuleTone(net: number): string {
 
 .dt-all-toggle {
   align-self: flex-start;
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 5px 12px;
+  font-size: 13px;
   border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
 }
 
 .dt-table {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-  background: var(--bg-card);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  overflow: hidden;
 }
 
 .dt-table th {
   text-align: left;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 8px 12px;
+  background: var(--panel-soft);
+  border-bottom: 1px solid var(--line);
 }
 
 .dt-table td {
-  padding: 5px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.dt-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .dt-table .num {
   text-align: right;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
 }
 
 .dt-table .reason {
-  color: var(--text-secondary);
+  color: var(--muted);
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -504,14 +541,14 @@ function capsuleTone(net: number): string {
   cursor: pointer;
 }
 
-.dt-table tr.clickable:hover {
-  background: var(--accent-subtle);
+.dt-table tr.clickable:hover td {
+  background: var(--accent-soft);
 }
 
 .code {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  font-family: var(--font-num);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .is-rise {

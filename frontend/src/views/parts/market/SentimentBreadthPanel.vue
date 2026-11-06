@@ -1,25 +1,27 @@
 <template>
-  <section class="sentiment-breadth-panel" aria-label="A股每日短线情绪与盘面广度看板">
-    <div class="sbp-header">
-      <div class="sbp-title-box">
-        <span class="sbp-title">A股每日短线情绪与盘面广度</span>
-        <span class="sbp-sub">
-          涨跌分布 · 自然板 · 炸板与接力晋级 · 回头波≥10%极端波动 · 昨日涨停溢价率
-        </span>
-      </div>
-      <div
-        v-if="sentiment?.maxStreakLeader"
+  <MarketPanel
+    title="A 股每日短线情绪与盘面广度"
+    subtitle="涨跌分布 · 自然板 · 炸板与接力晋级 · 日内冲高回落 / 探底回升 ≥ 10% · 昨日涨停溢价率"
+    info="全部来自公开行情；口径与缺项见底部「口径说明」「缺项」"
+    tone="orange"
+    :icon="Odometer"
+    :meta="sentiment?.meta ?? null"
+    :refresh-error="error"
+  >
+    <template v-if="sentiment?.maxStreakLeader" #actions>
+      <button
+        type="button"
         class="sbp-leader-chip"
         @click="linkageStore.selectStock(sentiment.maxStreakLeader.code)"
       >
-        <span class="leader-label">最高空间板 {{ fmtInt(sentiment.maxStreakHeight) }}连板：</span>
+        <span class="leader-label">最高空间板 {{ fmtInt(sentiment.maxStreakHeight) }} 连板</span>
         <span class="leader-stock">{{ sentiment.maxStreakLeader.name }}</span>
         <span class="leader-pct" :class="toneClass(sentiment.maxStreakLeader.changePct)">
           {{ fmtPct(sentiment.maxStreakLeader.changePct) }}
         </span>
         <span class="leader-theme">{{ sentiment.maxStreakLeader.sector }}</span>
-      </div>
-    </div>
+      </button>
+    </template>
 
     <StateBlock
       v-if="!sentiment"
@@ -32,6 +34,7 @@
 
     <template v-else>
       <!-- 涨跌平对比进度条 + 涨跌幅中位数 -->
+      <PanelSection title="涨跌广度" note="全 A 涨跌平家数与涨跌幅中位数">
       <div class="breadth-bar-card">
         <div class="breadth-counts">
           <span class="b-up">
@@ -52,8 +55,10 @@
           <div class="bp-seg seg-down" :style="{ width: `${ratioNum(sentiment.downCount)}%` }" />
         </div>
       </div>
+      </PanelSection>
 
       <!-- 短线核心接力与涨跌停指标矩阵 -->
+      <PanelSection title="涨停 · 炸板 · 接力" note="点击「冲高回落 / 探底回升」可展开标的，联动右侧个股详情">
       <div class="sentiment-kpi-grid">
         <div class="skpi-card">
           <span class="skpi-label">涨停 / 自然涨停</span>
@@ -168,25 +173,28 @@
         </div>
       </div>
 
+      </PanelSection>
+
       <!-- 昨日涨停/连板/炸板今日溢价率与趋势 -->
+      <PanelSection title="昨日涨停今日表现" note="溢价率 = 昨日涨停（连板、炸板）股今日平均涨跌幅">
       <div class="premium-row">
         <div class="premium-cards">
           <div class="prem-item">
-            <span class="p-label">昨日涨停今日溢价率</span>
+            <span class="p-label">昨日涨停溢价</span>
             <span class="p-val" :class="toneClass(sentiment.yesterdayLimitUpPremiumPct)">
               {{ fmtPct(sentiment.yesterdayLimitUpPremiumPct) }}
             </span>
             <span class="p-desc">昨日涨停股今日平均涨跌幅</span>
           </div>
           <div class="prem-item">
-            <span class="p-label">昨日连板今日溢价率</span>
+            <span class="p-label">昨日连板溢价</span>
             <span class="p-val" :class="toneClass(sentiment.yesterdayStreakPremiumPct)">
               {{ fmtPct(sentiment.yesterdayStreakPremiumPct) }}
             </span>
             <span class="p-desc">昨日连板股今日平均涨跌幅</span>
           </div>
           <div class="prem-item">
-            <span class="p-label">昨日炸板今日溢价率</span>
+            <span class="p-label">昨日炸板溢价</span>
             <span class="p-val" :class="toneClass(sentiment.yesterdayBrokenPremiumPct)">
               {{ fmtPct(sentiment.yesterdayBrokenPremiumPct) }}
             </span>
@@ -203,21 +211,22 @@
           <StateBlock v-else state="empty" message="近期溢价率历史暂无数据" />
         </div>
       </div>
-
-      <PanoramaStatusBar :meta="sentiment.meta" :refresh-error="error" />
+      </PanelSection>
     </template>
-  </section>
+  </MarketPanel>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue"
+import { Odometer } from "@element-plus/icons-vue"
 import type { EChartsOption } from "echarts"
 
 import { fetchSentiment, type SwingStock } from "../../../api/aSharePanorama"
 import { fmtInt, fmtPct, toneClass } from "../../../api/aShareFormat"
 import { usePanoramaResource } from "../../../api/usePanoramaResource"
 import { VChart } from "../../../charts"
-import PanoramaStatusBar from "../../../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../../../components/market/MarketPanel.vue"
+import PanelSection from "../../../components/market/PanelSection.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
 import { useMarketLinkageStore } from "../../../stores/marketLinkage"
 
@@ -292,57 +301,25 @@ const premiumChartOption = computed<EChartsOption>(() => {
 </script>
 
 <style scoped>
-.sentiment-breadth-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 14px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.sbp-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.sbp-title-box {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.sbp-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.sbp-sub {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
 .sbp-leader-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 3px 11px;
   border-radius: 999px;
-  background: rgba(246, 70, 93, 0.1);
-  border: 1px solid rgba(246, 70, 93, 0.35);
+  background: color-mix(in srgb, var(--rise) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rise) 38%, transparent);
+  color: var(--text);
   font-size: 12px;
   cursor: pointer;
 }
 
+.sbp-leader-chip:hover {
+  background: color-mix(in srgb, var(--rise) 16%, transparent);
+}
+
 .leader-label {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .leader-stock {
@@ -351,18 +328,18 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .leader-pct {
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
   font-weight: 700;
 }
 
 .leader-theme {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .breadth-bar-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 9px 12px;
   display: flex;
@@ -394,7 +371,7 @@ const premiumChartOption = computed<EChartsOption>(() => {
   border-radius: 999px;
   overflow: hidden;
   display: flex;
-  background: var(--bg-surface);
+  background: var(--panel-soft);
 }
 
 .bp-seg.seg-up {
@@ -416,8 +393,8 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .skpi-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 9px 10px;
   display: flex;
@@ -433,33 +410,33 @@ const premiumChartOption = computed<EChartsOption>(() => {
 .skpi-card.clickable:hover,
 .skpi-card.clickable.active {
   border-color: var(--accent);
-  background: var(--accent-subtle);
+  background: var(--accent-soft);
 }
 
 .skpi-label {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .skpi-main {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
 }
 
 .skpi-val {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .skpi-slash {
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .skpi-badge {
-  font-size: 11px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 999px;
   font-weight: 600;
@@ -476,19 +453,19 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .expand-hint {
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--accent);
-  font-family: var(--font-sans);
+  font-family: var(--font-ui);
 }
 
 .skpi-note {
-  font-size: 10.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .extreme-swing-drawer {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 9px;
   padding: 10px 12px;
   display: flex;
@@ -505,13 +482,13 @@ const premiumChartOption = computed<EChartsOption>(() => {
 .esd-title {
   font-size: 12px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .esd-close {
   border: none;
   background: none;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--accent);
   cursor: pointer;
 }
@@ -523,8 +500,8 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .esd-item {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 7px;
   padding: 7px 10px;
   cursor: pointer;
@@ -546,33 +523,33 @@ const premiumChartOption = computed<EChartsOption>(() => {
 .esd-name {
   font-weight: 700;
   font-size: 12.5px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .esd-code {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-family: var(--font-num);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .esd-sec {
-  font-size: 10.5px;
+  font-size: 12px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  background: var(--panel-soft);
+  color: var(--muted);
 }
 
 .esd-mid {
   display: flex;
   gap: 12px;
-  font-size: 11.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .esd-reason {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .premium-row {
@@ -589,8 +566,8 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .prem-item {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px 10px;
   display: flex;
@@ -600,24 +577,24 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .p-label {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .p-val {
-  font-family: var(--font-mono);
-  font-size: 16px;
+  font-family: var(--font-num);
+  font-size: 18px;
   font-weight: 700;
 }
 
 .p-desc {
-  font-size: 10.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .premium-chart-box {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   height: 118px;
   padding: 4px;

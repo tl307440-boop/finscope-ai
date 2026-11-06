@@ -1,23 +1,20 @@
 <template>
-  <section class="global-core-strip" aria-label="全球核心指数与大宗商品走势">
-    <div class="strip-head">
-      <div class="strip-title-wrap">
-        <span class="strip-title">全球核心指数与大宗商品</span>
-        <span class="strip-sub">A股宽基 · 港美核心指数 · 黄金 / 原油</span>
-      </div>
-      <div class="strip-filter-pills">
-        <button
-          v-for="cat in categories"
-          :key="cat"
-          type="button"
-          class="cat-pill"
-          :class="{ active: activeCategory === cat }"
-          @click="activeCategory = cat"
-        >
-          {{ cat }}
-        </button>
-      </div>
-    </div>
+  <MarketPanel
+    title="全球核心指数与大宗商品"
+    subtitle="A 股宽基 · 港美核心指数 · 黄金 / 原油；迷你图为当日分时"
+    info="价格、涨跌幅与分时均为公开行情；拿不到的品种显示「—」并在下方「缺项」里说明原因"
+    tone="cyan"
+    :icon="Connection"
+    :meta="state === 'ready' ? (data?.meta ?? null) : null"
+    :refresh-error="error"
+  >
+    <template #actions>
+      <SectionTabs
+        :model-value="activeCategory"
+        :tabs="categoryTabs"
+        @update:model-value="activeCategory = $event as (typeof categories)[number]"
+      />
+    </template>
 
     <StateBlock
       v-if="state !== 'ready'"
@@ -36,60 +33,53 @@
         <div
           v-for="item in filteredQuotes"
           :key="item.code"
-          class="quote-mini-card"
+          class="quote-card"
           :class="cardTone(item.changePct)"
         >
           <div class="q-top">
-            <div class="q-name-box">
-              <span class="q-name">{{ item.name }}</span>
-              <span class="q-cat-tag">{{ item.category }}</span>
-            </div>
-            <span class="q-pct" :class="toneClass(item.changePct)">
-              {{ fmtPct(item.changePct) }}
-            </span>
+            <span class="q-name">{{ item.name }}</span>
+            <span class="q-cat-tag">{{ item.category }}</span>
           </div>
-
+          <div class="q-main">
+            <span class="q-price" :class="toneClass(item.changePct)">{{ fmtPrice(item.price) }}</span>
+            <span class="q-pct" :class="toneClass(item.changePct)">{{ fmtPct(item.changePct) }}</span>
+          </div>
           <div class="q-bottom">
-            <div class="q-price-col">
-              <span class="q-price" :class="toneClass(item.changePct)">
-                {{ fmtPrice(item.price) }}
-              </span>
-              <span class="q-delta" :class="toneClass(item.change)">
-                {{ fmtSigned(item.change) }}
-                <template v-if="item.amountYuan">
-                  · 成交 {{ (item.amountYuan / 1e8).toFixed(0) }}亿
-                </template>
-              </span>
-            </div>
-            <div v-if="item.spark.length > 1" class="q-spark-wrap">
-              <MiniSpark
-                :points="item.spark"
-                :color="(item.changePct ?? 0) >= 0 ? '#f6465d' : '#1fc37d'"
-                :width="76"
-                :height="28"
-              />
-            </div>
+            <span class="q-delta">
+              <span :class="toneClass(item.change)">{{ fmtSigned(item.change) }}</span>
+              <span v-if="item.amountYuan" class="q-amt">成交 {{ (item.amountYuan / 1e8).toFixed(0) }} 亿</span>
+            </span>
+            <MiniSpark
+              v-if="item.spark.length > 1"
+              class="q-spark"
+              :points="item.spark"
+              :color="(item.changePct ?? 0) >= 0 ? '#f6465d' : '#1fc37d'"
+              :width="70"
+              :height="26"
+            />
           </div>
         </div>
       </div>
-      <PanoramaStatusBar :meta="data?.meta ?? null" :refresh-error="error" />
     </template>
-  </section>
+  </MarketPanel>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue"
+import { Connection } from "@element-plus/icons-vue"
 
 import { fetchGlobalQuotes } from "../../../api/aSharePanorama"
 import { fmtPct, fmtSigned, toneClass } from "../../../api/aShareFormat"
 import { usePanoramaResource } from "../../../api/usePanoramaResource"
-import PanoramaStatusBar from "../../../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../../../components/market/MarketPanel.vue"
 import MiniSpark from "../../../components/ui/MiniSpark.vue"
+import SectionTabs from "../../../components/ui/SectionTabs.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
 
 const { data, state, error, reload } = usePanoramaResource(fetchGlobalQuotes, { pollMs: 60_000 })
 
 const categories = ["全部", "A股宽基", "海外指数", "大宗商品"] as const
+const categoryTabs = categories.map((c) => ({ key: c, label: c }))
 const activeCategory = ref<(typeof categories)[number]>("全部")
 
 const filteredQuotes = computed(() => {
@@ -110,127 +100,80 @@ function fmtPrice(value: number | null): string {
 </script>
 
 <style scoped>
-.global-core-strip {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.strip-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.strip-title-wrap {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-}
-
-.strip-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.strip-sub {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
-}
-
-.strip-filter-pills {
-  display: flex;
-  gap: 6px;
-}
-
-.cat-pill {
-  padding: 3px 9px;
-  font-size: 11px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.cat-pill.active {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border-color: rgba(37, 99, 235, 0.32);
-  font-weight: 600;
-}
-
 .quotes-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
-.quote-mini-card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 9px 11px;
+.quote-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: transform 0.14s ease;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 
-.quote-mini-card:hover {
+.quote-card:hover {
   transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
 }
 
-.quote-mini-card.border-rise {
-  border-left: 3px solid var(--rise);
+.quote-card.border-rise {
+  border-left-color: var(--rise);
 }
 
-.quote-mini-card.border-fall {
-  border-left: 3px solid var(--fall);
+.quote-card.border-fall {
+  border-left-color: var(--fall);
 }
 
 .q-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 4px;
-}
-
-.q-name-box {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
+  gap: 6px;
 }
 
 .q-name {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
   white-space: nowrap;
 }
 
 .q-cat-tag {
-  font-size: 10px;
-  padding: 1px 5px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
   border-radius: 4px;
-  background: var(--bg-card);
-  color: var(--text-tertiary);
-  border: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.q-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+.q-price {
+  font-size: 18px;
+  font-weight: 600;
 }
 
 .q-pct {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .q-bottom {
@@ -238,23 +181,39 @@ function fmtPrice(value: number | null): string {
   align-items: flex-end;
   justify-content: space-between;
   gap: 6px;
-}
-
-.q-price-col {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-family: var(--font-mono);
-}
-
-.q-price {
-  font-size: 15px;
-  font-weight: 700;
+  min-height: 26px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line-soft);
 }
 
 .q-delta {
-  font-size: 10.5px;
-  opacity: 0.9;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-family: var(--font-num);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.q-amt {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.q-dot {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin: 0 6px 2px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.q-spark {
+  flex: none;
 }
 
 .is-rise {
@@ -263,6 +222,12 @@ function fmtPrice(value: number | null): string {
 
 .is-fall {
   color: var(--fall);
+}
+
+@media (max-width: 1500px) {
+  .quotes-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1280px) {

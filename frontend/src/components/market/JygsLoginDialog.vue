@@ -151,7 +151,7 @@ onBeforeUnmount(stop)
   justify-content: center;
   width: 220px;
   height: 220px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -161,7 +161,7 @@ onBeforeUnmount(stop)
 }
 
 .jl-placeholder {
-  color: var(--text-secondary);
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -169,11 +169,11 @@ onBeforeUnmount(stop)
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .jl-msg.ok {
-  color: var(--success, #2e9e5b);
+  color: var(--ok, #2e9e5b);
 }
 
 .jl-msg.bad {
@@ -185,6 +185,6 @@ onBeforeUnmount(stop)
   font-size: 12px;
   line-height: 1.5;
   text-align: center;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 </style>

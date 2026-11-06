@@ -179,7 +179,9 @@ function sentimentClass(s: NewsSentiment): string {
         </article>
       </div>
 
-      <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
+      <div class="hn-foot">
+        <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
+      </div>
     </template>
 
     <section class="hn-history">
@@ -195,23 +197,37 @@ function sentimentClass(s: NewsSentiment): string {
 .hn-filters {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 14px;
+  gap: 10px;
+  background: linear-gradient(180deg, var(--panel-top), var(--panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 12px 16px;
+}
+
+.hn-row + .hn-row {
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.hn-foot {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-soft);
 }
 
 .hn-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .hn-label {
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
 }
 
 .hn-label.sep {
@@ -219,46 +235,54 @@ function sentimentClass(s: NewsSentiment): string {
 }
 
 .hn-chip {
-  padding: 2px 10px;
-  font-size: 11.5px;
+  padding: 3px 12px;
+  font-size: 12.5px;
   border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.hn-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .hn-chip.active {
-  background: var(--accent-subtle);
+  background: var(--accent-soft);
   color: var(--accent);
-  border-color: rgba(37, 99, 235, 0.35);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   font-weight: 600;
 }
 
 .hn-search {
   margin-left: 12px;
-  width: 220px;
-  padding: 3px 9px;
-  font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-surface);
-  color: var(--text-primary);
+  width: 240px;
+  padding: 5px 10px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--text);
 }
 
 .hn-count {
   margin-left: auto;
-  font-size: 11.5px;
-  color: var(--text-tertiary);
+  font-size: 12.5px;
+  color: var(--faint);
 }
 
 .hn-warn {
-  font-size: 11.5px;
-  color: #b45309;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 8px;
-  padding: 5px 10px;
+  font-size: 12.5px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
 }
 
 .hn-warn span {
@@ -268,42 +292,49 @@ function sentimentClass(s: NewsSentiment): string {
 .hn-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .hn-item {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 10px 14px;
+  background: linear-gradient(180deg, var(--panel-top), var(--panel));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
+}
+
+.hn-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
 }
 
 .hn-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--line-soft);
+  font-size: 12px;
 }
 
 .hn-time {
-  font-family: var(--font-mono);
-  color: var(--text-tertiary);
+  font-family: var(--font-num);
+  color: var(--faint);
 }
 
 .hn-source {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .hn-level,
 .hn-sentiment,
 .hn-region {
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 999px;
   font-weight: 700;
-  font-size: 10.5px;
+  font-size: 11.5px;
 }
 
 .lv-S {
@@ -317,8 +348,8 @@ function sentimentClass(s: NewsSentiment): string {
 }
 
 .lv-B {
-  background: var(--bg-elevated);
-  color: var(--text-tertiary);
+  background: var(--panel-soft);
+  color: var(--faint);
 }
 
 .st-good {
@@ -338,23 +369,23 @@ function sentimentClass(s: NewsSentiment): string {
 
 .st-neutral,
 .hn-region {
-  background: var(--bg-elevated);
-  color: var(--text-tertiary);
+  background: var(--panel-soft);
+  color: var(--faint);
 }
 
 .hn-title {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 700;
   line-height: 1.5;
-  color: var(--text-primary);
+  color: var(--text-strong);
 }
 
 .hn-summary {
   margin: 0;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
 }
 
 .hn-links {
@@ -364,21 +395,21 @@ function sentimentClass(s: NewsSentiment): string {
 }
 
 .hn-sector {
-  padding: 1px 8px;
-  font-size: 11px;
+  padding: 2px 9px;
+  font-size: 12px;
   border-radius: 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
 }
 
 .hn-stock {
-  padding: 1px 8px;
+  padding: 2px 9px;
   font: inherit;
-  font-size: 11px;
+  font-size: 12px;
   border-radius: 6px;
-  background: var(--accent-subtle);
-  border: 1px solid rgba(37, 99, 235, 0.25);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--accent);
   cursor: pointer;
 }
@@ -391,12 +422,12 @@ function sentimentClass(s: NewsSentiment): string {
 
 .hn-history-toggle {
   align-self: flex-start;
-  padding: 3px 10px;
-  font-size: 12px;
+  padding: 5px 12px;
+  font-size: 13px;
   border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
 }
 

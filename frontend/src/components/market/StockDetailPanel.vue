@@ -485,10 +485,10 @@ const klineOption = computed<EChartsOption>(() => {
 
 <style scoped>
 .stock-detail-panel {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -504,7 +504,7 @@ const klineOption = computed<EChartsOption>(() => {
   flex-direction: column;
   gap: 8px;
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 
 .sdp-title-row {
@@ -524,13 +524,13 @@ const klineOption = computed<EChartsOption>(() => {
 .sdp-name {
   font-size: 17px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .sdp-code {
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .sdp-streak-pill {
@@ -547,7 +547,7 @@ const klineOption = computed<EChartsOption>(() => {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
 }
 
 .sdp-price {
@@ -577,7 +577,7 @@ const klineOption = computed<EChartsOption>(() => {
 
 .sdp-sec-label {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .sdp-sector-tag {
@@ -585,9 +585,9 @@ const klineOption = computed<EChartsOption>(() => {
   border-radius: 6px;
   font-size: 11px;
   font-weight: 500;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  color: var(--muted);
+  border: 1px solid var(--line);
 }
 
 .sdp-metrics-grid {
@@ -597,8 +597,8 @@ const klineOption = computed<EChartsOption>(() => {
 }
 
 .sdp-metric-cell {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px 10px;
   display: flex;
@@ -613,24 +613,24 @@ const klineOption = computed<EChartsOption>(() => {
 
 .m-label {
   font-size: 11px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .m-val {
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
   font-size: 14px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .m-sub {
   font-size: 10.5px;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .sdp-catalyst-box {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 9px 11px;
 }
@@ -650,7 +650,7 @@ const klineOption = computed<EChartsOption>(() => {
 
 .sdp-deep-link {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--muted);
   text-decoration: none;
 }
 
@@ -662,39 +662,39 @@ const klineOption = computed<EChartsOption>(() => {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .action-box {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px dashed var(--border);
+  border-top: 1px dashed var(--line);
 }
 
 .action-badge {
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .action-sector {
   margin-left: 6px;
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .action-text {
   margin: 4px 0 0;
   font-size: 12px;
   line-height: 1.55;
-  color: var(--text-primary);
+  color: var(--text);
   white-space: pre-line;
   max-height: 160px;
   overflow-y: auto;
 }
 
 .action-sector-reason {
-  color: var(--text-secondary);
+  color: var(--muted);
 }
 
 .sdp-chart-section {
@@ -713,24 +713,24 @@ const klineOption = computed<EChartsOption>(() => {
   padding: 5px 8px;
   font-size: 11px;
   border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
   cursor: pointer;
 }
 
 .chart-tab-btn.active {
-  background: var(--accent-subtle);
+  background: var(--accent-soft);
   color: var(--accent);
   border-color: rgba(37, 99, 235, 0.35);
   font-weight: 600;
 }
 
 .sdp-chart-card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px;
-  background: var(--bg-surface);
+  background: var(--panel-soft);
 }
 
 .chart-mini-head {
@@ -743,7 +743,7 @@ const klineOption = computed<EChartsOption>(() => {
 .chart-mini-title {
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .chart-mini-legend {
@@ -751,7 +751,7 @@ const klineOption = computed<EChartsOption>(() => {
   align-items: center;
   gap: 8px;
   font-size: 10.5px;
-  color: var(--text-tertiary);
+  color: var(--faint);
 }
 
 .dot-price,
@@ -796,7 +796,7 @@ const klineOption = computed<EChartsOption>(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
   padding-top: 10px;
 }
 
@@ -810,12 +810,12 @@ const klineOption = computed<EChartsOption>(() => {
 .lhb-sec-title {
   font-size: 12.5px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
 .lhb-sec-reason {
   font-size: 10.5px;
-  color: var(--text-tertiary);
+  color: var(--faint);
   max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -852,8 +852,8 @@ const klineOption = computed<EChartsOption>(() => {
   gap: 6px;
   padding: 5px 7px;
   border-radius: 6px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
   font-size: 11.5px;
 }
 
@@ -883,7 +883,7 @@ const klineOption = computed<EChartsOption>(() => {
 }
 
 .seat-branch {
-  color: var(--text-primary);
+  color: var(--text);
   font-weight: 500;
   max-width: 155px;
   overflow: hidden;
@@ -934,7 +934,7 @@ const klineOption = computed<EChartsOption>(() => {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  font-family: var(--font-mono);
+  font-family: var(--font-num);
   font-size: 11px;
   flex-shrink: 0;
 }

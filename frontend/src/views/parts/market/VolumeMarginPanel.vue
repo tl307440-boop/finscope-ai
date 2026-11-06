@@ -1,24 +1,21 @@
 <template>
-  <section class="volume-margin-panel" aria-label="多维成交量能与两融余额监控">
+  <section class="volume-margin-row" aria-label="多维成交量能与两融余额监控">
     <!-- 左栏：多维成交量能拆解 -->
-    <div class="vm-card">
-      <div class="vm-head">
-        <div>
-          <span class="vm-title">多维成交量能（全天 + 11:30 午盘量能对比）</span>
-          <span class="vm-sub">全市场（沪+深+京）/ 上证 / 深证 / 北证 / 创业板 / 科创板</span>
-        </div>
-        <div v-if="volumes.length" class="vm-tabs">
-          <button
-            v-for="v in volumes"
-            :key="v.key"
-            type="button"
-            class="vm-tab-btn"
-            :class="{ active: currentVolume?.key === v.key }"
-            @click="activeVolKey = v.key"
-          >
-            {{ VOLUME_TAB[v.key] }}
-          </button>
-        </div>
+    <MarketPanel
+      title="多维成交量能"
+      subtitle="全天成交额 + 11:30 午盘量能对比（全市场 = 沪 + 深 + 京）"
+      info="成交额取市场口径指数；午盘（11:30）对比的是上一个交易日同一时点"
+      tone="accent"
+      :icon="Histogram"
+      :meta="volumeMargin?.meta ?? null"
+      :refresh-error="error"
+    >
+      <div v-if="volumes.length" class="vm-tabs">
+        <SectionTabs
+          :model-value="currentVolume?.key ?? ''"
+          :tabs="volumes.map((v) => ({ key: v.key, label: VOLUME_TAB[v.key] }))"
+          @update:model-value="activeVolKey = $event as VolumeKey"
+        />
       </div>
 
       <StateBlock
@@ -65,27 +62,22 @@
         </div>
       </template>
       <StateBlock v-else state="empty" message="上游没有返回成交额数据" />
-    </div>
+    </MarketPanel>
 
     <!-- 右栏：沪深京两融余额拆解 -->
-    <div class="vm-card">
-      <div class="vm-head">
-        <div>
-          <span class="vm-title">全市场及沪/深/京两融余额</span>
-          <span class="vm-sub">融资余额 · 融券余额 · 余额日变动与历史趋势</span>
-        </div>
-        <div v-if="margins.length" class="vm-tabs">
-          <button
-            v-for="m in margins"
-            :key="m.key"
-            type="button"
-            class="vm-tab-btn"
-            :class="{ active: currentMargin?.key === m.key }"
-            @click="activeMarginKey = m.key"
-          >
-            {{ MARGIN_TAB[m.key] }}
-          </button>
-        </div>
+    <MarketPanel
+      title="两融余额"
+      subtitle="全市场及沪 / 深 / 京 · 融资余额 · 融券余额 · 日变动与历史趋势（T+1 披露）"
+      info="两融余额「日变动」是相邻交易日的余额差，不是融资净买入"
+      tone="ok"
+      :icon="Coin"
+    >
+      <div v-if="margins.length" class="vm-tabs">
+        <SectionTabs
+          :model-value="currentMargin?.key ?? ''"
+          :tabs="margins.map((m) => ({ key: m.key, label: MARGIN_TAB[m.key] }))"
+          @update:model-value="activeMarginKey = $event as MarginKey"
+        />
       </div>
 
       <StateBlock
@@ -127,16 +119,13 @@
         </div>
       </template>
       <StateBlock v-else state="empty" message="上游没有返回两融数据" />
-    </div>
-
-    <div v-if="volumeMargin" class="vm-footer">
-      <PanoramaStatusBar :meta="volumeMargin.meta" :refresh-error="error" />
-    </div>
+    </MarketPanel>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from "vue"
+import { Coin, Histogram } from "@element-plus/icons-vue"
 import type { EChartsOption } from "echarts"
 
 import {
@@ -147,7 +136,8 @@ import {
 import { fmtPct, fmtYi, toneClass } from "../../../api/aShareFormat"
 import { usePanoramaResource } from "../../../api/usePanoramaResource"
 import { VChart } from "../../../charts"
-import PanoramaStatusBar from "../../../components/market/PanoramaStatusBar.vue"
+import MarketPanel from "../../../components/market/MarketPanel.vue"
+import SectionTabs from "../../../components/ui/SectionTabs.vue"
 import StateBlock from "../../../components/ui/StateBlock.vue"
 
 const VOLUME_TAB: Record<VolumeKey, string> = {
@@ -279,101 +269,51 @@ const marginChartOption = computed<EChartsOption>(() => {
 </script>
 
 <style scoped>
-.vm-footer {
-  grid-column: 1 / -1;
-}
-
-.volume-margin-panel {
+.volume-margin-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.vm-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 13px 14px;
-  box-shadow: var(--shadow-sm);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.vm-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.vm-title {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.vm-sub {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  gap: var(--gap, 14px);
+  align-items: stretch;
 }
 
 .vm-tabs {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.vm-tab-btn {
-  padding: 3px 8px;
-  font-size: 11px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.vm-tab-btn.active {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border-color: rgba(37, 99, 235, 0.35);
-  font-weight: 600;
+  margin-bottom: 12px;
 }
 
 .vm-kpi-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .vm-kpi-item {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
 }
 
 .vk-label {
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  font-size: 12px;
+  color: var(--faint);
 }
 
 .vk-val {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
+  font-family: var(--font-num);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-strong);
+  font-variant-numeric: tabular-nums;
 }
 
 .vk-sub {
-  font-size: 10.5px;
-  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
 }
 
 .is-rise {
@@ -385,8 +325,11 @@ const marginChartOption = computed<EChartsOption>(() => {
 }
 
 .vm-chart-wrap {
-  height: 156px;
+  height: 180px;
   width: 100%;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line-soft);
 }
 
 .vm-chart {
@@ -395,7 +338,7 @@ const marginChartOption = computed<EChartsOption>(() => {
 }
 
 @media (max-width: 1180px) {
-  .volume-margin-panel {
+  .volume-margin-row {
     grid-template-columns: 1fr;
   }
 }
