@@ -16,6 +16,7 @@ import {
 import { fmtPct, toneClass } from "../api/aShareFormat"
 import { usePanoramaResource } from "../api/usePanoramaResource"
 import MarketSplitLayout from "../components/market/MarketSplitLayout.vue"
+import ResizableBox from "../components/market/ResizableBox.vue"
 import PanoramaStatusBar from "../components/market/PanoramaStatusBar.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
@@ -81,51 +82,53 @@ function sentimentClass(s: NewsSentiment): string {
       </template>
     </PageHeader>
 
-    <div class="hn-filters">
-      <div class="hn-row">
-        <span class="hn-label">来源</span>
-        <button
-          v-for="s in SOURCES"
-          :key="s"
-          type="button"
-          class="hn-chip"
-          :class="{ active: enabledSources.has(s) }"
-          @click="toggleSource(s)"
-        >
-          {{ s }}
-        </button>
-        <span class="hn-label sep">级别</span>
-        <button
-          v-for="l in LEVELS"
-          :key="l"
-          type="button"
-          class="hn-chip"
-          :class="{ active: level === l }"
-          @click="level = l"
-        >
-          {{ l }}
-        </button>
-        <span class="hn-label sep">倾向</span>
-        <button
-          v-for="s in SENTIMENTS"
-          :key="s"
-          type="button"
-          class="hn-chip"
-          :class="{ active: sentiment === s }"
-          @click="sentiment = s"
-        >
-          {{ s }}
-        </button>
+    <ResizableBox id="news.filters" :min-h="80">
+      <div class="hn-filters">
+        <div class="hn-row">
+          <span class="hn-label">来源</span>
+          <button
+            v-for="s in SOURCES"
+            :key="s"
+            type="button"
+            class="hn-chip"
+            :class="{ active: enabledSources.has(s) }"
+            @click="toggleSource(s)"
+          >
+            {{ s }}
+          </button>
+          <span class="hn-label sep">级别</span>
+          <button
+            v-for="l in LEVELS"
+            :key="l"
+            type="button"
+            class="hn-chip"
+            :class="{ active: level === l }"
+            @click="level = l"
+          >
+            {{ l }}
+          </button>
+          <span class="hn-label sep">倾向</span>
+          <button
+            v-for="s in SENTIMENTS"
+            :key="s"
+            type="button"
+            class="hn-chip"
+            :class="{ active: sentiment === s }"
+            @click="sentiment = s"
+          >
+            {{ s }}
+          </button>
+        </div>
+        <div class="hn-row">
+          <span class="hn-label">范围</span>
+          <button type="button" class="hn-chip" :class="{ active: region === 'all' }" @click="region = 'all'">全部</button>
+          <button type="button" class="hn-chip" :class="{ active: region === 'domestic' }" @click="region = 'domestic'">国内</button>
+          <button type="button" class="hn-chip" :class="{ active: region === 'overseas' }" @click="region = 'overseas'">海外</button>
+          <input v-model="keyword" type="text" class="hn-search" placeholder="搜索标题 / 板块 / 个股" />
+          <span class="hn-count">{{ filtered.length }} 条</span>
+        </div>
       </div>
-      <div class="hn-row">
-        <span class="hn-label">范围</span>
-        <button type="button" class="hn-chip" :class="{ active: region === 'all' }" @click="region = 'all'">全部</button>
-        <button type="button" class="hn-chip" :class="{ active: region === 'domestic' }" @click="region = 'domestic'">国内</button>
-        <button type="button" class="hn-chip" :class="{ active: region === 'overseas' }" @click="region = 'overseas'">海外</button>
-        <input v-model="keyword" type="text" class="hn-search" placeholder="搜索标题 / 板块 / 个股" />
-        <span class="hn-count">{{ filtered.length }} 条</span>
-      </div>
-    </div>
+    </ResizableBox>
 
     <StateBlock
       v-if="!data"
@@ -152,32 +155,34 @@ function sentimentClass(s: NewsSentiment): string {
         "
       />
 
-      <div v-else class="hn-list">
-        <article v-for="n in filtered" :key="n.id" class="hn-item">
-          <div class="hn-meta">
-            <span class="hn-time">{{ n.date.slice(5) }} {{ n.time }}</span>
-            <span class="hn-source">{{ n.source }}</span>
-            <span class="hn-level" :class="`lv-${n.impactLevel}`">{{ n.impactLevel }}</span>
-            <span class="hn-sentiment" :class="sentimentClass(n.sentiment)">{{ n.sentiment }}</span>
-            <span v-if="n.region === 'overseas'" class="hn-region">海外</span>
-          </div>
-          <h3 class="hn-title">{{ n.title }}</h3>
-          <p v-if="n.summary && n.summary !== n.title" class="hn-summary">{{ n.summary }}</p>
-          <div v-if="n.sectors.length || n.stocks.length" class="hn-links">
-            <span v-for="sec in n.sectors" :key="sec" class="hn-sector">{{ sec }}</span>
-            <button
-              v-for="s in n.stocks"
-              :key="s.code"
-              type="button"
-              class="hn-stock"
-              @click="linkageStore.selectStock(s.code)"
-            >
-              {{ s.name }}
-              <span :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</span>
-            </button>
-          </div>
-        </article>
-      </div>
+      <ResizableBox v-else id="news.list">
+        <div class="hn-list">
+          <article v-for="n in filtered" :key="n.id" class="hn-item">
+            <div class="hn-meta">
+              <span class="hn-time">{{ n.date.slice(5) }} {{ n.time }}</span>
+              <span class="hn-source">{{ n.source }}</span>
+              <span class="hn-level" :class="`lv-${n.impactLevel}`">{{ n.impactLevel }}</span>
+              <span class="hn-sentiment" :class="sentimentClass(n.sentiment)">{{ n.sentiment }}</span>
+              <span v-if="n.region === 'overseas'" class="hn-region">海外</span>
+            </div>
+            <h3 class="hn-title">{{ n.title }}</h3>
+            <p v-if="n.summary && n.summary !== n.title" class="hn-summary">{{ n.summary }}</p>
+            <div v-if="n.sectors.length || n.stocks.length" class="hn-links">
+              <span v-for="sec in n.sectors" :key="sec" class="hn-sector">{{ sec }}</span>
+              <button
+                v-for="s in n.stocks"
+                :key="s.code"
+                type="button"
+                class="hn-stock"
+                @click="linkageStore.selectStock(s.code)"
+              >
+                {{ s.name }}
+                <span :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</span>
+              </button>
+            </div>
+          </article>
+        </div>
+      </ResizableBox>
 
       <div class="hn-foot">
         <PanoramaStatusBar :meta="data.meta" :refresh-error="error" />
@@ -437,5 +442,11 @@ function sentimentClass(s: NewsSentiment): string {
 
 .is-fall {
   color: var(--fall);
+}
+
+/* 用户拖过高度：消息列表就是一个带滚动条的视窗，筛选区内容放不下也在框内滚动 */
+.mk-box.is-h > .hn-list {
+  overflow: auto;
+  padding: 2px 4px 2px 2px;
 }
 </style>

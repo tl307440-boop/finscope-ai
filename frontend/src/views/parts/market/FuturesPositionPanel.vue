@@ -1,5 +1,6 @@
 <template>
   <MarketPanel
+    box-id="indices.futures"
     title="股指期货机构多空持仓（IF / IC / IM / IH）"
     subtitle="中金所公布的各品种多空持仓排名；同一机构跨月份合约已合并，仅包含进入榜单（前 20）的席位"
     info="持仓单位：手；净持仓 = 多单 − 空单；当日净多空变动红色为净增多、绿色为净增空"
@@ -30,7 +31,7 @@
       :message="emptyReason"
     />
 
-    <div v-else class="fpp-body">
+    <div v-else class="fpp-body mk-fill">
       <!-- 机构持仓与当日增减明细表 -->
       <PanelSection title="机构持仓与当日增减" :note="`共 ${filteredPositions.length} 家`">
       <div class="fpp-table-wrap">
@@ -77,10 +78,11 @@
 
       <!-- 红绿正负双向条形图 -->
       <PanelSection
+        class="mk-fill"
         :title="`${activeContract === 'ALL' ? '四品种合计' : activeContract} 当日净多空变动`"
         note="红：净增多　绿：净增空（手）"
       >
-        <div class="fpp-chart-wrap" :style="{ height: `${chartHeight}px` }">
+        <div class="fpp-chart-wrap" :style="{ '--fpp-h': `${chartHeight}px` }">
           <VChart class="fpp-chart" :option="barChartOption" autoresize />
         </div>
       </PanelSection>
@@ -288,6 +290,7 @@ const barChartOption = computed<EChartsOption>(() => {
 
 .fpp-chart-wrap {
   width: 100%;
+  height: var(--fpp-h, 220px);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--panel-soft);
@@ -297,5 +300,22 @@ const barChartOption = computed<EChartsOption>(() => {
 .fpp-chart {
   width: 100%;
   height: 100%;
+}
+
+/* 用户拖过高度：表格保持自己的滚动区（表头吸顶），图表吃掉多出来的高度 */
+.mk-box.is-h .fpp-body > .panel-section {
+  flex: none;
+}
+
+.mk-box.is-h .fpp-body > .panel-section.mk-fill {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.mk-box.is-h .fpp-chart-wrap {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: var(--fpp-h, 220px);
 }
 </style>

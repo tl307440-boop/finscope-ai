@@ -1,5 +1,6 @@
 <template>
   <MarketPanel
+    box-id="indices.global"
     title="全球核心指数与大宗商品"
     subtitle="A 股宽基 · 港美核心指数 · 黄金 / 原油；迷你图为当日分时"
     info="价格、涨跌幅与分时均为公开行情；拿不到的品种显示「—」并在下方「缺项」里说明原因"
@@ -224,19 +225,20 @@ function fmtPrice(value: number | null): string {
   color: var(--fall);
 }
 
-@media (max-width: 1500px) {
+/* 按框自己的宽度换列数（用户拖宽 / 拖窄、右侧个股详情展开收起都会变） */
+@container mk (max-width: 880px) {
   .quotes-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 1280px) {
+@container mk (max-width: 640px) {
   .quotes-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 760px) {
+@container mk (max-width: 480px) {
   .quotes-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

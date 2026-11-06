@@ -10,6 +10,7 @@ import { errorMessage, fetchDragonTiger, type DragonTigerData } from "../api/aSh
 import { fmtPct, fmtWan, toneClass } from "../api/aShareFormat"
 import { groupDragonTiger } from "../api/dragonTigerGrouping"
 import MarketSplitLayout from "../components/market/MarketSplitLayout.vue"
+import ResizableBox from "../components/market/ResizableBox.vue"
 import PanoramaStatusBar from "../components/market/PanoramaStatusBar.vue"
 import PageHeader from "../components/ui/PageHeader.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
@@ -137,48 +138,50 @@ function capsuleTone(net: number): string {
         />
 
         <!-- 席位 → 个股胶囊 -->
-        <div v-else class="dt-rows">
-          <article v-for="row in visibleRows" :key="row.groupId" class="dt-card">
-            <header class="dt-card-head">
-              <div class="dt-card-title">
-                <span class="dt-name">{{ row.name }}</span>
-                <span class="dt-badge" :class="badgeClass(row.category)">{{ row.category }}</span>
-                <span class="dt-style">{{ row.styleTag }}</span>
-              </div>
-              <div class="dt-net" :class="toneClass(row.netWan)">
-                <span class="dt-net-label">席位净额</span>
-                <b>{{ fmtWan(row.netWan, true) }}</b>
-                <span class="dt-bs">买 {{ fmtWan(row.buyWan) }} · 卖 {{ fmtWan(row.sellWan) }}</span>
-              </div>
-            </header>
+        <template v-else>
+          <ResizableBox v-for="row in visibleRows" :id="`dragon.seat.${row.groupId}`" :key="row.groupId">
+            <article class="dt-card">
+              <header class="dt-card-head">
+                <div class="dt-card-title">
+                  <span class="dt-name">{{ row.name }}</span>
+                  <span class="dt-badge" :class="badgeClass(row.category)">{{ row.category }}</span>
+                  <span class="dt-style">{{ row.styleTag }}</span>
+                </div>
+                <div class="dt-net" :class="toneClass(row.netWan)">
+                  <span class="dt-net-label">席位净额</span>
+                  <b>{{ fmtWan(row.netWan, true) }}</b>
+                  <span class="dt-bs">买 {{ fmtWan(row.buyWan) }} · 卖 {{ fmtWan(row.sellWan) }}</span>
+                </div>
+              </header>
 
-            <div class="dt-capsules">
-              <button
-                v-for="s in row.stocks"
-                :key="s.code"
-                type="button"
-                class="dt-capsule"
-                :class="[
-                  capsuleTone(s.netWan),
-                  { selected: linkageStore.selectedStockCode === s.code },
-                ]"
-                :title="`${s.reason}\n${s.branches.join('\n')}`"
-                @click="linkageStore.selectStock(s.code)"
-              >
-                <span class="cap-name">{{ s.name }}</span>
-                <span class="cap-pct" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</span>
-                <span class="cap-amt">
-                  买 {{ fmtWan(s.buyWan) }} / 卖 {{ fmtWan(s.sellWan) }}
-                </span>
-                <b class="cap-net">净 {{ fmtWan(s.netWan, true) }}</b>
-              </button>
-            </div>
-          </article>
-        </div>
+              <div class="dt-capsules">
+                <button
+                  v-for="s in row.stocks"
+                  :key="s.code"
+                  type="button"
+                  class="dt-capsule"
+                  :class="[
+                    capsuleTone(s.netWan),
+                    { selected: linkageStore.selectedStockCode === s.code },
+                  ]"
+                  :title="`${s.reason}\n${s.branches.join('\n')}`"
+                  @click="linkageStore.selectStock(s.code)"
+                >
+                  <span class="cap-name">{{ s.name }}</span>
+                  <span class="cap-pct" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</span>
+                  <span class="cap-amt">
+                    买 {{ fmtWan(s.buyWan) }} / 卖 {{ fmtWan(s.sellWan) }}
+                  </span>
+                  <b class="cap-net">净 {{ fmtWan(s.netWan, true) }}</b>
+                </button>
+              </div>
+            </article>
+          </ResizableBox>
+        </template>
 
         <!-- 外资 / 机构 / 拉萨天团 汇总 -->
-        <div class="dt-summary">
-          <div v-for="b in grouped.summary" :key="b.key" class="dt-sum-card">
+        <ResizableBox v-for="b in grouped.summary" :id="`dragon.sum.${b.key}`" :key="b.key" :default-w="33.333">
+          <div class="dt-sum-card">
             <span class="dt-sum-label">{{ b.label }}</span>
             <b class="dt-sum-net" :class="toneClass(b.netWan)">{{ fmtWan(b.netWan, true) }}</b>
             <span class="dt-sum-sub">
@@ -186,41 +189,45 @@ function capsuleTone(net: number): string {
             </span>
             <span class="dt-sum-sub">{{ b.seatCount }} 个席位 · {{ b.stockCount }} 只个股</span>
           </div>
-        </div>
+        </ResizableBox>
 
         <!-- 全部上榜个股（折叠） -->
-        <div class="dt-all">
-          <button type="button" class="dt-all-toggle" @click="showAllStocks = !showAllStocks">
-            {{ showAllStocks ? "收起" : "展开" }}今日全部上榜个股（{{ data.stocks.length }} 只）
-          </button>
-          <table v-if="showAllStocks" class="dt-table">
-            <thead>
-              <tr>
-                <th>个股</th>
-                <th class="num">涨跌幅</th>
-                <th class="num">龙虎榜买入</th>
-                <th class="num">龙虎榜卖出</th>
-                <th class="num">净买入</th>
-                <th>上榜原因</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="s in data.stocks"
-                :key="s.code"
-                class="clickable"
-                @click="linkageStore.selectStock(s.code)"
-              >
-                <td>{{ s.name }} <span class="code">{{ s.code }}</span></td>
-                <td class="num" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</td>
-                <td class="num">{{ fmtWan(s.buyWan) }}</td>
-                <td class="num">{{ fmtWan(s.sellWan) }}</td>
-                <td class="num" :class="toneClass(s.netWan)">{{ fmtWan(s.netWan, true) }}</td>
-                <td class="reason">{{ s.reason }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <ResizableBox :id="showAllStocks ? 'dragon.all' : ''">
+          <div class="dt-all">
+            <button type="button" class="dt-all-toggle" @click="showAllStocks = !showAllStocks">
+              {{ showAllStocks ? "收起" : "展开" }}今日全部上榜个股（{{ data.stocks.length }} 只）
+            </button>
+            <div v-if="showAllStocks" class="dt-table-wrap mk-fill">
+              <table class="dt-table">
+                <thead>
+                  <tr>
+                    <th>个股</th>
+                    <th class="num">涨跌幅</th>
+                    <th class="num">龙虎榜买入</th>
+                    <th class="num">龙虎榜卖出</th>
+                    <th class="num">净买入</th>
+                    <th>上榜原因</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="s in data.stocks"
+                    :key="s.code"
+                    class="clickable"
+                    @click="linkageStore.selectStock(s.code)"
+                  >
+                    <td>{{ s.name }} <span class="code">{{ s.code }}</span></td>
+                    <td class="num" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</td>
+                    <td class="num">{{ fmtWan(s.buyWan) }}</td>
+                    <td class="num">{{ fmtWan(s.sellWan) }}</td>
+                    <td class="num" :class="toneClass(s.netWan)">{{ fmtWan(s.netWan, true) }}</td>
+                    <td class="reason">{{ s.reason }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </ResizableBox>
       </template>
 
       <div class="dt-foot">
@@ -285,12 +292,6 @@ function capsuleTone(net: number): string {
   margin-left: auto;
   font-size: 12px;
   color: var(--faint);
-}
-
-.dt-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap, 14px);
 }
 
 .dt-card {
@@ -444,12 +445,6 @@ function capsuleTone(net: number): string {
   color: var(--fall);
 }
 
-.dt-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--gap, 14px);
-}
-
 .dt-sum-card {
   background: linear-gradient(180deg, var(--panel-top), var(--panel));
   border: 1px solid var(--line);
@@ -494,18 +489,25 @@ function capsuleTone(net: number): string {
   cursor: pointer;
 }
 
+/* 边框 / 圆角放在外层 wrap 上，表头才能在 wrap 里吸顶 */
+.dt-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
 .dt-table {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--panel);
-  overflow: hidden;
 }
 
 .dt-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   text-align: left;
   font-size: 12px;
   font-weight: 600;
@@ -559,9 +561,25 @@ function capsuleTone(net: number): string {
   color: var(--fall);
 }
 
-@media (max-width: 900px) {
-  .dt-summary {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* —— 用户拖过高度：席位卡头部固定、胶囊区在卡内滚动；全部上榜个股的表格在框内滚动（表头吸顶） —— */
+.mk-box.is-h > .dt-card,
+.mk-box.is-h > .dt-all {
+  overflow: hidden;
+}
+
+.mk-box.is-h .dt-card-head {
+  flex: none;
+}
+
+.mk-box.is-h .dt-capsules {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  align-content: flex-start;
+}
+
+.mk-box.is-h .dt-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 </style>

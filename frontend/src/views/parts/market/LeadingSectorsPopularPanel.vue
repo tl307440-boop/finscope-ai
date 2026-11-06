@@ -28,135 +28,122 @@ watch(
 </script>
 
 <template>
-  <section class="leading-wrap" aria-label="领涨板块与人气股">
-    <StateBlock
-      v-if="!data"
-      :state="state === 'error' ? 'error' : 'loading'"
-      :message="error"
-      title="领涨板块与人气股加载失败"
-      :rows="4"
-      @retry="reload"
-    />
-    <div v-else class="lp-grid">
-      <MarketPanel
-        title="领涨板块"
-        subtitle="概念板块涨幅榜 · 点击领涨股联动右侧个股详情"
-        info="板块来自东方财富概念板块涨幅榜；主力净流入单位：亿元"
-        tone="orange"
-        :icon="Flag"
-        :meta="data.meta"
-        :refresh-error="error"
-      >
-        <StateBlock
-          v-if="data.leadingSectors.length === 0"
-          state="empty"
-          message="上游没有返回板块数据"
-        />
-        <div v-else class="lp-table-wrap">
-          <table class="lp-table">
-            <thead>
-              <tr>
-                <th>板块</th>
-                <th class="num">涨幅</th>
-                <th class="num">涨停</th>
-                <th class="num">主力净流入</th>
-                <th>领涨股</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in data.leadingSectors" :key="s.code">
-                <td class="strong">{{ s.name }}</td>
-                <td class="num" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</td>
-                <td class="num">{{ s.limitUpCount ?? "—" }}</td>
-                <td class="num" :class="toneClass(s.netInflowYi)">{{ fmtYi(s.netInflowYi, 2, true) }}</td>
-                <td>
-                  <button
-                    v-if="s.leaderCode"
-                    type="button"
-                    class="link-btn"
-                    @click="linkageStore.selectStock(s.leaderCode)"
-                  >
-                    {{ s.leaderName }}
-                    <span :class="toneClass(s.leaderChangePct)">{{ fmtPct(s.leaderChangePct) }}</span>
-                    <span v-if="s.leaderStreak" class="streak">{{ s.leaderStreak }}</span>
-                  </button>
-                  <span v-else class="muted">—</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </MarketPanel>
+  <StateBlock
+    v-if="!data"
+    :state="state === 'error' ? 'error' : 'loading'"
+    :message="error"
+    title="领涨板块与人气股加载失败"
+    :rows="4"
+    @retry="reload"
+  />
+  <template v-else>
+    <MarketPanel
+      box-id="indices.leading"
+      :default-w="50"
+      class="mk-start"
+      title="领涨板块"
+      subtitle="概念板块涨幅榜 · 点击领涨股联动右侧个股详情"
+      info="板块来自东方财富概念板块涨幅榜；主力净流入单位：亿元"
+      tone="orange"
+      :icon="Flag"
+      :meta="data.meta"
+      :refresh-error="error"
+    >
+      <StateBlock
+        v-if="data.leadingSectors.length === 0"
+        state="empty"
+        message="上游没有返回板块数据"
+      />
+      <div v-else class="lp-table-wrap mk-fill">
+        <table class="lp-table">
+          <thead>
+            <tr>
+              <th>板块</th>
+              <th class="num">涨幅</th>
+              <th class="num">涨停</th>
+              <th class="num">主力净流入</th>
+              <th>领涨股</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in data.leadingSectors" :key="s.code">
+              <td class="strong">{{ s.name }}</td>
+              <td class="num" :class="toneClass(s.changePct)">{{ fmtPct(s.changePct) }}</td>
+              <td class="num">{{ s.limitUpCount ?? "—" }}</td>
+              <td class="num" :class="toneClass(s.netInflowYi)">{{ fmtYi(s.netInflowYi, 2, true) }}</td>
+              <td>
+                <button
+                  v-if="s.leaderCode"
+                  type="button"
+                  class="link-btn"
+                  @click="linkageStore.selectStock(s.leaderCode)"
+                >
+                  {{ s.leaderName }}
+                  <span :class="toneClass(s.leaderChangePct)">{{ fmtPct(s.leaderChangePct) }}</span>
+                  <span v-if="s.leaderStreak" class="streak">{{ s.leaderStreak }}</span>
+                </button>
+                <span v-else class="muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </MarketPanel>
 
-      <MarketPanel
-        title="人气股"
-        subtitle="同花顺人气榜 · 点击个股联动右侧详情"
-        info="人气排名来自同花顺热股榜；封单金额单位：万元 / 亿元"
-        tone="danger"
-        :icon="Star"
-      >
-        <StateBlock
-          v-if="data.popularStocks.length === 0"
-          state="empty"
-          message="上游没有返回人气榜数据"
-        />
-        <div v-else class="lp-table-wrap">
-          <table class="lp-table">
-            <thead>
-              <tr>
-                <th class="num">#</th>
-                <th>个股</th>
-                <th class="num">涨幅</th>
-                <th class="num">换手</th>
-                <th class="num">封单</th>
-                <th>板块 / 催化</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="p in data.popularStocks"
-                :key="p.code"
-                class="clickable"
-                :class="{ active: linkageStore.selectedStockCode === p.code }"
-                @click="linkageStore.selectStock(p.code)"
-              >
-                <td class="num muted">{{ p.rank }}</td>
-                <td class="strong">
-                  {{ p.name }}
-                  <span class="code">{{ p.code }}</span>
-                  <span v-if="p.streakText" class="streak">{{ p.streakText }}</span>
-                </td>
-                <td class="num" :class="toneClass(p.changePct)">{{ fmtPct(p.changePct) }}</td>
-                <td class="num">{{ fmtPct(p.turnoverPct, 2, false) }}</td>
-                <td class="num">{{ p.sealAmountWan ? fmtWan(p.sealAmountWan) : "—" }}</td>
-                <td class="reason" :title="p.catalyst">{{ p.sector || p.catalyst || "—" }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </MarketPanel>
-    </div>
-  </section>
+    <MarketPanel
+      box-id="indices.popular"
+      :default-w="50"
+      class="mk-start"
+      title="人气股"
+      subtitle="同花顺人气榜 · 点击个股联动右侧详情"
+      info="人气排名来自同花顺热股榜；封单金额单位：万元 / 亿元"
+      tone="danger"
+      :icon="Star"
+    >
+      <StateBlock
+        v-if="data.popularStocks.length === 0"
+        state="empty"
+        message="上游没有返回人气榜数据"
+      />
+      <div v-else class="lp-table-wrap mk-fill">
+        <table class="lp-table">
+          <thead>
+            <tr>
+              <th class="num">#</th>
+              <th>个股</th>
+              <th class="num">涨幅</th>
+              <th class="num">换手</th>
+              <th class="num">封单</th>
+              <th>板块 / 催化</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="p in data.popularStocks"
+              :key="p.code"
+              class="clickable"
+              :class="{ active: linkageStore.selectedStockCode === p.code }"
+              @click="linkageStore.selectStock(p.code)"
+            >
+              <td class="num muted">{{ p.rank }}</td>
+              <td class="strong">
+                {{ p.name }}
+                <span class="code">{{ p.code }}</span>
+                <span v-if="p.streakText" class="streak">{{ p.streakText }}</span>
+              </td>
+              <td class="num" :class="toneClass(p.changePct)">{{ fmtPct(p.changePct) }}</td>
+              <td class="num">{{ fmtPct(p.turnoverPct, 2, false) }}</td>
+              <td class="num">{{ p.sealAmountWan ? fmtWan(p.sealAmountWan) : "—" }}</td>
+              <td class="reason" :title="p.catalyst">{{ p.sector || p.catalyst || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </MarketPanel>
+  </template>
 </template>
+
 <style scoped>
-/* 按本栏实际宽度（而不是屏幕宽度）切单双列：右侧个股详情展开时主栏只有约 1100px */
-.leading-wrap {
-  container-type: inline-size;
-}
-
-.lp-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--gap, 14px);
-  align-items: start;
-}
-
-@container (max-width: 1180px) {
-  .lp-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 .lp-table-wrap {
   max-height: 460px;
   overflow: auto;
@@ -266,5 +253,10 @@ watch(
 
 .is-fall {
   color: var(--fall);
+}
+
+/* 用户拖过高度：表格区撑满框、在框内滚动（表头吸顶），不再用固定的 460px 上限 */
+.mk-box.is-h .lp-table-wrap {
+  max-height: none;
 }
 </style>

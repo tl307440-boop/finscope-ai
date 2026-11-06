@@ -81,6 +81,7 @@ function sealText(stock: LadderStock): string {
 
       <!-- 梯队矩阵 -->
       <MarketPanel
+        box-id="ladder.tiers"
         title="连板梯队"
         :subtitle="`最高 ${highestTier ? highestTier.streak : '—'} 板 · 点击个股联动右侧详情`"
         info="N 进 N+1 晋级率 = 昨日 N 板个股今日继续涨停的比例；断板率 = 1 − 整体晋级率"
@@ -128,6 +129,7 @@ function sealText(stock: LadderStock): string {
 
       <!-- 断板股 -->
       <MarketPanel
+        box-id="ladder.broken"
         title="昨日连板 · 今日断板"
         subtitle="昨日 2 板及以上、今日未能涨停的个股"
         tone="warn"
@@ -138,7 +140,7 @@ function sealText(stock: LadderStock): string {
           state="empty"
           message="今日没有断板个股，或上游数据未返回（原因见页面底部状态条）"
         />
-        <div v-else class="ld-table-wrap">
+        <div v-else class="ld-table-wrap mk-fill">
           <table class="ld-table">
             <thead>
               <tr>
@@ -368,6 +370,11 @@ function sealText(stock: LadderStock): string {
 
 .is-fall {
   color: var(--fall);
+}
+
+/* 用户拖过高度：断板表撑满框、在框内滚动（表头吸顶），不再用固定的 480px 上限 */
+.mk-box.is-h .ld-table-wrap {
+  max-height: none;
 }
 
 @media (max-width: 1280px) {

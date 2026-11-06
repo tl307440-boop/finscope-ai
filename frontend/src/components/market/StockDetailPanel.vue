@@ -71,10 +71,19 @@
         <div v-if="detail.actionExplain || detail.actionSector" class="action-box">
           <span class="action-badge">韭研公社异动解析</span>
           <b v-if="detail.actionSector" class="action-sector">{{ detail.actionSector }}</b>
-          <p v-if="detail.actionSectorReason" class="action-text action-sector-reason">
+          <p
+            v-if="detail.actionSectorReason"
+            class="action-text action-sector-reason"
+            :class="{ clamped: !explainOpen }"
+          >
             {{ detail.actionSectorReason }}
           </p>
-          <p v-if="detail.actionExplain" class="action-text">{{ detail.actionExplain }}</p>
+          <p v-if="detail.actionExplain" class="action-text" :class="{ clamped: !explainOpen }">
+            {{ detail.actionExplain }}
+          </p>
+          <button v-if="explainLong" type="button" class="action-more" @click="explainOpen = !explainOpen">
+            {{ explainOpen ? "收起" : "展开全文" }}
+          </button>
         </div>
       </div>
 
@@ -107,119 +116,127 @@
           </button>
         </div>
 
-        <div v-if="chartMode === 'both' || chartMode === 'intraday'" class="sdp-chart-card">
-          <div class="chart-mini-head">
-            <span class="chart-mini-title">当日分时走势</span>
-            <span class="chart-mini-legend">
-              <i class="dot-price" /> 现价线
-              <i class="dot-avg" /> 均价线
-            </span>
+        <ResizableBox v-if="chartMode === 'both' || chartMode === 'intraday'" id="detail.intraday" axes="h" :min-h="150">
+          <div class="sdp-chart-card">
+            <div class="chart-mini-head">
+              <span class="chart-mini-title">当日分时走势</span>
+              <span class="chart-mini-legend">
+                <i class="dot-price" /> 现价线
+                <i class="dot-avg" /> 均价线
+              </span>
+            </div>
+            <div class="sdp-echart-wrap" :class="{ single: chartMode !== 'both' }">
+              <VChart
+                v-if="detail.intraday.length"
+                class="sdp-echart"
+                :option="intradayOption"
+                autoresize
+              />
+              <StateBlock v-else state="empty" message="暂无分时数据（非交易日或上游未返回）" />
+            </div>
           </div>
-          <div class="sdp-echart-wrap">
-            <VChart
-              v-if="detail.intraday.length"
-              class="sdp-echart"
-              :option="intradayOption"
-              autoresize
-            />
-            <StateBlock v-else state="empty" message="暂无分时数据（非交易日或上游未返回）" />
-          </div>
-        </div>
+        </ResizableBox>
 
-        <div v-if="chartMode === 'both' || chartMode === 'kline'" class="sdp-chart-card">
-          <div class="chart-mini-head">
-            <span class="chart-mini-title">日K线（含 MA 均线与成交量）</span>
-            <span class="chart-mini-legend">
-              <span class="ma5-txt">MA5</span>
-              <span class="ma10-txt">MA10</span>
-              <span class="ma20-txt">MA20</span>
-            </span>
+        <ResizableBox v-if="chartMode === 'both' || chartMode === 'kline'" id="detail.kline" axes="h" :min-h="150">
+          <div class="sdp-chart-card">
+            <div class="chart-mini-head">
+              <span class="chart-mini-title">日K线（含 MA 均线与成交量）</span>
+              <span class="chart-mini-legend">
+                <span class="ma5-txt">MA5</span>
+                <span class="ma10-txt">MA10</span>
+                <span class="ma20-txt">MA20</span>
+              </span>
+            </div>
+            <div class="sdp-echart-wrap" :class="{ single: chartMode !== 'both' }">
+              <VChart
+                v-if="detail.dailyBars.length"
+                class="sdp-echart"
+                :option="klineOption"
+                autoresize
+              />
+              <StateBlock v-else state="empty" message="暂无日K数据" />
+            </div>
           </div>
-          <div class="sdp-echart-wrap">
-            <VChart
-              v-if="detail.dailyBars.length"
-              class="sdp-echart"
-              :option="klineOption"
-              autoresize
-            />
-            <StateBlock v-else state="empty" message="暂无日K数据" />
-          </div>
-        </div>
+        </ResizableBox>
       </div>
 
       <!-- 龙虎榜买卖前五席位明细 -->
-      <div class="sdp-lhb-section">
-        <div class="lhb-sec-header">
-          <span class="lhb-sec-title">
-            龙虎榜买卖前五席位<template v-if="detail.lhbDate">
-              （{{ lhbDateLabel }}）</template>
-          </span>
-          <span v-if="detail.lhbReason" class="lhb-sec-reason" :title="detail.lhbReason">
-            {{ detail.lhbReason }}
-          </span>
+      <ResizableBox id="detail.seats" axes="h" :min-h="120">
+        <div class="sdp-lhb-section">
+          <div class="lhb-sec-header">
+            <span class="lhb-sec-title">
+              龙虎榜买卖前五席位<template v-if="detail.lhbDate">
+                （{{ lhbDateLabel }}）</template>
+            </span>
+            <span v-if="detail.lhbReason" class="lhb-sec-reason" :title="detail.lhbReason">
+              {{ detail.lhbReason }}
+            </span>
+          </div>
+
+          <StateBlock
+            v-if="!detail.buySeats.length && !detail.sellSeats.length"
+            state="empty"
+            message="该股近期未上龙虎榜，或当日榜单尚未公布（通常收盘后 17:00 左右）"
+          />
+          <template v-else>
+            <div class="lhb-group">
+              <div class="lhb-group-label is-buy">买入前五（自动匹配游资 / 外资 / 机构标签）</div>
+              <div v-for="(seat, idx) in detail.buySeats" :key="`buy-${idx}`" class="lhb-seat-row">
+                <div class="seat-left">
+                  <span class="seat-rank is-buy">买{{ idx + 1 }}</span>
+                  <span class="seat-branch" :title="seat.branchName">
+                    {{ shortenBranchName(seat.branchName) }}
+                  </span>
+                  <button
+                    v-if="matchSeat(seat.branchName)"
+                    type="button"
+                    class="seat-tag-badge"
+                    :class="roleBadgeClass(matchSeat(seat.branchName)!.category)"
+                    title="跳转到龙虎榜分析并定位该席位"
+                    @click="jumpToSeat(matchSeat(seat.branchName)!.groupId)"
+                  >
+                    {{ matchSeat(seat.branchName)!.name }}
+                  </button>
+                </div>
+                <div class="seat-amounts">
+                  <span class="amt-buy">+{{ fmtWan(seat.buyWan) }}</span>
+                  <span class="amt-net" :class="toneClass(seat.netWan)">净 {{ fmtWan(seat.netWan, true) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="lhb-group">
+              <div class="lhb-group-label is-sell">卖出前五</div>
+              <div v-for="(seat, idx) in detail.sellSeats" :key="`sell-${idx}`" class="lhb-seat-row">
+                <div class="seat-left">
+                  <span class="seat-rank is-sell">卖{{ idx + 1 }}</span>
+                  <span class="seat-branch" :title="seat.branchName">
+                    {{ shortenBranchName(seat.branchName) }}
+                  </span>
+                  <button
+                    v-if="matchSeat(seat.branchName)"
+                    type="button"
+                    class="seat-tag-badge"
+                    :class="roleBadgeClass(matchSeat(seat.branchName)!.category)"
+                    title="跳转到龙虎榜分析并定位该席位"
+                    @click="jumpToSeat(matchSeat(seat.branchName)!.groupId)"
+                  >
+                    {{ matchSeat(seat.branchName)!.name }}
+                  </button>
+                </div>
+                <div class="seat-amounts">
+                  <span class="amt-sell">-{{ fmtWan(seat.sellWan) }}</span>
+                  <span class="amt-net" :class="toneClass(seat.netWan)">净 {{ fmtWan(seat.netWan, true) }}</span>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
+      </ResizableBox>
 
-        <StateBlock
-          v-if="!detail.buySeats.length && !detail.sellSeats.length"
-          state="empty"
-          message="该股近期未上龙虎榜，或当日榜单尚未公布（通常收盘后 17:00 左右）"
-        />
-        <template v-else>
-          <div class="lhb-group">
-            <div class="lhb-group-label is-buy">买入前五（自动匹配游资 / 外资 / 机构标签）</div>
-            <div v-for="(seat, idx) in detail.buySeats" :key="`buy-${idx}`" class="lhb-seat-row">
-              <div class="seat-left">
-                <span class="seat-rank is-buy">买{{ idx + 1 }}</span>
-                <span class="seat-branch" :title="seat.branchName">
-                  {{ shortenBranchName(seat.branchName) }}
-                </span>
-                <button
-                  v-if="matchSeat(seat.branchName)"
-                  type="button"
-                  class="seat-tag-badge"
-                  :class="roleBadgeClass(matchSeat(seat.branchName)!.category)"
-                  title="跳转到龙虎榜分析并定位该席位"
-                  @click="jumpToSeat(matchSeat(seat.branchName)!.groupId)"
-                >
-                  {{ matchSeat(seat.branchName)!.name }}
-                </button>
-              </div>
-              <div class="seat-amounts">
-                <span class="amt-buy">+{{ fmtWan(seat.buyWan) }}</span>
-                <span class="amt-net" :class="toneClass(seat.netWan)">净 {{ fmtWan(seat.netWan, true) }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="lhb-group">
-            <div class="lhb-group-label is-sell">卖出前五</div>
-            <div v-for="(seat, idx) in detail.sellSeats" :key="`sell-${idx}`" class="lhb-seat-row">
-              <div class="seat-left">
-                <span class="seat-rank is-sell">卖{{ idx + 1 }}</span>
-                <span class="seat-branch" :title="seat.branchName">
-                  {{ shortenBranchName(seat.branchName) }}
-                </span>
-                <button
-                  v-if="matchSeat(seat.branchName)"
-                  type="button"
-                  class="seat-tag-badge"
-                  :class="roleBadgeClass(matchSeat(seat.branchName)!.category)"
-                  title="跳转到龙虎榜分析并定位该席位"
-                  @click="jumpToSeat(matchSeat(seat.branchName)!.groupId)"
-                >
-                  {{ matchSeat(seat.branchName)!.name }}
-                </button>
-              </div>
-              <div class="seat-amounts">
-                <span class="amt-sell">-{{ fmtWan(seat.sellWan) }}</span>
-                <span class="amt-net" :class="toneClass(seat.netWan)">净 {{ fmtWan(seat.netWan, true) }}</span>
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
-
-      <PanoramaStatusBar :meta="detail.meta" />
+      <footer class="sdp-foot">
+        <PanoramaStatusBar :meta="detail.meta" />
+      </footer>
     </template>
   </aside>
 </template>
@@ -236,6 +253,7 @@ import type { SeatCategory } from "../../config/hotMoneySeatsConfig"
 import { useMarketLinkageStore } from "../../stores/marketLinkage"
 import StateBlock from "../ui/StateBlock.vue"
 import PanoramaStatusBar from "./PanoramaStatusBar.vue"
+import ResizableBox from "./ResizableBox.vue"
 
 const linkageStore = useMarketLinkageStore()
 const router = useRouter()
@@ -243,6 +261,13 @@ const detail = ref<StockDetailData | null>(null)
 const loadState = ref<"loading" | "error">("loading")
 const loadError = ref("")
 const chartMode = ref<"both" | "intraday" | "kline">("both")
+/** 韭研解析原文很长：默认折叠，点「展开全文」才展开，避免面板里再套一层滚动条。 */
+const explainOpen = ref(false)
+const explainLong = computed(() => {
+  const d = detail.value
+  if (!d) return false
+  return (d.actionExplain?.length ?? 0) > 110 || (d.actionSectorReason?.length ?? 0) > 110
+})
 let loadSeq = 0
 
 async function loadDetail(code: string): Promise<void> {
@@ -251,6 +276,7 @@ async function loadDetail(code: string): Promise<void> {
     return
   }
   const seq = ++loadSeq
+  explainOpen.value = false
   loadState.value = "loading"
   loadError.value = ""
   // 切股时先清空，避免短暂显示上一只股票的数据
@@ -689,8 +715,29 @@ const klineOption = computed<EChartsOption>(() => {
   line-height: 1.55;
   color: var(--text);
   white-space: pre-line;
-  max-height: 160px;
-  overflow-y: auto;
+}
+
+/* 折叠时只露出几行，不在面板里再嵌一层滚动条 */
+.action-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.action-more {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.action-more:hover {
+  text-decoration: underline;
 }
 
 .action-sector-reason {
@@ -783,8 +830,40 @@ const klineOption = computed<EChartsOption>(() => {
 }
 
 .sdp-echart-wrap {
-  height: 155px;
+  height: 176px;
   width: 100%;
+}
+
+/* 只看一张图时给更大的默认高度 */
+.sdp-echart-wrap.single {
+  height: 280px;
+}
+
+.sdp-foot {
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* —— 可拖高度的小框：分时图 / 日K图卡片、龙虎榜席位列表 —— */
+.mk-box.is-h > .sdp-chart-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mk-box.is-h > .sdp-chart-card > .chart-mini-head {
+  flex: none;
+}
+
+/* 用户拖高了卡片：图表吃掉多出来的高度，ECharts 跟着重画 */
+.mk-box.is-h .sdp-echart-wrap {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 90px;
+}
+
+.mk-box.is-h > .sdp-lhb-section {
+  overflow: auto;
 }
 
 .sdp-echart {

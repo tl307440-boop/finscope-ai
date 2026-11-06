@@ -1,5 +1,6 @@
 <template>
   <MarketPanel
+    box-id="indices.sentiment"
     title="A 股每日短线情绪与盘面广度"
     subtitle="涨跌分布 · 自然板 · 炸板与接力晋级 · 日内冲高回落 / 探底回升 ≥ 10% · 昨日涨停溢价率"
     info="全部来自公开行情；口径与缺项见底部「口径说明」「缺项」"
@@ -176,7 +177,7 @@
       </PanelSection>
 
       <!-- 昨日涨停/连板/炸板今日溢价率与趋势 -->
-      <PanelSection title="昨日涨停今日表现" note="溢价率 = 昨日涨停（连板、炸板）股今日平均涨跌幅">
+      <PanelSection class="mk-fill" title="昨日涨停今日表现" note="溢价率 = 昨日涨停（连板、炸板）股今日平均涨跌幅">
       <div class="premium-row">
         <div class="premium-cards">
           <div class="prem-item">
@@ -554,7 +555,8 @@ const premiumChartOption = computed<EChartsOption>(() => {
 
 .premium-row {
   display: grid;
-  grid-template-columns: 1.1fr 1.4fr;
+  /* minmax(0, …)：图表的画布有固定像素宽，不加的话框被拖窄时图表撑着不肯缩 */
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr);
   gap: 10px;
   align-items: stretch;
 }
@@ -593,6 +595,8 @@ const premiumChartOption = computed<EChartsOption>(() => {
 }
 
 .premium-chart-box {
+  min-width: 0;
+  overflow: hidden;
   background: var(--panel-soft);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -605,15 +609,51 @@ const premiumChartOption = computed<EChartsOption>(() => {
   height: 100%;
 }
 
-@media (max-width: 1280px) {
+/* 按框自己的宽度收列（用户拖窄 / 屏幕小 / 右侧个股详情展开都会变） */
+@container mk (max-width: 620px) {
   .sentiment-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+}
+
+@container mk (max-width: 560px) {
   .premium-row {
     grid-template-columns: 1fr;
   }
+}
+
+@container mk (max-width: 520px) {
   .esd-list {
     grid-template-columns: 1fr;
   }
+}
+
+@container mk (max-width: 440px) {
+  .sentiment-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .premium-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 用户拖高了框：「昨日涨停今日表现」里的溢价率图表吃掉多出来的高度 */
+.mk-box.is-h .panel-section.mk-fill {
+  display: flex;
+  flex-direction: column;
+}
+
+.mk-box.is-h .panel-section.mk-fill > .premium-row {
+  flex: 1 1 auto;
+}
+
+.mk-box.is-h .premium-chart-box {
+  min-width: 0;
+  overflow: hidden;
+  height: auto;
+  min-height: 118px;
+  /* 画布的像素高度不参与撑开容器，否则拖高之后再拖矮，图表缩不回去 */
+  contain: size;
 }
 </style>

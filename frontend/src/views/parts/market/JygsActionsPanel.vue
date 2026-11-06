@@ -62,6 +62,7 @@ const emptyMessage = computed(() => {
 
 <template>
   <MarketPanel
+    box-id="ladder.jygs"
     title="韭研公社 · 异动解析"
     :subtitle="panelSubtitle"
     info="韭研公社人工整理的涨停 / 异动原因，需要管理员扫码登录后才有数据"

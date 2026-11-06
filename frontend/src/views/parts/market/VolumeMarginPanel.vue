@@ -1,126 +1,128 @@
 <template>
-  <section class="volume-margin-row" aria-label="多维成交量能与两融余额监控">
-    <!-- 左栏：多维成交量能拆解 -->
-    <MarketPanel
-      title="多维成交量能"
-      subtitle="全天成交额 + 11:30 午盘量能对比（全市场 = 沪 + 深 + 京）"
-      info="成交额取市场口径指数；午盘（11:30）对比的是上一个交易日同一时点"
-      tone="accent"
-      :icon="Histogram"
-      :meta="volumeMargin?.meta ?? null"
-      :refresh-error="error"
-    >
-      <div v-if="volumes.length" class="vm-tabs">
-        <SectionTabs
-          :model-value="currentVolume?.key ?? ''"
-          :tabs="volumes.map((v) => ({ key: v.key, label: VOLUME_TAB[v.key] }))"
-          @update:model-value="activeVolKey = $event as VolumeKey"
-        />
+  <!-- 左栏：多维成交量能拆解 -->
+  <MarketPanel
+    box-id="indices.volume"
+    :default-w="50"
+    title="多维成交量能"
+    subtitle="全天成交额 + 11:30 午盘量能对比（全市场 = 沪 + 深 + 京）"
+    info="成交额取市场口径指数；午盘（11:30）对比的是上一个交易日同一时点"
+    tone="accent"
+    :icon="Histogram"
+    :meta="volumeMargin?.meta ?? null"
+    :refresh-error="error"
+  >
+    <div v-if="volumes.length" class="vm-tabs">
+      <SectionTabs
+        :model-value="currentVolume?.key ?? ''"
+        :tabs="volumes.map((v) => ({ key: v.key, label: VOLUME_TAB[v.key] }))"
+        @update:model-value="activeVolKey = $event as VolumeKey"
+      />
+    </div>
+
+    <StateBlock
+      v-if="!volumeMargin"
+      :state="state === 'error' ? 'error' : 'loading'"
+      :message="error"
+      title="成交量能加载失败"
+      @retry="reload"
+    />
+    <template v-else-if="currentVolume">
+      <div class="vm-kpi-row">
+        <div class="vm-kpi-item">
+          <span class="vk-label">{{ currentVolume.label }} · 成交额</span>
+          <span class="vk-val">{{ fmtYi(currentVolume.todayAmountYi, 1) }}</span>
+          <span class="vk-sub">{{ sessionHint }}</span>
+        </div>
+        <div class="vm-kpi-item">
+          <span class="vk-label">午盘收盘（11:30）成交额</span>
+          <span class="vk-val">{{ fmtYi(currentVolume.noonAmountYi, 1) }}</span>
+          <span class="vk-sub">半日量占比 {{ noonShare }}</span>
+        </div>
+        <div class="vm-kpi-item">
+          <span class="vk-label">11:30 较上一交易日同期</span>
+          <span class="vk-val" :class="toneClass(currentVolume.noonDeltaYi)">
+            {{ fmtYi(currentVolume.noonDeltaYi, 1, true) }}
+            <template v-if="currentVolume.noonDeltaPct !== null">
+              ({{ fmtPct(currentVolume.noonDeltaPct) }})
+            </template>
+          </span>
+          <span class="vk-sub">
+            {{ currentVolume.noonDeltaYi === null ? "午盘数据暂缺（见底部说明）" : "正为放量，负为缩量" }}
+          </span>
+        </div>
       </div>
 
-      <StateBlock
-        v-if="!volumeMargin"
-        :state="state === 'error' ? 'error' : 'loading'"
-        :message="error"
-        title="成交量能加载失败"
-        @retry="reload"
-      />
-      <template v-else-if="currentVolume">
-        <div class="vm-kpi-row">
-          <div class="vm-kpi-item">
-            <span class="vk-label">{{ currentVolume.label }} · 成交额</span>
-            <span class="vk-val">{{ fmtYi(currentVolume.todayAmountYi, 1) }}</span>
-            <span class="vk-sub">{{ sessionHint }}</span>
-          </div>
-          <div class="vm-kpi-item">
-            <span class="vk-label">午盘收盘（11:30）成交额</span>
-            <span class="vk-val">{{ fmtYi(currentVolume.noonAmountYi, 1) }}</span>
-            <span class="vk-sub">半日量占比 {{ noonShare }}</span>
-          </div>
-          <div class="vm-kpi-item">
-            <span class="vk-label">11:30 较上一交易日同期</span>
-            <span class="vk-val" :class="toneClass(currentVolume.noonDeltaYi)">
-              {{ fmtYi(currentVolume.noonDeltaYi, 1, true) }}
-              <template v-if="currentVolume.noonDeltaPct !== null">
-                ({{ fmtPct(currentVolume.noonDeltaPct) }})
-              </template>
-            </span>
-            <span class="vk-sub">
-              {{ currentVolume.noonDeltaYi === null ? "午盘数据暂缺（见底部说明）" : "正为放量，负为缩量" }}
-            </span>
-          </div>
-        </div>
-
-        <div class="vm-chart-wrap">
-          <VChart
-            v-if="currentVolume.historyDates.length"
-            class="vm-chart"
-            :option="volumeChartOption"
-            autoresize
-          />
-          <StateBlock v-else state="empty" message="近期成交额历史暂无数据" />
-        </div>
-      </template>
-      <StateBlock v-else state="empty" message="上游没有返回成交额数据" />
-    </MarketPanel>
-
-    <!-- 右栏：沪深京两融余额拆解 -->
-    <MarketPanel
-      title="两融余额"
-      subtitle="全市场及沪 / 深 / 京 · 融资余额 · 融券余额 · 日变动与历史趋势（T+1 披露）"
-      info="两融余额「日变动」是相邻交易日的余额差，不是融资净买入"
-      tone="ok"
-      :icon="Coin"
-    >
-      <div v-if="margins.length" class="vm-tabs">
-        <SectionTabs
-          :model-value="currentMargin?.key ?? ''"
-          :tabs="margins.map((m) => ({ key: m.key, label: MARGIN_TAB[m.key] }))"
-          @update:model-value="activeMarginKey = $event as MarginKey"
+      <div class="vm-chart-wrap mk-fill">
+        <VChart
+          v-if="currentVolume.historyDates.length"
+          class="vm-chart"
+          :option="volumeChartOption"
+          autoresize
         />
+        <StateBlock v-else state="empty" message="近期成交额历史暂无数据" />
+      </div>
+    </template>
+    <StateBlock v-else state="empty" message="上游没有返回成交额数据" />
+  </MarketPanel>
+
+  <!-- 右栏：沪深京两融余额拆解 -->
+  <MarketPanel
+    box-id="indices.margin"
+    :default-w="50"
+    title="两融余额"
+    subtitle="全市场及沪 / 深 / 京 · 融资余额 · 融券余额 · 日变动与历史趋势（T+1 披露）"
+    info="两融余额「日变动」是相邻交易日的余额差，不是融资净买入"
+    tone="ok"
+    :icon="Coin"
+  >
+    <div v-if="margins.length" class="vm-tabs">
+      <SectionTabs
+        :model-value="currentMargin?.key ?? ''"
+        :tabs="margins.map((m) => ({ key: m.key, label: MARGIN_TAB[m.key] }))"
+        @update:model-value="activeMarginKey = $event as MarginKey"
+      />
+    </div>
+
+    <StateBlock
+      v-if="!volumeMargin"
+      :state="state === 'error' ? 'error' : 'loading'"
+      :message="error"
+      title="两融数据加载失败"
+      @retry="reload"
+    />
+    <template v-else-if="currentMargin">
+      <div class="vm-kpi-row">
+        <div class="vm-kpi-item">
+          <span class="vk-label">{{ currentMargin.label }}</span>
+          <span class="vk-val">{{ fmtYi(currentMargin.totalBalanceYi) }}</span>
+          <span class="vk-sub" :class="toneClass(currentMargin.dailyChangeYi)">
+            余额日变动：{{ fmtYi(currentMargin.dailyChangeYi, 2, true) }}
+          </span>
+        </div>
+        <div class="vm-kpi-item">
+          <span class="vk-label">融资余额 / 当日融资买入</span>
+          <span class="vk-val">{{ fmtYi(currentMargin.rzyeYi) }}</span>
+          <span class="vk-sub">当日融资买入 {{ fmtYi(currentMargin.rzmreYi) }}</span>
+        </div>
+        <div class="vm-kpi-item">
+          <span class="vk-label">融券余额</span>
+          <span class="vk-val">{{ fmtYi(currentMargin.rqyeYi) }}</span>
+          <span class="vk-sub">截至 {{ currentMargin.tradeDate ?? "—" }}（两融数据 T+1 披露）</span>
+        </div>
       </div>
 
-      <StateBlock
-        v-if="!volumeMargin"
-        :state="state === 'error' ? 'error' : 'loading'"
-        :message="error"
-        title="两融数据加载失败"
-        @retry="reload"
-      />
-      <template v-else-if="currentMargin">
-        <div class="vm-kpi-row">
-          <div class="vm-kpi-item">
-            <span class="vk-label">{{ currentMargin.label }}</span>
-            <span class="vk-val">{{ fmtYi(currentMargin.totalBalanceYi) }}</span>
-            <span class="vk-sub" :class="toneClass(currentMargin.dailyChangeYi)">
-              余额日变动：{{ fmtYi(currentMargin.dailyChangeYi, 2, true) }}
-            </span>
-          </div>
-          <div class="vm-kpi-item">
-            <span class="vk-label">融资余额 / 当日融资买入</span>
-            <span class="vk-val">{{ fmtYi(currentMargin.rzyeYi) }}</span>
-            <span class="vk-sub">当日融资买入 {{ fmtYi(currentMargin.rzmreYi) }}</span>
-          </div>
-          <div class="vm-kpi-item">
-            <span class="vk-label">融券余额</span>
-            <span class="vk-val">{{ fmtYi(currentMargin.rqyeYi) }}</span>
-            <span class="vk-sub">截至 {{ currentMargin.tradeDate ?? "—" }}（两融数据 T+1 披露）</span>
-          </div>
-        </div>
-
-        <div class="vm-chart-wrap">
-          <VChart
-            v-if="currentMargin.historyDates.length"
-            class="vm-chart"
-            :option="marginChartOption"
-            autoresize
-          />
-          <StateBlock v-else state="empty" message="近期两融历史暂无数据" />
-        </div>
-      </template>
-      <StateBlock v-else state="empty" message="上游没有返回两融数据" />
-    </MarketPanel>
-  </section>
+      <div class="vm-chart-wrap mk-fill">
+        <VChart
+          v-if="currentMargin.historyDates.length"
+          class="vm-chart"
+          :option="marginChartOption"
+          autoresize
+        />
+        <StateBlock v-else state="empty" message="近期两融历史暂无数据" />
+      </div>
+    </template>
+    <StateBlock v-else state="empty" message="上游没有返回两融数据" />
+  </MarketPanel>
 </template>
 
 <script setup lang="ts">
@@ -269,13 +271,6 @@ const marginChartOption = computed<EChartsOption>(() => {
 </script>
 
 <style scoped>
-.volume-margin-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--gap, 14px);
-  align-items: stretch;
-}
-
 .vm-tabs {
   margin-bottom: 12px;
 }
@@ -337,9 +332,16 @@ const marginChartOption = computed<EChartsOption>(() => {
   height: 100%;
 }
 
-@media (max-width: 1180px) {
-  .volume-margin-row {
+/* 框窄了（用户拖窄 / 屏幕小）：三个指标改成上下排，不挤成一团 */
+@container mk (max-width: 560px) {
+  .vm-kpi-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* 用户拖高了框：图表吃掉多出来的高度，不留空白 */
+.mk-box.is-h .vm-chart-wrap {
+  height: auto;
+  min-height: 170px;
 }
 </style>
