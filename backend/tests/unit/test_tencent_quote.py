@@ -290,6 +290,34 @@ def _minute_for(url: str) -> bytes:
     return _minute_json(code, "20261106", rows)
 
 
+def _sina_minute(url: str) -> bytes:
+    """新浪期货分时样本：200 个 1 分钟点，价格线性递增；量恒为 0。"""
+
+    base, step = (4000.0, 0.5) if "symbol=GC" in url else (90.0, 0.01)
+    first = f"{base:.3f}"
+    rows = [
+        [
+            "2026-11-06",
+            "4113.500",
+            "cme",
+            "",
+            "07:00",
+            first,
+            "0",
+            "0",
+            first,
+            "2026-11-06 07:00:00",
+        ]
+    ]
+    for i in range(1, 200):
+        minute = 7 * 60 + i
+        clock = f"{minute // 60:02d}:{minute % 60:02d}"
+        price = f"{base + i * step:.3f}"
+        rows.append([clock, price, "0", "0", price, f"2026-11-06 {clock}:00"])
+    body = json.dumps({"minLine_1d": rows})
+    return f"/*<script>location.href='//sina.com';</script>*/\nvar t=({body});".encode()
+
+
 def test_global_quotes_use_tencent_with_futures_and_sparklines() -> None:
     qt = _gbk(
         _quote_line("sh000001", "上证指数", "000001", "3649.18", "-40.73", "-1.10", "77263457"),
@@ -303,7 +331,9 @@ def test_global_quotes_use_tencent_with_futures_and_sparklines() -> None:
         "UsMinute/query": _minute_for,
         "qt.gtimg.cn": qt,
     }
-    payload = asyncio.run(_service(routes).global_quotes())
+    routes["getGlobalFuturesMinLine"] = _sina_minute
+    service = _service(routes)
+    payload = asyncio.run(service.global_quotes())
     by_code = {q.code: q for q in payload.quotes}
     assert by_code["000001"].price == 3649.18
     assert by_code["000001"].amountYuan == pytest.approx(77263457e4)
@@ -312,10 +342,49 @@ def test_global_quotes_use_tencent_with_futures_and_sparklines() -> None:
     assert by_code["CL00Y"].price == 90.14
     assert by_code["000001"].spark == [100.0, 101.5, 102.0]  # 腾讯分时
     assert by_code["HSI"].spark == [100.0, 101.5, 102.0]
-    assert by_code["GC00Y"].spark == []  # 商品期货没有分时
+    # 黄金 / 原油：新浪 1 分钟分时，降采样到 40 点，首尾保留。
+    gold = by_code["GC00Y"].spark
+    assert len(gold) == 40 and gold[0] == 4000.0 and gold[-1] == 4000.0 + 199 * 0.5
+    oil = by_code["CL00Y"].spark
+    assert len(oil) == 40 and oil[0] == 90.0
     assert "全球行情" not in payload.meta.unavailable
     assert "分时 上证指数" not in payload.meta.unavailable
-    assert "黄金" not in payload.meta.unavailable
+    assert "分时 黄金" not in payload.meta.unavailable
+    assert "分时 原油" not in payload.meta.unavailable
+    assert "新浪财经 分时" in payload.meta.sources
+    gateway = service.gateway
+    assert isinstance(gateway, _Gateway)
+    # 黄金 / 原油各只请求一次新浪分时，不再去腾讯要不存在的期货分时。
+    assert sum("getGlobalFuturesMinLine" in url for url in gateway.calls) == 2
+    assert not any("code=hf_" in url for url in gateway.calls)
+
+
+def test_global_quotes_commodity_spark_degrades_when_sina_minute_fails() -> None:
+    qt = _gbk(
+        _quote_line("sh000001", "上证指数", "000001", "3649.18", "-40.73", "-1.10", "77263457"),
+        _GOLD_LINE,
+        _OIL_LINE,
+    )
+
+    def broken(url: str) -> bytes:
+        if "symbol=CL" in url:
+            return _sina_minute(url)
+        return b"<html>blocked</html>"
+
+    routes: dict[str, Route] = {
+        "minute/query": _minute_for,
+        "hkMinute/query": _minute_for,
+        "UsMinute/query": _minute_for,
+        "qt.gtimg.cn": qt,
+        "getGlobalFuturesMinLine": broken,
+    }
+    payload = asyncio.run(_service(routes).global_quotes())
+    by_code = {q.code: q for q in payload.quotes}
+    assert by_code["GC00Y"].spark == [] and by_code["GC00Y"].price == 4075.14
+    assert "新浪财经分时也取不到" in payload.meta.unavailable["分时 黄金"]
+    assert len(by_code["CL00Y"].spark) == 40  # 原油不受黄金失败影响
+    assert "分时 原油" not in payload.meta.unavailable
+    assert by_code["000001"].spark == [100.0, 101.5, 102.0]  # 其他品种不受影响
 
 
 def _volume_routes() -> dict[str, Route]:

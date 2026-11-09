@@ -461,10 +461,17 @@ class ASharePanoramaService:
                 for row in _GLOBAL
             ),
         )
-        # 东财分时连不上的，改用腾讯分时（A 股 / 港股 / 美股指数有；商品期货没有分时，留空）。
+        # 东财分时连不上的，改用腾讯分时（A 股 / 港股 / 美股指数有）；
+        # 黄金 / 原油腾讯没有分时，改用新浪 1 分钟分时。
         fallback = await asyncio.gather(
             *(
-                self._tencent_minutes(acc, row[0]) if doc is None else _none()
+                _none()
+                if doc is not None
+                else self._sina_futures_minutes(
+                    acc, _SINA_FUTURES[row[0]], _TTL_LIVE if self._index_live(row[0]) else _TTL_IDLE
+                )
+                if row[0] in _SINA_FUTURES
+                else self._tencent_minutes(acc, row[0])
                 for row, doc in zip(_GLOBAL, trend_docs, strict=True)
             )
         )
@@ -474,13 +481,21 @@ class ASharePanoramaService:
         ):
             row = quotes.get(secid, {})
             spark: list[float] = []
+            label = f"分时 {name}"
             if trend_doc is not None:
                 latest = calc.latest_day_rows(calc.parse_trends(calc.as_doc(trend_doc)))
                 spark = [round(p.price, 4) for p in latest]
                 spark = calc.downsample(spark, 40)
-            elif minutes is not None and minutes.bars:
+            elif secid in _SINA_FUTURES:
+                if isinstance(minutes, list) and minutes:
+                    spark = calc.downsample([round(b.price, 4) for b in minutes], 40)
+                    acc.unavailable.pop(label, None)
+                else:
+                    reason = acc.unavailable.get(label) or "东方财富暂无分时数据"
+                    acc.unavailable[label] = f"{reason}；新浪财经分时也取不到"
+            elif isinstance(minutes, tq.Minutes) and minutes.bars:
                 spark = calc.downsample([round(b.price, 4) for b in minutes.bars], 40)
-                acc.unavailable.pop(f"分时 {name}", None)
+                acc.unavailable.pop(label, None)
             items.append(
                 GlobalQuote(
                     code=code,
@@ -537,7 +552,7 @@ class ASharePanoramaService:
         """点击全球指数卡片后的详情：现价与开高低收、分时、近 90 根日 K。
 
         东财优先，push2 / push2his 不可达时回退腾讯（A 股 / 港股 / 美股指数分时与日 K）；
-        黄金、原油腾讯没有分时与日 K，日 K 再回退新浪，分时留空并写明原因。
+        黄金、原油腾讯没有分时与日 K，分时与日 K 都回退新浪，新浪也取不到才留空并写明原因。
         """
 
         secid, _short, symbol, name, category = _index_row(raw_code)
@@ -570,12 +585,23 @@ class ASharePanoramaService:
             acc.unavailable.setdefault("指数行情", "该来源暂无行情")
 
         intraday, minute_day = _em_index_points(trend_doc)
+        sina_minutes = False
         if not intraday:
             reason = acc.unavailable.get("指数分时") or "东方财富暂无分时数据"
             if commodity:
-                acc.unavailable["指数分时"] = (
-                    f"{reason}；腾讯财经没有 COMEX / NYMEX 期货分时接口，分时暂不可用"
-                )
+                # 腾讯没有 COMEX / NYMEX 期货分时，只能回退新浪（北京时间 1 分钟线）。
+                bars = await self._sina_futures_minutes(acc, _SINA_FUTURES[secid], ttl)
+                intraday = _sina_index_points(bars or [])
+                if intraday and bars:
+                    minute_day = bars[-1].day
+                    sina_minutes = True
+                    acc.unavailable.pop("指数分时", None)
+                    acc.notes.append(
+                        "黄金 / 原油分时来自新浪财经，时间为北京时间（跨自然日按上游顺序排列）；"
+                        "新浪期货分时成交量上游恒为 0，故不画量柱。"
+                    )
+                else:
+                    acc.unavailable["指数分时"] = f"{reason}；新浪财经分时也取不到"
             else:
                 minutes = await self._tencent_minutes(acc, secid, ttl=ttl)
                 intraday = _tencent_index_points(minutes, secid) if minutes else []
@@ -606,7 +632,11 @@ class ASharePanoramaService:
             on_today = commodity or trade_day == self._market_day(secid)
             session = "intraday" if live and on_today else "close"
         if category == "大宗商品":
-            acc.notes.append("取 COMEX 黄金 / NYMEX 原油主连合约，成交量为合约张数。")
+            acc.notes.append(
+                "取 COMEX 黄金 / NYMEX 原油主连合约。"
+                if sina_minutes
+                else "取 COMEX 黄金 / NYMEX 原油主连合约，成交量为合约张数。"
+            )
         elif category == "海外指数":
             acc.notes.append(
                 "分时时间统一为北京时间（美股由美东时间换算）；"
@@ -650,6 +680,20 @@ class ASharePanoramaService:
                 for b in bars or []
             ]
         )
+
+    async def _sina_futures_minutes(
+        self, acc: _Acc, symbol: str, ttl: int
+    ) -> list[sina.FuturesMinute] | None:
+        """新浪外盘期货 1 分钟分时；失败返回 None（调用方决定怎么写 `unavailable`）。"""
+
+        async def load() -> list[sina.FuturesMinute]:
+            payload = await self.gateway.get(sina.futures_minute_url(symbol), sina.SINA_HEADERS)
+            return sina.parse_futures_minute(payload)
+
+        minutes: list[sina.FuturesMinute] | None = await self._tencent(
+            acc, f"新浪期货分时:{symbol}", ttl, load, "新浪财经 分时"
+        )
+        return minutes
 
     async def _sina_futures_daily(self, acc: _Acc, symbol: str) -> list[IndexDailyBar]:
         async def load() -> list[sina.FuturesBar]:
@@ -2170,6 +2214,15 @@ def _em_index_points(doc: Any | None) -> tuple[list[IndexIntradayPoint], str | N
         for row in rows
     ]
     return points, (rows[0].day if rows else None)
+
+
+def _sina_index_points(bars: Sequence[sina.FuturesMinute]) -> list[IndexIntradayPoint]:
+    """新浪期货分时：按上游数组顺序（跨夜不能按 HH:MM 排序）；量全 0 时 `volume` 为空。"""
+
+    return [
+        IndexIntradayPoint(time=bar.clock, price=bar.price, avgPrice=bar.avg, volume=bar.volume)
+        for bar in bars
+    ]
 
 
 def _tencent_index_points(minutes: tq.Minutes, secid: str) -> list[IndexIntradayPoint]:

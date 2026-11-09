@@ -1,7 +1,7 @@
 """全球指数 / 商品详情（分时 + 日K）：预置字节样本，不连网。
 
-覆盖：东财优先、屏蔽 push2 / push2his 后回退腾讯（模拟生产服务器）、商品分时留空并写明原因、
-未知代码 404。
+覆盖：东财优先、屏蔽 push2 / push2his 后回退腾讯（模拟生产服务器）、黄金 / 原油分时回退新浪
+（跨夜按数组顺序、量恒 0 视为没有）、新浪也失败时写明原因、未知代码 404。
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ TX_HK_MINUTE = "appstock/app/hkMinute/query"
 TX_US_MINUTE = "appstock/app/UsMinute/query"
 TX_KLINE = "appstock/app/newfqkline/get"
 SINA_DAILY = "GlobalFuturesService.getGlobalFuturesDailyKLine"
+SINA_MINUTE = "GlobalFuturesService.getGlobalFuturesMinLine"
 PUSH2 = (EM_QUOTE, EM_TREND, EM_KLINE)
 
 SH_QUOTE_EM = {
@@ -173,6 +174,26 @@ SINA_GC = (
     '"close":"4097.800","volume":"0","position":"0","s":"0.000","settlement":"0"},'
     '{"date":"2026-11-06","open":"4098.500","high":"4116.200","low":"4044.500",'
     '"close":"4081.400","volume":"0","position":"0","s":"0.000","settlement":"0"}]);'
+)
+
+# 新浪期货分时：第 0 行 10 项、其余 6 项（2026-11-09 实测格式）；量恒为 "0"。
+SINA_GC_MINUTE = (
+    "/*<script>location.href='//sina.com';</script>*/\n"
+    'var t=({"minLine_1d":['
+    '["2026-11-05","4113.500","cme","","18:00","4098.500","0","0","4098.500",'
+    '"2026-11-05 18:00:00"],'
+    '["18:01","4097.900","0","0","4098.200","2026-11-05 18:01:00"],'
+    '["18:02","4099.100","0","0","4098.500","2026-11-05 18:02:00"]'
+    "]});"
+)
+# 构造样本：夜盘跨过北京时间午夜，数组顺序是 23:58 → 23:59 → 00:00 → 00:01。
+SINA_CL_MINUTE_OVERNIGHT = (
+    'var t=({"minLine_1d":['
+    '["2026-11-05","90.520","cme","","23:58","90.100","0","0","90.100","2026-11-05 23:58:00"],'
+    '["23:59","90.200","0","0","90.150","2026-11-05 23:59:00"],'
+    '["00:00","90.300","0","0","90.200","2026-11-06 00:00:00"],'
+    '["00:01","90.250","0","0","90.210","2026-11-06 00:01:00"]'
+    "]});"
 )
 
 
@@ -390,8 +411,8 @@ def test_us_session_is_intraday_while_new_york_is_open() -> None:
 # ───────────── 商品 ─────────────
 
 
-def test_commodity_has_no_intraday_but_reports_why_and_uses_sina_daily() -> None:
-    routes = {TX_QUOTE: GOLD_QUOTE_TX, SINA_DAILY: SINA_GC}
+def test_commodity_intraday_comes_from_sina_when_eastmoney_blocked() -> None:
+    routes = {TX_QUOTE: GOLD_QUOTE_TX, SINA_DAILY: SINA_GC, SINA_MINUTE: SINA_GC_MINUTE}
     service, gateway = _service(_Gateway(routes, PUSH2))
     payload = asyncio.run(service.index_detail("COMEX黄金"))
     assert (payload.name, payload.category) == ("黄金", "大宗商品")
@@ -402,9 +423,18 @@ def test_commodity_has_no_intraday_but_reports_why_and_uses_sina_daily() -> None
         4044.5,
         4113.5,
     )
-    assert payload.intraday == []
-    reason = payload.meta.unavailable["指数分时"]
-    assert "上游超时" in reason and "腾讯财经没有 COMEX / NYMEX 期货分时接口" in reason
+    # 第 0 行本身也是一个分时点（18:00）；昨结 4113.5 不取自分时第 0 行的第二项。
+    assert [(p.time, p.price, p.avgPrice) for p in payload.intraday] == [
+        ("18:00", 4098.5, 4098.5),
+        ("18:01", 4097.9, 4098.2),
+        ("18:02", 4099.1, 4098.5),
+    ]
+    assert all(p.volume is None for p in payload.intraday)  # 上游量恒为 0 → 没有
+    assert "指数分时" not in payload.meta.unavailable
+    assert "新浪财经 分时" in payload.meta.sources
+    notes = " ".join(payload.meta.notes)
+    assert "北京时间" in notes and "恒为 0" in notes and "不画量柱" in notes
+    assert payload.meta.tradeDate == "2026-11-05"
     # 没向腾讯请求不存在的期货分时 / 日K。
     assert not any(TX_MINUTE in url or TX_KLINE in url for url in gateway.calls)
     assert [b.date for b in payload.dailyBars] == ["2026-11-04", "2026-11-05", "2026-11-06"]
@@ -415,11 +445,31 @@ def test_commodity_has_no_intraday_but_reports_why_and_uses_sina_daily() -> None
     assert any("不含成交量" in note for note in payload.meta.notes)
 
 
+def test_commodity_overnight_keeps_upstream_order_across_midnight() -> None:
+    routes = {TX_QUOTE: GOLD_QUOTE_TX, SINA_DAILY: SINA_GC, SINA_MINUTE: SINA_CL_MINUTE_OVERNIGHT}
+    payload = _detail("NYMEX原油", routes, fail=PUSH2)
+    assert [p.time for p in payload.intraday] == ["23:58", "23:59", "00:00", "00:01"]
+    assert payload.intraday[-1].price == 90.25
+    assert payload.meta.tradeDate == "2026-11-06"  # 取最后一个点的北京日期
+
+
 def test_commodity_daily_gap_is_reported_when_sina_fails() -> None:
-    payload = _detail("NYMEX原油", {}, fail=(*PUSH2, TX_QUOTE, SINA_DAILY))
+    payload = _detail("NYMEX原油", {}, fail=(*PUSH2, TX_QUOTE, SINA_DAILY, SINA_MINUTE))
     assert payload.dailyBars == [] and payload.intraday == []
     assert "新浪财经日K也取不到" in payload.meta.unavailable["指数日K"]
-    assert "指数分时" in payload.meta.unavailable and "指数行情" in payload.meta.unavailable
+    assert "指数行情" in payload.meta.unavailable
+    reason = payload.meta.unavailable["指数分时"]
+    assert "新浪财经分时也取不到" in reason and "上游超时" in reason
+    assert "腾讯财经没有" not in reason
+    assert "新浪财经 分时" not in payload.meta.sources
+
+
+def test_commodity_minute_failure_only_affects_intraday() -> None:
+    routes = {TX_QUOTE: GOLD_QUOTE_TX, SINA_DAILY: SINA_GC}
+    payload = _detail("COMEX黄金", routes, fail=(*PUSH2, SINA_MINUTE))
+    assert payload.intraday == [] and len(payload.dailyBars) == 3
+    assert "新浪财经分时也取不到" in payload.meta.unavailable["指数分时"]
+    assert "指数日K" not in payload.meta.unavailable
 
 
 def test_commodity_prefers_eastmoney_intraday_when_reachable() -> None:
@@ -510,6 +560,56 @@ def test_sina_futures_daily_parses_jsonp_and_skips_broken_rows() -> None:
     ]
     with pytest.raises(ProviderError):
         sina.parse_futures_daily(b"<html>blocked</html>")
+
+
+def test_sina_futures_minute_parses_prefix_row0_and_all_zero_volume() -> None:
+    bars = sina.parse_futures_minute(SINA_GC_MINUTE.encode())
+    assert [(b.clock, b.day, b.price, b.avg) for b in bars] == [
+        ("18:00", "2026-11-05", 4098.5, 4098.5),
+        ("18:01", "2026-11-05", 4097.9, 4098.2),
+        ("18:02", "2026-11-05", 4099.1, 4098.5),
+    ]
+    assert all(b.volume is None for b in bars)
+    # 不带前缀 / 跨夜：保持数组顺序，不按 HH:MM 排序。
+    overnight = sina.parse_futures_minute(SINA_CL_MINUTE_OVERNIGHT.encode())
+    assert [b.clock for b in overnight] == ["23:58", "23:59", "00:00", "00:01"]
+    assert overnight[2].day == "2026-11-06"
+
+
+def test_sina_futures_minute_keeps_real_volume_and_skips_broken_rows() -> None:
+    payload = (
+        'var t=({"minLine_1d":[["2026-11-09","1","cme","","07:00","10.5","3","0","10.4",'
+        '"2026-11-09 07:00:00"],["07:01","bad","0","0","1","2026-11-09 07:01:00"],'
+        '["07:02","10.6","0","0","0","2026-11-09 07:02:00"],["x"],'
+        '["07:03","10.7","5","0","10.5","2026-11-09 07:03:00"]]});'
+    )
+    bars = sina.parse_futures_minute(payload.encode())
+    assert [(b.clock, b.price, b.avg, b.volume) for b in bars] == [
+        ("07:00", 10.5, 10.4, 3.0),
+        ("07:02", 10.6, None, 0.0),
+        ("07:03", 10.7, 10.5, 5.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"<html>blocked</html>",
+        b"/*<script>location.href='//sina.com';</script>*/",
+        b'var t=({"minLine_1d":[]});',
+        b'var t=({"other":[1]});',
+        b'var t=({"minLine_1d":[["bad"]]});',
+        b"var t=({broken});",
+    ],
+)
+def test_sina_futures_minute_bad_payload_is_a_provider_error(payload: bytes) -> None:
+    with pytest.raises(ProviderError):
+        sina.parse_futures_minute(payload)
+
+
+def test_sina_futures_minute_url_uses_symbol() -> None:
+    url = sina.futures_minute_url("CL")
+    assert url.endswith("getGlobalFuturesMinLine?symbol=CL")
 
 
 def test_tencent_quote_open_for_stock_format_and_futures() -> None:
