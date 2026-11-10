@@ -33,11 +33,11 @@
           </div>
         </div>
         <div class="form-field">
-          <label>关联常用营业部（多个用分号 ； 或换行分隔，应对游资换席位）</label>
+          <label>关联常用营业部（请填交易所披露的营业部全称，多个用分号 ； 或换行分隔，应对游资换席位）</label>
           <textarea
             v-model="formBranches"
             rows="2"
-            placeholder="例如：国泰海通南京太平南路；国泰海通南京金融城；中信上海分公司"
+            placeholder="例如：国泰海通证券股份有限公司上海长宁区江苏路证券营业部；国泰海通证券股份有限公司南京金融城证券营业部（简称会做模糊匹配，可能漏掉带「区」等字样的席位）"
             class="seat-textarea"
           />
         </div>

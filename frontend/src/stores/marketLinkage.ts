@@ -9,23 +9,40 @@ import {
   type HotMoneySeatGroup,
   type SeatCategory,
   type SeatMatchResult,
+  upgradeBuiltinSeatGroups,
 } from "../config/hotMoneySeatsConfig"
 
-/** v2：席位模型统一为 category/styleTag/watched；旧 v1 数据不再读取。 */
-const STORAGE_KEY = "finscope.hotMoneySeats.v2"
+/**
+ * v3：内置席位字典里的营业部从简称改成交易所披露的全称（简称匹配不上带「区」的真实席位名）。
+ * v2 的本地数据会自动升级：内置组换成全称，用户自己加的组和营业部保留。
+ */
+const STORAGE_KEY = "finscope.hotMoneySeats.v3"
+const LEGACY_STORAGE_KEY = "finscope.hotMoneySeats.v2"
+
+function parseSeatGroups(raw: string | null): HotMoneySeatGroup[] {
+  if (!raw) return []
+  const parsed: unknown = JSON.parse(raw)
+  if (!Array.isArray(parsed)) return []
+  return parsed.flatMap((item) => {
+    const g = normalizeSeatGroup(item)
+    return g ? [g] : []
+  })
+}
 
 function loadPersistedSeats(): HotMoneySeatGroup[] {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw)
-      if (Array.isArray(parsed)) {
-        const groups = parsed.flatMap((item) => {
-          const g = normalizeSeatGroup(item)
-          return g ? [g] : []
-        })
-        if (groups.length > 0) return groups
+    const current = parseSeatGroups(window.localStorage.getItem(STORAGE_KEY))
+    if (current.length > 0) return current
+
+    const legacy = parseSeatGroups(window.localStorage.getItem(LEGACY_STORAGE_KEY))
+    if (legacy.length > 0) {
+      const upgraded = upgradeBuiltinSeatGroups(legacy)
+      try {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(upgraded))
+      } catch {
+        // 存储配额不足时本次会话内仍然生效
       }
+      return upgraded
     }
   } catch {
     // 存储不可用或内容损坏时退回内置字典
