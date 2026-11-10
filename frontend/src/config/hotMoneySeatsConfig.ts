@@ -542,7 +542,9 @@ export function matchHotMoneyByBranch(
       const hit = isFullSeatName(pattern)
         ? rawClean === patternClean
         : rawClean.includes(patternClean) ||
-          patternClean.includes(rawClean) ||
+          // 反向包含要求上榜名称归一化后至少 3 个字，否则「中信证券股份有限公司」「上海证券有限责任公司」
+          // 这种只有公司名的记录会被「中信上海古北路」「上海…」之类的简称吞掉
+          (rawClean.length >= 3 && patternClean.includes(rawClean)) ||
           branchName.includes(pattern)
       if (hit) {
         return {
