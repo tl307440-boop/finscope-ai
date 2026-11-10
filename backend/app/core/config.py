@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     jygs_session: str = ""
     # 会话到期时间（ISO，UTC）：界面扫码登录时自动写入，用来提前提醒；手填 / 环境变量时留空。
     jygs_session_expires: str = ""
+    # 同花顺「扶摇」金融数据 API Key（fuyao.aicubes.cn）：只放服务器 .env / 环境变量，不入库。
+    # 个股所属板块的最后一级兜底（东财 F10 与腾讯都取不到时才用）；留空则自动跳过。
+    fuyao_api_key: str = ""
     llm_api_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""

@@ -24,6 +24,7 @@ from app.providers import ashare_panorama as src
 from app.providers import eastmoney_boards as em
 from app.providers import eastmoney_sentiment as es
 from app.providers import sina_market as sina
+from app.providers import stock_boards as sb
 from app.providers import tencent_quote as tq
 from app.providers.errors import ProviderError
 from app.schemas.ashare_panorama import (
@@ -68,6 +69,7 @@ from app.schemas.ashare_panorama import (
 )
 from app.services import ashare_calc as calc
 from app.services import jygs
+from app.services.fuyao_board_index import FuyaoBoardIndex
 from app.services.industry_market import Gateway
 from app.services.market_cache import Cached, TtlCache, market_cache, shared_gateway
 from app.utils.market_time import SHANGHAI
@@ -78,6 +80,7 @@ _SESSION_CLOSE = time(15, 5)
 _TTL_LIVE = 30
 _TTL_IDLE = 600
 _TTL_PAST = 6 * 3600
+_TTL_BOARDS = 6 * 3600  # 个股所属板块：成分一天变不了几次，别每次请求都回源
 _NOON = "11:30"
 
 _GLOBAL: tuple[tuple[str, str, str, str, str], ...] = (
@@ -165,6 +168,12 @@ class ASharePanoramaService:
     # 运行时取 (会话, 到期时间)：生产里读「界面保存的加密配置 > 环境变量」，所以扫码登录后立刻生效。
     jygs_credentials: Callable[[], tuple[str, str]] | None = None
     _jygs_checked: tuple[float, str] | None = field(default=None, repr=False)
+    # 同花顺扶摇 Key：只读环境变量 FUYAO_API_KEY，留空则个股所属板块的扶摇兜底自动跳过。
+    fuyao_api_key: str = ""
+    _fuyao: FuyaoBoardIndex = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._fuyao = FuyaoBoardIndex(gateway=self.gateway, api_key=lambda: self.fuyao_api_key)
 
     # ───────────── 基础：取数 / 交易日 ─────────────
 
@@ -1739,7 +1748,7 @@ class ASharePanoramaService:
             )
         secid = calc.secid_for(code)
         day, session, _ = await self._resolve(acc)
-        quote_doc, trend_doc, kline_doc, lhb_day_doc = await asyncio.gather(
+        quote_doc, trend_doc, kline_doc, lhb_day_doc, boards = await asyncio.gather(
             self._doc(
                 acc, "个股详情", src.stock_get_url(secid), src.EM_HEADERS, source="东方财富 行情"
             ),
@@ -1762,6 +1771,7 @@ class ASharePanoramaService:
                 ttl=300,
                 source="东方财富 数据中心 龙虎榜",
             ),
+            self._stock_boards(acc, code),
         )
         tcode = tq.a_share_code(code)
         quote = calc.as_doc(calc.as_doc(quote_doc).get("data"))
@@ -1769,6 +1779,8 @@ class ASharePanoramaService:
             quote = await self._tencent_detail_quote(acc, tcode)
         if not quote:
             raise ProviderError(code="NOT_FOUND", message="没有找到这只股票", status_code=404)
+        board_hits, board_reasons = boards
+        board_info = self._finish_boards(acc, board_hits, board_reasons, quote)
         trend = calc.parse_trends(calc.as_doc(trend_doc)) if trend_doc else None
         intraday = (
             [
@@ -1805,9 +1817,6 @@ class ASharePanoramaService:
         hit, reason = pool.get(code), ths.get(code)
         float_cap = calc.num(quote.get("f117"))
         seal = hit.seal_fund if hit else None
-        sectors = [calc.text(quote.get("f127"))] + [
-            s for s in calc.text(quote.get("f129")).split(",") if s
-        ]
         lhb_rows = calc.as_list(calc.as_doc(calc.as_doc(lhb_day_doc).get("result")).get("data"))
         lhb_day = (
             date.fromisoformat(calc.text(calc.as_doc(lhb_rows[0]).get("TRADE_DATE"))[:10])
@@ -1829,7 +1838,9 @@ class ASharePanoramaService:
             else round(seal / float_cap * 100, 2),
             streakLabel=calc.board_label(hit.streak) if hit else "",
             firstSealTime=hit.first_seal if hit else "",
-            sectors=[s for s in dict.fromkeys(sectors) if s][:14],
+            sectors=board_info.sectors(),
+            industries=list(board_info.industries),
+            concepts=list(board_info.concepts),
             catalystReason=reason.reason if reason else "",
             actionSector=action.sector if action else "",
             actionSectorReason=action.sector_reason if action else "",
@@ -1842,6 +1853,85 @@ class ASharePanoramaService:
             sellSeats=sells,
             meta=acc.meta(day.isoformat() if day else None, session),
         )
+
+    async def _stock_boards(self, acc: _Acc, code: str) -> tuple[sb.Boards, list[str]]:
+        """个股所属板块（行业 + 概念）：东财 F10 → 腾讯 → 同花顺扶摇，逐级补齐缺的那一类。
+
+        返回 (板块, 各来源失败原因)；是否写入 `unavailable` 由 `_finish_boards` 在
+        用完最后的回退（东财个股详情自带的 f127 / f129）后统一决定。
+        """
+
+        boards = sb.Boards()
+        reasons: list[str] = []
+
+        async def attempt(
+            label: str,
+            url: str,
+            headers: Mapping[str, str],
+            parse: Callable[[object], sb.Boards],
+            source: str,
+        ) -> None:
+            nonlocal boards
+            probe = _Acc()
+            doc = await self._doc(probe, label, url, headers, ttl=_TTL_BOARDS)
+            acc.fetched.extend(probe.fetched)
+            acc.stale = acc.stale or probe.stale
+            if doc is None:
+                reasons.append(f"{label}：{probe.unavailable.get(label, '该来源暂不可用')}")
+                return
+            merged = sb.merge(boards, parse(doc))
+            if merged != boards:
+                acc.source(source)
+            elif boards.empty:
+                reasons.append(f"{label}：没有收录这只股票的板块")
+            boards = merged
+
+        await attempt(
+            "东财F10所属板块",
+            sb.em_f10_url(calc.suffix_code(code)),
+            sb.EM_F10_HEADERS,
+            sb.parse_em_f10,
+            "东方财富 F10 所属板块",
+        )
+        if not boards.complete:
+            await attempt(
+                "腾讯所属板块",
+                sb.tencent_plate_url(tq.a_share_code(code)),
+                sb.TENCENT_PLATE_HEADERS,
+                sb.parse_tencent_plate,
+                "腾讯财经 所属板块",
+            )
+        if not boards.complete:
+            found, reason = await self._fuyao.lookup(code)
+            if found is None:
+                reasons.append(reason)
+            else:
+                merged = sb.merge(boards, found)
+                if merged != boards:
+                    acc.source("同花顺扶摇 板块成分")
+                boards = merged
+        return boards, reasons
+
+    def _finish_boards(
+        self, acc: _Acc, boards: sb.Boards, reasons: list[str], quote: calc.Doc
+    ) -> sb.Boards:
+        """最后一级回退：东财个股详情自带的行业 f127 / 概念 f129；仍缺就如实写进 `unavailable`。"""
+
+        if not boards.complete:
+            own = sb.build_boards(
+                [calc.text(quote.get("f127"))],
+                [s for s in calc.text(quote.get("f129")).split(",") if s],
+            )
+            merged = sb.merge(boards, own)
+            if merged != boards:
+                acc.source("东方财富 行情")
+                boards = merged
+        if boards.empty:
+            acc.unavailable["所属板块"] = "；".join(reasons) or "各来源都没有这只股票的板块"
+        elif not boards.complete:
+            missing = "概念板块" if not boards.concepts else "行业板块"
+            acc.unavailable["所属板块"] = f"{missing}暂缺（" + "；".join(reasons) + "）"
+        return boards
 
     async def _tencent_detail_quote(self, acc: _Acc, tcode: str) -> calc.Doc:
         """个股详情的行情头部：东财取不到时用腾讯报价，键名对齐东财个股详情字段。
@@ -2329,6 +2419,7 @@ def get_panorama_service() -> ASharePanoramaService:
             gateway=shared_gateway(),
             jygs_session=settings.jygs_session,
             jygs_session_expires=settings.jygs_session_expires,
+            fuyao_api_key=settings.fuyao_api_key,
         )
     return _service
 

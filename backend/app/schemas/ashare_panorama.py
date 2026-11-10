@@ -386,7 +386,10 @@ class StockDetailPayload(BaseModel):
     sealFloatRatioPct: float | None = None
     streakLabel: str = ""
     firstSealTime: str = ""
+    # 所属板块：sectors = 行业在前、概念在后（兼容旧前端）；industries / concepts 是分开的两类。
     sectors: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    concepts: list[str] = Field(default_factory=list)
     catalystReason: str = ""
     actionSector: str = ""
     actionSectorReason: str = ""

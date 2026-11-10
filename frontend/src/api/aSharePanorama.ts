@@ -775,7 +775,10 @@ export interface StockDetailData {
   sealFloatRatioPct: number | null
   streakLabel: string
   firstSealTime: string
+  /** 所属板块：行业在前、概念在后；industries / concepts 是分开的两类。 */
   sectors: string[]
+  industries: string[]
+  concepts: string[]
   catalystReason: string
   /** 韭研公社异动解析（需后端配置 JYGS_SESSION）；没收录该股时为空串。 */
   actionSector: string
@@ -813,6 +816,8 @@ export function fetchStockDetail(code: string): Promise<StockDetailData> {
     streakLabel: str(d.streakLabel),
     firstSealTime: str(d.firstSealTime),
     sectors: strList(d.sectors),
+    industries: strList(d.industries),
+    concepts: strList(d.concepts),
     catalystReason: str(d.catalystReason),
     actionSector: str(d.actionSector),
     actionSectorReason: str(d.actionSectorReason),

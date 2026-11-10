@@ -29,9 +29,23 @@
           </div>
         </div>
 
-        <div v-if="detail.sectors.length" class="sdp-sectors-row">
+        <div class="sdp-sectors-row" data-testid="sdp-sectors">
           <span class="sdp-sec-label">所属板块：</span>
-          <span v-for="sec in detail.sectors" :key="sec" class="sdp-sector-tag">{{ sec }}</span>
+          <template v-if="detail.sectors.length">
+            <span
+              v-for="sec in detail.industries"
+              :key="`i-${sec}`"
+              class="sdp-sector-tag is-industry"
+              title="行业板块"
+              >{{ sec }}</span
+            >
+            <span v-for="sec in conceptTags" :key="`c-${sec}`" class="sdp-sector-tag" title="概念板块">{{
+              sec
+            }}</span>
+          </template>
+          <span v-else class="sdp-sector-empty" :title="detail.meta.unavailable['所属板块'] || ''">
+            暂无{{ detail.meta.unavailable["所属板块"] ? "（上游未返回，见数据说明）" : "" }}
+          </span>
         </div>
       </div>
 
@@ -264,6 +278,14 @@ const loadError = ref("")
 const chartMode = ref<"both" | "intraday" | "kline">("both")
 /** 韭研解析原文很长：默认折叠，点「展开全文」才展开，避免面板里再套一层滚动条。 */
 const explainOpen = ref(false)
+// 概念板块：优先用后端分好的 concepts；旧后端只有 sectors 时，去掉行业后的剩余项当概念。
+const conceptTags = computed(() => {
+  const d = detail.value
+  if (!d) return []
+  if (d.concepts.length) return d.concepts
+  return d.sectors.filter((s) => !d.industries.includes(s))
+})
+
 const explainLong = computed(() => {
   const d = detail.value
   if (!d) return false
@@ -448,6 +470,16 @@ const klineOption = computed<EChartsOption>(() => buildKlineOption(detail.value?
   background: var(--panel-soft);
   color: var(--muted);
   border: 1px solid var(--line);
+}
+
+.sdp-sector-tag.is-industry {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.sdp-sector-empty {
+  font-size: 11px;
+  color: var(--faint);
 }
 
 .sdp-metrics-grid {

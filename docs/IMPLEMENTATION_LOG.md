@@ -2820,3 +2820,63 @@ PR #42 已合并到 master（`2f8c8fb`）。部署工作流只在该提交的 CI
 
 - 新浪期货分时只有当前交易时段的 1 分钟线（`minLine_1d`），不是多日分时。
 - 新浪期货日 K 与分时都没有成交量。
+
+## 2026-11-10（续八）东财 push2 服务器排查 + 个股所属板块
+
+### 一、东财 push2 服务器排查（ECS 121.199.8.235，只读）
+
+结论：**push2 不是 IP 全封，也不是请求头 / 令牌校验，而是上游对这台机房出口按连接随机掐断（约 80% 的新连接被直接 RST）**。
+
+| 方案（都在 ECS 容器内用 httpx 实测） | 现象 | 有效 JSON 比例 |
+| --- | --- | --- |
+| 应用现用头（FinScope UA + Referer），httpx HTTP/1.1，新连接 | `RemoteProtocolError: Server disconnected without sending a response`（0.05 秒就断，不是超时也不是 403） | 11/60（交错对照） |
+| (a) 完整 Chrome 头（Accept / Accept-Language / sec-ch-ua / Sec-Fetch-* / Connection / Referer），HTTP/1.1 | 同上 | 12/60 |
+| (a) curl `--http1.1` vs 默认（协商 h2） | 同上 | 10/30 vs 14/30（无显著差别；容器里没装 h2，HTTP/2 只用宿主 curl 测） |
+| (b) nid 令牌：`POST anonflow2.eastmoney.com/backend/api/webreport`（st_nvi=21 位随机串+sha256 前 4 位，body 按原样） | **200，拿到 32 位 nid**（令牌接口本身稳定有效）；带 `Cookie: nid18=<nid>` 再请求 push2 / push2his | 11/60（交错对照）：**和没带令牌一样** |
+| 50 分钟定时探针（每 20 秒一次，Chrome 头，新连接） | 成功与失败随机交替，无时段规律 | push2 28/150、push2his 24/150（约 16–19%） |
+| `push2delay` | 同样被掐断 | — |
+
+- 旧的「手工拼 body 被 403」在 ECS 上没有复现：按规则生成 st_nvi 后令牌接口返回 200。令牌有效，但对 push2 的成功率没有任何提升，所以**没有给东财 provider 加 nid 逻辑，也没有改请求头**（改了也不会更稳）。
+- 同一出口 `anonflow2`（POST 空体 400）、`mkapi2`（403）、`datacenter` / `datacenter-web`、`push2ex`、`qt.gtimg.cn`、新浪期货分时、腾讯 `proxy.finance.qq.com` 都稳定可达；通达信 `119.147.212.81:7709` closed。
+- **矛盾的解释**：应用容器的日志里没有 push2 的失败行（失败被缓存层吞掉，只写进 `meta.unavailable`）。线上 `index-detail?code=COMEX黄金` 那次 `meta.sources` 带「东方财富」，是因为 `fetchedAt=06:22:28Z`、`stale=true`：它是容器刚重启后某次随机放行拿到的旧值，被 `TtlCache` 的 10 分钟宽限期继续返回（`acc.source` 在拿到缓存值时就登记来源）。也就是说应用进程用的 host / 参数 / UA 都和手工测一样，没有走代理（`trust_env=False`，容器里没有代理环境变量），**是间歇通，不是另一条通路**。
+- 失败形态更像出口 IP 的限流 / 信誉分流，而不是反爬校验：校验类拦截是稳定的 403 / 空数据，这里是同一请求时好时坏，与头、令牌、HTTP 版本都无关。
+- 建议（未做）：对 push2 / push2his 这两个 host 把重试次数从 2 提到 4–5（失败 0.05 秒就返回，成本很低，理论成功率 1−0.8⁵≈67%），再配合现有的 stale-while-error。这属于行为变更，留待你决定。
+
+### 二、个股所属板块（每只股票都要有）
+
+现象：生产 `stock-detail` 的板块字段为空且 `unavailable` 为空——原来只取 push2 `stock/get` 的 f127 / f129，push2 不通就静默没有，腾讯回退又明写没有板块。
+
+**数据源链**（`providers/stock_boards.py` + `services/ashare_panorama.py::_stock_boards`，缺哪一类就用下一级补哪一类，不混同类名称）：
+
+1. 东财 F10 核心题材 `RPT_F10_CORETHEME_BOARDTYPE`（`datacenter.eastmoney.com/securities/api/data/v1/get`，ECS 可达，沪深京都有）。`BOARD_TYPE=行业` → 行业；`板块` 是地域，不展示；其余 → 概念，`IS_PRECISE=1` 的核心题材排前。
+2. 腾讯 `ifzqgtimg/appstock/app/stockinfo/plate`（沪深有，北交所没有）。
+3. 同花顺扶摇（只在前两级都没补齐时才触发，需 `FUYAO_API_KEY`）：扶摇只有「板块 → 成分股」，所以后台把约 390 个概念 + 320 个行业板块的成分拉一遍，反查成映射缓存 12 小时；构建期间返回「正在构建」并写进 `unavailable`，不阻塞请求。
+4. 东财个股详情自带的 f127 / f129（最后一级，push2 通时才有）。
+
+TickFlow 探测过：只有申万行业 universe，且成分数明显不全（如 SW1 基础化工仅 11 只），没有概念，**不采用**。
+
+展示规则：行业最多 3 个（一级在前，Ⅱ / Ⅲ 依次），概念最多 12 个；去掉「标准普尔 / 沪股通 / 融资融券 / 昨日涨停 / 基金增仓 / 中报首亏」这类指数成分和状态标签（全是噪声时原样保留，宁可多也不空）；结果按股票缓存 6 小时。接口新增 `industries` / `concepts`，`sectors` 保留为两者合并（兼容旧前端）；前端整行始终显示，取不到写「暂无」，原因在 `meta.unavailable["所属板块"]`。
+
+**Key 管理**：只用环境变量 `FUYAO_API_KEY`（`core/config.py`；`.env.example` 与 `deploy/env.production.example` 只放空占位）。服务器 `/opt/finscope/.env` 由 SSH 追加（先备份）；没配置时扶摇来源自动跳过并写入 `unavailable`。TickFlow / 通达信的 Key 没有对应代码，没有写进任何配置。
+
+### 变更文件
+
+- 后端：`providers/stock_boards.py`（新）、`services/fuyao_board_index.py`（新）、`services/ashare_panorama.py`、`schemas/ashare_panorama.py`、`core/config.py`、`tests/unit/test_stock_boards.py`（新）
+- 前端：`api/aSharePanorama.ts`、`components/market/StockDetailPanel.vue`、`tests/unit/StockDetailPanelBoards.test.ts`（新）
+- 配置示例：`.env.example`、`deploy/env.production.example`
+
+### 验证（提交前，本机）
+
+| 命令 | 结果 |
+| --- | --- |
+| `PYTHONPATH=finscope-ai-pr/backend`，主 venv：`ruff check .` / `ruff format --check .` / `mypy app` | 通过 |
+| `pytest tests/unit` | 全部通过（新增 15 个：解析、去噪、回退链、扶摇反查、Key 只进请求头不进 URL / 报错文案） |
+| `npx vue-tsc --noEmit` / `npx vitest run` | 通过（64 个文件 / 444 个用例） |
+
+覆盖率抽样与生产验证见本文末「生产验证」一节（部署后补）。
+
+### 仍然如实说明
+
+- push2 / push2his 依旧是间歇通（约 16–19%），本轮没有改它；腾讯 / 新浪回退不变。
+- 扶摇兜底只在前两级都取不到时才触发，平时不消耗额度；它的概念顺序是板块目录顺序，不代表相关度。
+- 地域板块没有展示（只要行业 + 概念）。
