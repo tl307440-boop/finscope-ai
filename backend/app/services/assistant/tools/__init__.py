@@ -19,6 +19,7 @@ from app.services.assistant.calc import CalcArgs, run_calc
 from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
+from app.services.assistant.tools.backtest import RunBacktestTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
 from app.services.assistant.tools.board_detail import BoardDetailTool
 from app.services.assistant.tools.boards import IndustryBoardTool
@@ -167,6 +168,7 @@ def default_registry(
         NewsFlashTool(),
         PriceBarsTool(),
         ResearchReportsTool(),
+        RunBacktestTool(),
         WatchlistTool(),
         WebSearchTool(),
     ]
