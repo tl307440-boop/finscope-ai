@@ -19,11 +19,13 @@ from app.services.assistant.calc import CalcArgs, run_calc
 from app.services.assistant.results import ToolResult, unavailable
 from app.services.assistant.tool_cache import ToolCache, cache_key
 from app.services.assistant.tools.analysis import CustomIndicatorTool, WatchlistTool
+from app.services.assistant.tools.backtest import RunBacktestTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
 from app.services.assistant.tools.board_detail import BoardDetailTool
 from app.services.assistant.tools.boards import IndustryBoardTool
 from app.services.assistant.tools.corpus import CorpusSearchTool
 from app.services.assistant.tools.events import HotspotEventsTool
+from app.services.assistant.tools.factors import FactorRankTool
 from app.services.assistant.tools.fetch import FetchUrlTool
 from app.services.assistant.tools.filings import FilingFetchTool
 from app.services.assistant.tools.flash import NewsFlashTool
@@ -36,6 +38,7 @@ from app.services.assistant.tools.market import (
 )
 from app.services.assistant.tools.quote import QuoteTableTool
 from app.services.assistant.tools.reports import ResearchReportsTool
+from app.services.assistant.tools.screen import StrategyScreenTool
 from app.services.assistant.tools.sentiment import MarketSentimentTool
 from app.services.assistant.tools.web import WebSearchTool
 
@@ -156,6 +159,7 @@ def default_registry(
         BoardStrengthTool(),
         CalcTool(),
         CustomIndicatorTool(),
+        FactorRankTool(),
         FetchUrlTool(),
         FinancialMetricsTool(),
         HotspotEventsTool(),
@@ -167,6 +171,8 @@ def default_registry(
         NewsFlashTool(),
         PriceBarsTool(),
         ResearchReportsTool(),
+        RunBacktestTool(),
+        StrategyScreenTool(),
         WatchlistTool(),
         WebSearchTool(),
     ]

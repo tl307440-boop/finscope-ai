@@ -182,6 +182,34 @@ class MarketBarRepository:
             truncated,
         )
 
+    def instruments_with_daily(
+        self,
+        *,
+        provider_id: UUID,
+        adjustment: str,
+        min_bars: int,
+        pit: date,
+        limit: int,
+    ) -> list[UUID]:
+        """本库里日线根数不少于 min_bars 的证券 id（按根数多到少，再按 id 稳定排序）。"""
+
+        count = func.count(MarketBar.id)
+        statement = (
+            select(MarketBar.instrument_id)
+            .where(
+                MarketBar.provider_id == provider_id,
+                MarketBar.timeframe == "1d",
+                MarketBar.adjustment == adjustment,
+                MarketBar.trade_date <= pit,
+            )
+            .group_by(MarketBar.instrument_id)
+            .having(count >= min_bars)
+            .order_by(count.desc(), MarketBar.instrument_id)
+            .limit(limit)
+        )
+        with Session(self.engine) as session:
+            return list(session.scalars(statement).all())
+
 
 def _upsert_one(
     session: Session,
