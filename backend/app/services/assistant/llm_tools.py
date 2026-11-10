@@ -123,10 +123,13 @@ class OpenAIToolModel:
                 if response.status_code >= 400:
                     raise ModelCallError("http", response.status_code)
                 content_type = response.headers.get("content-type", "")
+                allow_tools = bool(tools)
                 if content_type.startswith("application/json"):
-                    reply = _parse_full(json.loads(response.read()))
+                    reply = _parse_full(json.loads(response.read()), allow_tools=allow_tools)
                 else:
-                    reply = _parse_stream(response.iter_lines(), started, budget)
+                    reply = _parse_stream(
+                        response.iter_lines(), started, budget, allow_tools=allow_tools
+                    )
         except ModelCallError:
             raise
         except httpx.TimeoutException as exc:
@@ -140,7 +143,9 @@ class OpenAIToolModel:
         return reply
 
 
-def _parse_stream(lines: Any, started: float, budget: float) -> ModelReply:
+def _parse_stream(
+    lines: Any, started: float, budget: float, *, allow_tools: bool = True
+) -> ModelReply:
     parts: list[str] = []
     calls: dict[int, dict[str, str]] = {}
     usage: dict[str, int] = {}
@@ -166,7 +171,7 @@ def _parse_stream(lines: Any, started: float, budget: float) -> ModelReply:
         if isinstance(text, str):
             parts.append(text)
         _accumulate(calls, delta.get("tool_calls"))
-    return _build(calls, "".join(parts), usage)
+    return _build(calls, "".join(parts), usage, allow_tools=allow_tools)
 
 
 def _accumulate(calls: dict[int, dict[str, str]], fragments: Any) -> None:
@@ -187,7 +192,7 @@ def _accumulate(calls: dict[int, dict[str, str]], fragments: Any) -> None:
                 slot["arguments"] = slot.get("arguments", "") + function["arguments"]
 
 
-def _parse_full(body: Any) -> ModelReply:
+def _parse_full(body: Any, *, allow_tools: bool = True) -> ModelReply:
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ValueError("no choices")
@@ -207,10 +212,18 @@ def _parse_full(body: Any) -> ModelReply:
         )
     content = message.get("content")
     usage = _usage(body["usage"]) if isinstance(body.get("usage"), dict) else {}
-    return _build(calls, content if isinstance(content, str) else "", usage)
+    return _build(
+        calls, content if isinstance(content, str) else "", usage, allow_tools=allow_tools
+    )
 
 
-def _build(calls: dict[int, dict[str, str]], content: str, usage: dict[str, int]) -> ModelReply:
+def _build(
+    calls: dict[int, dict[str, str]],
+    content: str,
+    usage: dict[str, int],
+    *,
+    allow_tools: bool = True,
+) -> ModelReply:
     tool_calls = tuple(
         ToolCall(
             id=slot.get("id") or f"call_{index}",
@@ -222,7 +235,8 @@ def _build(calls: dict[int, dict[str, str]], content: str, usage: dict[str, int]
     )
     if _DSML.search(content):
         content, written = split_dsml(content)
-        tool_calls = tool_calls or written
+        if allow_tools or not content.strip():
+            tool_calls = tool_calls or written
     # 同时出现工具调用与正文时以工具调用为准，正文丢弃。
     return ModelReply(content="" if tool_calls else content, tool_calls=tool_calls, usage=usage)
 

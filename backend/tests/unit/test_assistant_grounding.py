@@ -469,3 +469,46 @@ def test_extra_text_and_extra_dates_ground_user_question_parameters() -> None:
         "截至 2026-11-10，2026-11-06 回头波大于等于 10% 的全市场股票家数暂缺。"
     ).ok
     assert not grounder.check("共有 25 只股票。").ok
+
+
+def test_excerpt_row_dates_loss_negative_sign_bare_evidence_ref_and_quarter_labels() -> None:
+    book = _book(
+        ToolResult(
+            tool="web_search",
+            title="襄阳轴承 2026年第三季度报告",
+            columns=(Column("published", "发布日", "", "date"), Column("title", "标题")),
+            rows=(
+                {
+                    "published": "2026-10-28",
+                    "title": "襄阳轴承：第三季度亏损556万元 同比收窄50.90%",
+                },
+                {
+                    "published": "2026-10-29",
+                    "title": "襄阳轴承最新市场报道",
+                },
+            ),
+            as_of=date(2026, 10, 29),
+            source="联网",
+            passages=(
+                Passage(
+                    key="web:bocha:0:https://finance.eastmoney.com/a/1.html",
+                    title="襄阳轴承：第三季度亏损556万元 同比收窄50.90%",
+                    publisher="bocha",
+                    corpus_kind="web",
+                    published=date(2026, 10, 28),
+                    content="公司发布2026年第三季度报告，第三季度亏损556万元，同比收窄50.90%。",
+                    url="https://finance.eastmoney.com/a/1.html",
+                    verified=False,
+                ),
+            ),
+            excerpt=True,
+        )
+    )
+    # Row date 2026-10-28 and row count 2 in excerpt table are grounded even without [1]
+    assert check("联网共命中 2 条报道，其中三季报相关报道发布于 2026-10-28。", book).ok
+    # Loss (-556) is grounded by "亏损556万元", and "3季报"/"前3季度" are ignored as labels
+    assert check(
+        "根据 3季报 报道，第三季度归母净利润为 -556 万元，亏损同比收窄 50.90%[1]。", book
+    ).ok
+    # Bare E1 reference activates item sources
+    assert check("根据 E1 的前3季度报道，单季亏损 -556 万元。", book).ok

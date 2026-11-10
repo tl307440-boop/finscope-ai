@@ -73,6 +73,14 @@ class EvidenceBook:
         found: list[Decimal] = []
         for item in self.facts():
             found.extend(_numeric_values(item.result))
+        for item in self._items:
+            if (
+                not item.result.hypothetical
+                and item.result.tool != "quote_table"
+                and item.result.excerpt
+                and len(item.result.rows) >= 2
+            ):
+                found.extend(Decimal(count) for count in range(1, len(item.result.rows) + 1))
         return found
 
     def hypothetical_numbers(self) -> list[Decimal]:
@@ -96,13 +104,12 @@ class EvidenceBook:
         for item in self._items:
             if not item.result.hypothetical and item.result.tool != "quote_table":
                 found.add(item.result.as_of)
-        for item in self.facts():
-            keys = [column.key for column in item.result.columns if column.kind == "date"]
-            for row in item.result.rows:
-                for key in keys:
-                    parsed = to_date(row.get(key))
-                    if parsed is not None:
-                        found.add(parsed)
+                keys = [column.key for column in item.result.columns if column.kind == "date"]
+                for row in item.result.rows:
+                    for key in keys:
+                        parsed = to_date(row.get(key))
+                        if parsed is not None:
+                            found.add(parsed)
         return found
 
     def name_text(self) -> str:
