@@ -65,6 +65,137 @@ class SinaQuote:
     quote_time: str
 
 
+@dataclass(frozen=True)
+class FuturesBar:
+    """外盘期货主连日 K（价格单位同合约报价）。新浪全球期货日 K 的成交量恒为 0，视为没有。"""
+
+    day: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+_FUTURES_DAILY_URL = (
+    "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+    "GlobalFuturesService.getGlobalFuturesDailyKLine"
+)
+
+
+def futures_daily_url(symbol: str) -> str:
+    """外盘期货主连日 K（`GC` COMEX 黄金、`CL` NYMEX 原油）；一次返回全部历史，由调用方截取。"""
+
+    return f"{_FUTURES_DAILY_URL}?symbol={symbol}"
+
+
+def parse_futures_daily(payload: bytes) -> list[FuturesBar]:
+    """`/*…*/ var t=([{"date","open","high","low","close",…},…]);`，按日期升序。"""
+
+    text = payload.decode("utf-8", errors="replace")
+    start, end = text.find("[{"), text.rfind("}]")
+    if start < 0 or end < start:
+        raise _payload_error("期货日K")
+    try:
+        rows = cast(object, json.loads(text[start : end + 2]))
+    except json.JSONDecodeError as exc:
+        raise _payload_error("期货日K") from exc
+    if not isinstance(rows, list):
+        raise _payload_error("期货日K")
+    bars: list[FuturesBar] = []
+    for raw in cast(list[object], rows):
+        if not isinstance(raw, dict):
+            continue
+        row = cast(dict[str, object], raw)
+        day = row.get("date")
+        values = [_number(row.get(key)) for key in ("open", "high", "low", "close")]
+        if not isinstance(day, str) or any(value is None for value in values):
+            continue
+        open_, high, low, close = (float(value) for value in values if value is not None)
+        bars.append(FuturesBar(day, open_, high, low, close))
+    return sorted(bars, key=lambda bar: bar.day)
+
+
+@dataclass(frozen=True)
+class FuturesMinute:
+    """外盘期货 1 分钟分时点；`clock` 为北京时间 HH:MM，`day` 为该点的北京日期。
+
+    `avg` 为上游给的均价；`volume` 在上游全程为 0 时为 None（不当成 0 去画量柱）。
+    """
+
+    clock: str
+    day: str
+    price: float
+    avg: float | None
+    volume: float | None
+
+
+_FUTURES_MINUTE_URL = (
+    "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/"
+    "GlobalFuturesService.getGlobalFuturesMinLine"
+)
+_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CLOCK = re.compile(r"^\d{2}:\d{2}$")
+
+
+def futures_minute_url(symbol: str) -> str:
+    """外盘期货主连 1 分钟分时（`GC` COMEX 黄金、`CL` NYMEX 原油），自当日开盘起，北京时间。"""
+
+    return f"{_FUTURES_MINUTE_URL}?symbol={symbol}"
+
+
+def parse_futures_minute(payload: bytes) -> list[FuturesMinute]:
+    """`/*<script>…</script>*/ var t=({"minLine_1d":[…]});`，保持数组顺序（会跨自然日）。
+
+    第 0 行 10 项：`日期,昨结,交易所,"",HH:MM,价,量,?,均价,完整时间`；其余 6 项：
+    `HH:MM,价,量,?,均价,完整时间`。
+    """
+
+    text = _COMMENT.sub("", payload.decode("utf-8", errors="replace"))
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise _payload_error("期货分时")
+    try:
+        document = cast(object, json.loads(text[start : end + 1]))
+    except json.JSONDecodeError as exc:
+        raise _payload_error("期货分时") from exc
+    rows = (
+        cast(dict[str, object], document).get("minLine_1d") if isinstance(document, dict) else None
+    )
+    if not isinstance(rows, list):
+        raise _payload_error("期货分时")
+    parsed: list[tuple[str, str, float, float | None, float | None]] = []
+    for raw in cast(list[object], rows):
+        if not isinstance(raw, list):
+            continue
+        row = [str(item) for item in cast(list[object], raw)]
+        if len(row) == 10:
+            clock, price, volume, avg, stamp = row[4], row[5], row[6], row[8], row[9]
+        elif len(row) == 6:
+            clock, price, volume, avg, stamp = row[0], row[1], row[2], row[4], row[5]
+        else:
+            continue
+        last = _number(price)
+        if not _CLOCK.match(clock) or last is None or last <= 0 or len(stamp) < 10:
+            continue
+        average, quantity = _number(avg), _number(volume)
+        parsed.append(
+            (
+                clock,
+                stamp[:10],
+                float(last),
+                float(average) if average is not None and average > 0 else None,
+                float(quantity) if quantity is not None and quantity > 0 else None,
+            )
+        )
+    if not parsed:
+        raise _payload_error("期货分时")
+    has_volume = any(item[4] is not None for item in parsed)
+    return [
+        FuturesMinute(clock, day, price, avg, (volume or 0.0) if has_volume else None)
+        for clock, day, price, avg, volume in parsed
+    ]
+
+
 def rank_url(sort: str, count: int) -> str:
     if sort not in ("changepercent", "amount"):
         raise ProviderError(code="VALIDATION_ERROR", message="不支持的排序字段", status_code=422)

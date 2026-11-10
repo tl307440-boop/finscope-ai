@@ -2,10 +2,13 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 
 from app.core.config import get_settings
+from app.providers import jygs as jygs_src
+from app.providers import stock_boards as sb
 from app.providers.corpus_embedding import INDEXED_DIMS, EmbeddingConfig, embed_texts
 from app.providers.errors import ProviderError
 from app.providers.web_search import (
@@ -61,6 +64,10 @@ def probe(
             return _brave(value)
         if key == "BAIDU_QIANFAN_API_KEY":
             return _qianfan(value)
+        if key == "JYGS_SESSION":
+            return _jygs(value)
+        if key == "FUYAO_API_KEY":
+            return _fuyao(value)
     except httpx.TimeoutException:
         return ProbeResult(False, "连接超时，请检查网络或稍后再试")
     except httpx.HTTPError:
@@ -228,3 +235,48 @@ def _llm_model(base_url: str, api_key: str, model: str) -> ProbeResult:
     if response.status_code in {400, 404}:
         return ProbeResult(False, f"「{shown}」这个名称对方不认")
     return ProbeResult(False, f"测试调用没有完成，对方返回 HTTP {response.status_code}")
+
+
+def _fuyao(api_key: str) -> ProbeResult:
+    """拉一次「同花顺行业板块目录」：信封 code 为 0 且有数据才算密钥有效。"""
+
+    response = httpx.get(
+        sb.fuyao_catalog_url("industry"), headers=sb.fuyao_headers(api_key), timeout=TIMEOUT
+    )
+    if response.status_code in {401, 403}:
+        return ProbeResult(False, "扶摇拒绝了这个密钥，请核对是否复制完整")
+    if response.status_code != 200:
+        return ProbeResult(False, f"扶摇返回 HTTP {response.status_code}")
+    try:
+        doc = response.json()
+    except ValueError:
+        return ProbeResult(False, "扶摇返回了无法解析的内容")
+    failure = sb.fuyao_envelope_error(doc)
+    if failure is not None:
+        return ProbeResult(
+            False, f"扶摇拒绝了这次请求（错误码 {failure[0]}），请核对密钥是否有效或额度是否用完"
+        )
+    count = len(sb.parse_fuyao_catalog(doc))
+    if count:
+        return ProbeResult(True, f"扶摇接受了这个密钥，行业板块目录返回 {count} 个板块")
+    return ProbeResult(False, "密钥被接受，但板块目录是空的，请确认账号有该接口的权限")
+
+
+def _jygs(session: str) -> ProbeResult:
+    """用这条会话请求一次「异动解析条数」：能返回数据才算有效。"""
+
+    page = httpx.get(jygs_src.PAGE_URL, headers=jygs_src.PAGE_HEADERS, timeout=TIMEOUT)
+    stamp, token = jygs_src.sign(jygs_src.parse_windows(page.content), datetime.now(UTC))
+    response = httpx.post(
+        jygs_src.api_url("action/count-pc"),
+        json={"date": datetime.now(UTC).date().isoformat()},
+        headers=jygs_src.api_headers(stamp, token, session),
+        timeout=TIMEOUT,
+    )
+    try:
+        jygs_src.check_envelope(response.json())
+    except ProviderError as error:
+        return ProbeResult(False, error.message)
+    except ValueError:
+        return ProbeResult(False, "韭研公社返回了无法解析的内容")
+    return ProbeResult(True, "韭研公社接受了这条登录会话")

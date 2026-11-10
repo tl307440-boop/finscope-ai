@@ -7,7 +7,7 @@
  * 先用 /instruments/search 换到 instrument id，再取 /market/bars/{id} 的日线。
  * 没有入库的日期不会补价格，图上与表里只画真实返回的交易日。
  */
-import { computed, onMounted, ref } from "vue"
+import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { DataLine, Histogram, TrendCharts } from "@element-plus/icons-vue"
 import { VChart } from "../charts"
 import DeltaValue from "../components/ui/DeltaValue.vue"
@@ -19,8 +19,15 @@ import SourceFooter from "../components/ui/SourceFooter.vue"
 import StatCard from "../components/ui/StatCard.vue"
 import StateBlock from "../components/ui/StateBlock.vue"
 import StatusPill from "../components/ui/StatusPill.vue"
-import HotspotsSection from "./parts/market/HotspotsSection.vue"
+import MarketSplitLayout from "../components/market/MarketSplitLayout.vue"
+import ResizableBox from "../components/market/ResizableBox.vue"
+import FuturesPositionPanel from "./parts/market/FuturesPositionPanel.vue"
+import GlobalCoreStrip from "./parts/market/GlobalCoreStrip.vue"
+import LeadingSectorsPopularPanel from "./parts/market/LeadingSectorsPopularPanel.vue"
+import SentimentBreadthPanel from "./parts/market/SentimentBreadthPanel.vue"
+import VolumeMarginPanel from "./parts/market/VolumeMarginPanel.vue"
 import { ApiError, apiUrl, errorFrom, readJson } from "../api/client"
+import { useMarketLinkageStore } from "../stores/marketLinkage"
 import { adjustmentLabel, volumeUnitLabel } from "../api/bars"
 import type { DailyBar } from "../api/bars"
 import { asNumber, asRecord, asString, dataOf, formatAmount, formatMoment, scaleAmount } from "../api/json"
@@ -519,14 +526,24 @@ function rowClass({ row }: { row: { symbol: string } }): string {
   return row.symbol === activeSymbol.value ? "is-active-row" : ""
 }
 
+const linkageStore = useMarketLinkageStore()
+
+// 进来时用户还没点过个股 / 指数：右侧默认显示上证指数，不空着（在 setup 里选，首帧就不会闪一下空状态）；
+// 离开页面时撤掉这个默认选中，免得龙虎榜、连板、热点消息页的右侧凭空出现一个指数。用户自己点过的不会被撤。
+linkageStore.ensureDefaultIndex("000001.SH")
+
 onMounted(() => {
   void load()
+})
+
+onBeforeUnmount(() => {
+  linkageStore.releaseDefaultIndex()
 })
 </script>
 
 <template>
-  <div class="page">
-    <PageHeader title="市场行情" subtitle="A 股主要指数日线 · 缺失交易日不补价格">
+  <MarketSplitLayout>
+    <PageHeader title="市场行情" subtitle="全球指数 · 短线情绪 · 量能两融 · 期指持仓 · 板块人气 · A 股指数日线">
       <template #actions>
         <span class="filter-label">时间范围</span>
         <el-date-picker
@@ -544,6 +561,12 @@ onMounted(() => {
         <el-button :loading="loading" @click="load">刷新</el-button>
       </template>
     </PageHeader>
+
+    <GlobalCoreStrip />
+    <SentimentBreadthPanel />
+    <VolumeMarginPanel />
+    <FuturesPositionPanel />
+    <LeadingSectorsPopularPanel />
 
     <StateBlock v-if="phase === 'error'" state="error" :message="errorMessage" @retry="load" />
 
@@ -582,8 +605,8 @@ onMounted(() => {
         </StatCard>
       </div>
 
-      <div class="grid-2-1 section">
-        <PanelCard title="指数走势" info="日 K 线、均线与成交量；十字线同时对齐价格与成交量">
+      <ResizableBox id="indices.trend" :default-w="66.7" class="section">
+        <PanelCard class="trend-card" title="指数走势" info="日 K 线、均线与成交量；十字线同时对齐价格与成交量">
           <template #icon><el-icon><TrendCharts /></el-icon></template>
           <template #actions>
             <SectionTabs :tabs="indexTabs" :model-value="activeSymbol" @update:model-value="changedSymbol" />
@@ -617,144 +640,154 @@ onMounted(() => {
             <VChart class="chart-main" :option="chartOption" autoresize />
           </template>
         </PanelCard>
+      </ResizableBox>
 
+      <ResizableBox id="indices.side" axes="w" :default-w="33.3" class="section">
         <div class="stack">
-          <PanelCard title="区间表现" :info="`${range[0] ?? '—'} ~ ${range[1] ?? '—'}，按区间首尾收盘计算`">
-            <template #icon><el-icon><DataLine /></el-icon></template>
-            <StateBlock v-if="loading" state="loading" :rows="4" />
-            <StateBlock v-else-if="!activeSummary.days" state="empty" message="区间内暂无日线" />
-            <template v-else>
-              <div class="range-head">
-                <span class="muted">区间涨跌幅</span>
-                <DeltaValue :value="activeSummary.rangePercent" suffix="%" size="lg" />
-              </div>
-              <dl class="kv-grid">
-                <div>
-                  <dt>区间最高</dt>
-                  <dd class="tabular">{{ priceText(activeSummary.high?.value ?? null) }}</dd>
-                  <dd class="sub">{{ activeSummary.high?.date ?? "—" }}</dd>
+          <ResizableBox id="indices.range" axes="h" :min-h="100">
+            <PanelCard title="区间表现" :info="`${range[0] ?? '—'} ~ ${range[1] ?? '—'}，按区间首尾收盘计算`">
+              <template #icon><el-icon><DataLine /></el-icon></template>
+              <StateBlock v-if="loading" state="loading" :rows="4" />
+              <StateBlock v-else-if="!activeSummary.days" state="empty" message="区间内暂无日线" />
+              <template v-else>
+                <div class="range-head">
+                  <span class="muted">区间涨跌幅</span>
+                  <DeltaValue :value="activeSummary.rangePercent" suffix="%" size="lg" />
                 </div>
-                <div>
-                  <dt>区间最低</dt>
-                  <dd class="tabular">{{ priceText(activeSummary.low?.value ?? null) }}</dd>
-                  <dd class="sub">{{ activeSummary.low?.date ?? "—" }}</dd>
-                </div>
-                <div>
-                  <dt>日均成交量</dt>
-                  <dd class="tabular">{{ formatAmount(activeSummary.avgVolume, volumeUnit) }}</dd>
-                </div>
-                <div>
-                  <dt>交易日数</dt>
-                  <dd class="tabular">{{ activeSummary.days }}<small> 日</small></dd>
-                </div>
-              </dl>
-            </template>
-          </PanelCard>
+                <dl class="kv-grid">
+                  <div>
+                    <dt>区间最高</dt>
+                    <dd class="tabular">{{ priceText(activeSummary.high?.value ?? null) }}</dd>
+                    <dd class="sub">{{ activeSummary.high?.date ?? "—" }}</dd>
+                  </div>
+                  <div>
+                    <dt>区间最低</dt>
+                    <dd class="tabular">{{ priceText(activeSummary.low?.value ?? null) }}</dd>
+                    <dd class="sub">{{ activeSummary.low?.date ?? "—" }}</dd>
+                  </div>
+                  <div>
+                    <dt>日均成交量</dt>
+                    <dd class="tabular">{{ formatAmount(activeSummary.avgVolume, volumeUnit) }}</dd>
+                  </div>
+                  <div>
+                    <dt>交易日数</dt>
+                    <dd class="tabular">{{ activeSummary.days }}<small> 日</small></dd>
+                  </div>
+                </dl>
+              </template>
+            </PanelCard>
+          </ResizableBox>
 
-          <PanelCard title="均线位置" info="收盘价相对各条均线的偏离；均线样本不足时显示「—」">
-            <ul class="ma-list">
-              <li v-for="row in maRows" :key="row.key">
-                <span class="ma-label">{{ row.label }}</span>
-                <span class="ma-value tabular">{{ priceText(row.value) }}</span>
-                <span class="ma-gap">
-                  <DeltaValue v-if="row.gap !== null" :value="row.gap" suffix="%" size="sm" />
-                  <span v-else class="muted">样本不足</span>
-                </span>
-              </li>
-            </ul>
-          </PanelCard>
+          <ResizableBox id="indices.ma" axes="h" :min-h="100">
+            <PanelCard title="均线位置" info="收盘价相对各条均线的偏离；均线样本不足时显示「—」">
+              <ul class="ma-list">
+                <li v-for="row in maRows" :key="row.key">
+                  <span class="ma-label">{{ row.label }}</span>
+                  <span class="ma-value tabular">{{ priceText(row.value) }}</span>
+                  <span class="ma-gap">
+                    <DeltaValue v-if="row.gap !== null" :value="row.gap" suffix="%" size="sm" />
+                    <span v-else class="muted">样本不足</span>
+                  </span>
+                </li>
+              </ul>
+            </PanelCard>
+          </ResizableBox>
 
-          <PanelCard title="数据口径">
-            <ul class="plain-list">
-              <li>
-                <span>复权方式</span>
-                <strong>{{ adjustmentLabel(active?.adjustment ?? "none") }}</strong>
-              </li>
-              <li>
-                <span>区间完整性</span>
-                <StatusPill
-                  :text="active?.truncated ? '条数超限，仅显示部分' : '完整'"
-                  :tone="active?.truncated ? 'warn' : 'ok'"
-                />
-              </li>
-              <li>
-                <span>数据类型</span>
-                <StatusPill :text="dataModeText(meta.dataMode)" :tone="demoMode ? 'warn' : 'ok'" />
-              </li>
-            </ul>
-          </PanelCard>
+          <ResizableBox id="indices.basis" axes="h" :min-h="100">
+            <PanelCard title="数据口径">
+              <ul class="plain-list">
+                <li>
+                  <span>复权方式</span>
+                  <strong>{{ adjustmentLabel(active?.adjustment ?? "none") }}</strong>
+                </li>
+                <li>
+                  <span>区间完整性</span>
+                  <StatusPill
+                    :text="active?.truncated ? '条数超限，仅显示部分' : '完整'"
+                    :tone="active?.truncated ? 'warn' : 'ok'"
+                  />
+                </li>
+                <li>
+                  <span>数据类型</span>
+                  <StatusPill :text="dataModeText(meta.dataMode)" :tone="demoMode ? 'warn' : 'ok'" />
+                </li>
+              </ul>
+            </PanelCard>
+          </ResizableBox>
         </div>
-      </div>
+      </ResizableBox>
 
-      <PanelCard title="主要指数概览" info="点击行切换上方走势图" class="section" flush>
-        <el-table
-          :data="INDEXES"
-          size="small"
-          :row-class-name="rowClass"
-          class="clickable-table"
-          @row-click="pickRow"
-        >
-          <el-table-column label="指数" min-width="150">
-            <template #default="{ row }">
-              <span class="cell-name">{{ seriesMap[row.symbol]?.name ?? row.fallbackName }}</span>
-              <span class="cell-code tabular">{{ row.symbol }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="最新交易日" width="120">
-            <template #default="{ row }">
-              <span class="tabular">{{ summaries[row.symbol]?.tradeDate || "—" }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="收盘" width="120" align="right">
-            <template #default="{ row }">
-              <span class="tabular">{{ priceText(summaries[row.symbol]?.close ?? null) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="日涨跌幅" width="110" align="right">
-            <template #default="{ row }">
-              <DeltaValue :value="summaries[row.symbol]?.changePercent ?? null" suffix="%" />
-            </template>
-          </el-table-column>
-          <el-table-column label="区间涨跌幅" width="120" align="right">
-            <template #default="{ row }">
-              <DeltaValue :value="summaries[row.symbol]?.rangePercent ?? null" suffix="%" />
-            </template>
-          </el-table-column>
-          <el-table-column label="区间最高" width="120" align="right">
-            <template #default="{ row }">
-              <span class="tabular">{{ priceText(summaries[row.symbol]?.high?.value ?? null) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="区间最低" width="120" align="right">
-            <template #default="{ row }">
-              <span class="tabular">{{ priceText(summaries[row.symbol]?.low?.value ?? null) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="区间走势" width="140" align="center">
-            <template #default="{ row }">
-              <MiniSpark
-                v-if="(summaries[row.symbol]?.spark.length ?? 0) > 1"
-                class="table-spark"
-                :points="summaries[row.symbol]?.spark ?? []"
-                :tone="sparkTone(row.symbol)"
-                :width="110"
-                :height="26"
-              />
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" min-width="110">
-            <template #default="{ row }">
-              <StatusPill
-                :text="seriesMap[row.symbol]?.problem ? '暂无数据' : '已入库'"
-                :tone="seriesMap[row.symbol]?.problem ? 'warn' : 'ok'"
-                :title="seriesMap[row.symbol]?.problem ?? ''"
-                dot
-              />
-            </template>
-          </el-table-column>
-        </el-table>
-      </PanelCard>
+      <ResizableBox id="indices.overview" class="section">
+        <PanelCard title="主要指数概览" info="点击行切换上方走势图" flush>
+          <el-table
+            :data="INDEXES"
+            size="small"
+            :row-class-name="rowClass"
+            class="clickable-table"
+            @row-click="pickRow"
+          >
+            <el-table-column label="指数" min-width="150">
+              <template #default="{ row }">
+                <span class="cell-name">{{ seriesMap[row.symbol]?.name ?? row.fallbackName }}</span>
+                <span class="cell-code tabular">{{ row.symbol }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="最新交易日" width="120">
+              <template #default="{ row }">
+                <span class="tabular">{{ summaries[row.symbol]?.tradeDate || "—" }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="收盘" width="120" align="right">
+              <template #default="{ row }">
+                <span class="tabular">{{ priceText(summaries[row.symbol]?.close ?? null) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="日涨跌幅" width="110" align="right">
+              <template #default="{ row }">
+                <DeltaValue :value="summaries[row.symbol]?.changePercent ?? null" suffix="%" />
+              </template>
+            </el-table-column>
+            <el-table-column label="区间涨跌幅" width="120" align="right">
+              <template #default="{ row }">
+                <DeltaValue :value="summaries[row.symbol]?.rangePercent ?? null" suffix="%" />
+              </template>
+            </el-table-column>
+            <el-table-column label="区间最高" width="120" align="right">
+              <template #default="{ row }">
+                <span class="tabular">{{ priceText(summaries[row.symbol]?.high?.value ?? null) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="区间最低" width="120" align="right">
+              <template #default="{ row }">
+                <span class="tabular">{{ priceText(summaries[row.symbol]?.low?.value ?? null) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="区间走势" width="140" align="center">
+              <template #default="{ row }">
+                <MiniSpark
+                  v-if="(summaries[row.symbol]?.spark.length ?? 0) > 1"
+                  class="table-spark"
+                  :points="summaries[row.symbol]?.spark ?? []"
+                  :tone="sparkTone(row.symbol)"
+                  :width="110"
+                  :height="26"
+                />
+                <span v-else class="muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="110">
+              <template #default="{ row }">
+                <StatusPill
+                  :text="seriesMap[row.symbol]?.problem ? '暂无数据' : '已入库'"
+                  :tone="seriesMap[row.symbol]?.problem ? 'warn' : 'ok'"
+                  :title="seriesMap[row.symbol]?.problem ?? ''"
+                  dot
+                />
+              </template>
+            </el-table-column>
+          </el-table>
+        </PanelCard>
+      </ResizableBox>
 
       <SourceFooter
         :as-of="asOfText"
@@ -762,10 +795,8 @@ onMounted(() => {
         :stale="meta.stale"
         :note="demoMode ? `当前为${dataModeText(meta.dataMode)}` : '缺失交易日不补价格，页面不承诺实时'"
       />
-
-      <HotspotsSection />
     </template>
-  </div>
+  </MarketSplitLayout>
 </template>
 
 <style scoped>
@@ -798,6 +829,24 @@ onMounted(() => {
   width: 100%;
   height: 480px;
   margin-top: 10px;
+}
+
+/* 用户拖过高度：指数走势卡片头部固定，图表吃掉多出来的高度 */
+.mk-box.is-h > .trend-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mk-box.is-h > .trend-card > :deep(.head),
+.mk-box.is-h > .trend-card > .ohlc-row {
+  flex: none;
+}
+
+.mk-box.is-h > .trend-card > .chart-main {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 240px;
 }
 
 .ohlc-row {

@@ -121,6 +121,50 @@ def test_model_name_probe_reports_an_unknown_model(monkeypatch) -> None:
     assert result.message == "「no-such-model」这个名称对方不认"
 
 
+class _FuyaoResponse(_Response):
+    def __init__(self, status_code: int, doc: object) -> None:
+        super().__init__(status_code, json.dumps(doc).encode())
+        self._doc = doc
+
+    def json(self) -> object:
+        return self._doc
+
+
+def test_fuyao_probe_accepts_a_key_and_sends_it_only_as_a_header(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def get(url: str, *, headers: dict[str, str], timeout: object) -> _FuyaoResponse:
+        seen["url"] = url
+        seen["key"] = headers.get("X-api-key")
+        return _FuyaoResponse(
+            200, {"code": 0, "data": {"item": [{"thscode": "881001.TI", "name": "种植业"}]}}
+        )
+
+    monkeypatch.setattr("app.services.integration_probe.httpx.get", get)
+    result = probe("FUYAO_API_KEY", "sk-fuyao-test-1234", sec_user_agent="", llm_base_url="")
+    assert result.ok is True
+    assert seen["key"] == "sk-fuyao-test-1234"
+    assert "sk-fuyao-test-1234" not in str(seen["url"])
+    assert "sk-fuyao-test-1234" not in result.message
+
+
+def test_fuyao_probe_reports_a_rejected_key_without_echoing_it(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.integration_probe.httpx.get",
+        lambda *args, **kwargs: _FuyaoResponse(200, {"code": 2003, "message": "revoked"}),
+    )
+    result = probe("FUYAO_API_KEY", "sk-fuyao-bad-5678", sec_user_agent="", llm_base_url="")
+    assert result.ok is False
+    assert "2003" in result.message
+    assert "sk-fuyao-bad-5678" not in result.message
+
+    monkeypatch.setattr(
+        "app.services.integration_probe.httpx.get", lambda *args, **kwargs: _FuyaoResponse(403, {})
+    )
+    denied = probe("FUYAO_API_KEY", "sk-fuyao-bad-5678", sec_user_agent="", llm_base_url="")
+    assert denied.ok is False and "sk-fuyao-bad-5678" not in denied.message
+
+
 def test_bool_switch_still_has_no_connection_test() -> None:
     result = probe("ASSISTANT_WEB_SEARCH_ENABLED", "true", sec_user_agent="", llm_base_url="")
     assert result.ok is False

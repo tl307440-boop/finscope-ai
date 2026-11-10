@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     tiingo_api_key: str = ""
     sec_user_agent: str = "FinScopeAI research-admin@example.com"
     tushare_token: str = ""
+    # 韭研公社扫码登录后 web-api.jiuyangongshe.com 域的 SESSION Cookie 值（约两周过期）。
+    # 个人登录态：只放本机 .env，不入库、不进日志；留空则不接入异动解析。
+    jygs_session: str = ""
+    # 会话到期时间（ISO，UTC）：界面扫码登录时自动写入，用来提前提醒；手填 / 环境变量时留空。
+    jygs_session_expires: str = ""
+    # 同花顺「扶摇」金融数据 API Key（fuyao.aicubes.cn）。和其他数据源密钥一样，在「数据管理」
+    # 的「密钥与数据源配置」里填（加密存库，优先于这里）；环境变量只是初始默认，不放真实 Key。
+    # 个股所属板块的最后一级兜底（东财 F10 与腾讯都取不到时才用）；留空则自动跳过。
+    fuyao_api_key: str = ""
+    # TickFlow / 通达信的 Key：同样在界面里填。目前还没有取数代码使用它们，先把配置位占好。
+    tickflow_api_key: str = ""
+    tdx_api_key: str = ""
     llm_api_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
