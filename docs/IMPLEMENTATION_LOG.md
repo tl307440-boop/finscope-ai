@@ -2958,12 +2958,14 @@ TickFlow 探测过：只有申万行业 universe，且成分数明显不全（�
   - 新增 `CorpusSaveTool`（`corpus_save`）：将用户确认的概念词条、交易术语或投研笔记写入 `CorpusRepository`（`source_id="user_upload"`，`kind="user"`，`doc_type="note"`，`owner_user_id=ctx.user_id`），入库后立即可由 `corpus_search` 检索并带 `[n]` 引用；加入 `NEVER_CACHED` 与 `STEP_LABELS`。
   - `filing_fetch`、`fetch_url`、`web_search` 优先读取 `effective_settings(ctx.engine)`，在未单独配置 `SEC_USER_AGENT` 时回退 `admin_email` 作为合规联系邮箱。
   - `fetch_url` 的 `SITES` 白名单扩充 `cls.cn`、`wallstreetcn.com`、`sina.com.cn`、`stockstar.com`、`chnfund.com`、`cfi.cn`、`qq.com`、`163.com`、`ifeng.com`。
-- **引用与数字核对（`grounding.py`、`evidence.py`、`agent.py`、`prompts/assistant_v4.txt`）**：
-  - `_passage_facts` 同时扫描 `passage.title` 与 `passage.content`，并将 `passage.published` 计入该引用来源的合法日期；句子未写 `[n]` 但写明 `[E1]` / `（E1）` 时自动关联该证据下的片段来源。
-  - `EvidenceBook.dates()` 与 `name_text()` 纳入非假设、非 `quote_table` 工具的 `as_of` 与标题；无数字列的事实表（如 `hotspot_events`）放行 `1..len(rows)` 的条数与子集计数；日期正则新增 `MM-DD`（如 `10-24`）月日匹配。
-  - `Grounder` 支持 `extra_text` 与 `extra_dates`，`Agent._publish` 传入用户原问题与 `today_cn`，避免复述用户问题里的阈值（如 `10%`）或今日日期时被误拦；`Agent._push` 让分号 `；` 切开的前半句继承同一整句句末的 `[n]` 引用。
+- **引用与数字核对与 Planner 模式 DSML 防护（`grounding.py`、`evidence.py`、`agent.py`、`llm_tools.py`、`providers/web_search.py`、`prompts/assistant_v4.txt`）**：
+  - `_passage_facts` 同时扫描 `passage.title` 与 `passage.content`（含「亏损 / 净亏 / 下降 / 下跌」前缀下的负号等价核对），并将 `passage.published` 计入该引用来源的合法日期；句子未写 `[n]` 但写明 `[E1]` / `（E1）` / `E1` 时自动关联该证据下的片段来源；`1-4季报 / 前1-4季度` 报告期标签不作为裸数字拦截。
+  - `EvidenceBook.dates()` 与 `name_text()` 纳入非假设、非 `quote_table` 工具的 `as_of`、标题与行内日期列（含 `web_search` 各行 `published`）；无数字列的事实表及 `excerpt` 检索表放行 `1..len(rows)` 的条数与子集计数；日期正则新增 `MM-DD`（如 `10-24`）月日匹配。
+  - `Grounder` 支持 `extra_text` 与 `extra_dates`，`Agent._publish` 传入用户原问题与 `today_cn`，避免复述用户问题里的阈值（如 `10%`）或今日日期时被误拦；`Agent._push` 让分号 `；` 切开的前半句或句号后紧跟的 `[n]` 继承引用，且总括结论句可共享同回合正文已标注的 `[n]` / `[En]` 来源。
+  - `Agent._planner` 写作步改为走 `_final(turn)`，且 `llm_tools._build` 在 `allow_tools=False`（写作步禁用工具）时若模型在正文后夹带 DeepSeek DSML 调用标记，保留已写出的中文正文并丢弃尾部 DSML 标记（若仅有 DSML 无正文则触发 `NO_MORE_TOOLS` 追问），修复线上 `deepseek-flash` 在 `corpus_save` 成功后偶发返回空正文的问题；Bocha 联网搜索开启 `summary=True` 以获取更完整的财报摘要。
 
 ### 验证
 - 后端按 TDD 编写并更新单元测试：`test_market_sentiment.py`、`test_ashare_panorama.py`、`test_assistant_tools_sentiment.py`、`test_filing_fetch.py`、`test_assistant_tools_fetch.py`、`test_assistant_tools_corpus.py`、`test_assistant_grounding.py`、`test_assistant_agent.py`。
 - `ruff check .`、`ruff format --check .`、`mypy app`（316 个源文件）全部通过；`pytest tests/unit` 全量通过。
+- 线上端到端验证（`http://121.199.8.235`）：三大核心场景（襄阳轴承三季报联网搜索与业绩数据核对、短线情绪周期「节点」概念解释并写入语料库、今日与上周五回头波 ≥10% 股票统计）均返回 `grounding: "full"` 且正文、证据表与引用完整。
 

@@ -200,7 +200,7 @@ class Agent:
             failure = exc.kind
         if cancelled():
             return self._result(turn, "cancelled", "", "none", failure)
-        if narrative is None:
+        if narrative is None or not narrative.strip():
             return self._evidence_only(turn, failure)
         if turn.fixed_text:
             self._say(turn, narrative)
@@ -382,7 +382,7 @@ class Agent:
         if self._stopped(turn):
             return None
         turn.messages.append({"role": "system", "content": self._evidence_text(turn)})
-        return self._call(turn, None).content
+        return self._final(turn)
 
     def _plan_prompt(self, turn: _Turn) -> str:
         tools = [
@@ -406,7 +406,10 @@ class Agent:
     @staticmethod
     def _evidence_text(turn: _Turn) -> str:
         body = "\n".join(render(item) for item in turn.ctx.book) or "（没有查到任何资料）"
-        return "已查到的资料如下，回答只能依据它们：\n" + body
+        return (
+            "已查到的资料如下，回答只能依据它们（工具调用已结束，现在请直接用中文写最终回答，"
+            "不要输出任何工具调用或 DSML 标签）：\n" + body
+        )
 
     # ------------------------------------------------------------------ 工具执行
     def _execute(self, turn: _Turn, name: str, arguments: str) -> str:
@@ -486,12 +489,15 @@ class Agent:
 
         shown = {item.strip() for item in pushed} if skip_repeats else set()
         sentences = split_sentences(text)
+        turn_refs = _turn_citations(sentences, pushed)
         for index, sentence in enumerate(sentences):
             if sentence.strip() and sentence.strip() in shown:
                 continue
             trailing = _trailing_citations(sentences, index)
             checked = sentence + trailing if trailing else sentence
             result = grounder.check(checked)
+            if not result.ok and not CITATION.search(checked) and turn_refs:
+                result = grounder.check(checked + turn_refs)
             if not result.ok:
                 return result
             self._cite(turn, checked)
@@ -747,9 +753,18 @@ def _notes_for(call: Mapping[str, Any]) -> list[str]:
     return []
 
 
-def _trailing_citations(sentences: Sequence[str], index: int) -> str:
-    """分号切开的前半句（以 `；` 或 `;` 结尾）继承同一整句句末的 `[n]` 引用。"""
+_EVIDENCE_MARK = re.compile(
+    r"\[E(\d{1,3})\]|[（(]E(\d{1,3})[)）]|(?<![A-Za-z0-9])E(\d{1,3})(?![A-Za-z0-9])"
+)
 
+
+def _trailing_citations(sentences: Sequence[str], index: int) -> str:
+    """分号切开的前半句继承同一整句句末的 `[n]` 引用；句号后紧跟 `[n]` 也归入本句。"""
+
+    if index + 1 < len(sentences):
+        next_part = sentences[index + 1].lstrip(" \t\r")
+        if CITATION.match(next_part):
+            return "".join(f"[{m}]" for m in CITATION.findall(next_part))
     current = sentences[index].rstrip(" \t\r")
     if not current.endswith(("；", ";")):
         return ""
@@ -760,3 +775,14 @@ def _trailing_citations(sentences: Sequence[str], index: int) -> str:
         if not stripped.endswith(("；", ";")):
             break
     return "".join(found)
+
+
+def _turn_citations(sentences: Sequence[str], pushed: Sequence[str] = ()) -> str:
+    """本轮回答里已标出的 `[n]` 与 `[En]` 引用，供同篇回答中未单独重复标引的概括句或分句核对。"""
+
+    combined = "".join([*pushed, *sentences])
+    cites = [f"[{m}]" for m in dict.fromkeys(CITATION.findall(combined))]
+    evids = [
+        f"[E{m.group(1) or m.group(2) or m.group(3)}]" for m in _EVIDENCE_MARK.finditer(combined)
+    ]
+    return "".join([*cites, *dict.fromkeys(evids)])

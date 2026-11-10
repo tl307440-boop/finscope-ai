@@ -130,7 +130,13 @@ def bocha_hits(payload: bytes) -> tuple[SearchHit, ...]:
     data = _object(_loads(payload).get("data"))
     pages = _object(data.get("webPages"))
     return tuple(
-        _hit(item, "博查", item.get("name"), item.get("snippet"), item.get("datePublished"))
+        _hit(
+            item,
+            "博查",
+            item.get("name"),
+            item.get("summary") or item.get("snippet"),
+            item.get("datePublished"),
+        )
         for item in _list(pages.get("value"))
     )
 
@@ -179,7 +185,7 @@ def brave_request(query: str, freshness: str | None = None) -> tuple[str, dict[s
 
 
 def bocha_body(query: str, freshness: str | None = None) -> bytes:
-    body: dict[str, Any] = {"query": query, "count": 8, "summary": False}
+    body: dict[str, Any] = {"query": query, "count": 8, "summary": True}
     if freshness:
         body["freshness"] = freshness
     return json.dumps(body, ensure_ascii=False).encode()
@@ -191,7 +197,7 @@ def _hit(item: Any, provider: str, title: Any, snippet: Any, when: Any) -> Searc
     return SearchHit(
         title=_str(title)[:180],
         url=_str(url),
-        snippet=_str(snippet)[:500],
+        snippet=_str(snippet)[:1200],
         published=_day(when),
         provider=provider,
     )

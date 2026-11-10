@@ -28,9 +28,13 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from app.services.assistant.evidence import EvidenceBook
 
 CITATION = re.compile(r"\[(\d+)\]")
-_EVIDENCE_REF = re.compile(r"\[E(\d{1,3})\]|[（(]E(\d{1,3})[)）]")
+_EVIDENCE_REF = re.compile(
+    r"\[E(\d{1,3})\]|[（(]E(\d{1,3})[)）]|(?<![A-Za-z0-9])E(\d{1,3})(?![A-Za-z0-9])"
+)
 _ORDINAL = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?(?:\d+[.、](?!\d)|[（(]\d+[)）]|\d+[)）])")
 _NTH = re.compile(r"第\s*\d+")
+_QUARTER = re.compile(r"(?:前\s*)?[1-4]\s*季(?:度|报)")
+_LOSS_OR_DROP = re.compile(r"亏损|净亏|亏|下降|下跌|下滑|减少|缩水|跌")
 _NUMBER = re.compile(
     r"(?<![A-Za-z0-9_.])([-−])?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(\s*(?:%|个百分点|bps|bp|BP))?"
@@ -163,11 +167,11 @@ class Grounder:
         cited = {int(m) for m in CITATION.findall(text)}
         bad = tuple(sorted(cited - self._sources))
         active = cited & self._sources
-        if not cited:
-            for ref in _EVIDENCE_REF.finditer(text):
-                item = self._book.get(f"E{ref.group(1) or ref.group(2)}")
-                if item is not None:
-                    active |= set(item.sources) & self._sources
+        for ref in _EVIDENCE_REF.finditer(text):
+            eid = ref.group(1) or ref.group(2) or ref.group(3)
+            item = self._book.get(f"E{eid}")
+            if item is not None:
+                active |= set(item.sources) & self._sources
         quoted: list[Decimal] = []
         dates = self._dates
         for number in sorted(active):
@@ -178,6 +182,7 @@ class Grounder:
         body = CITATION.sub(lambda m: " " * len(m.group()), body)
         body = _ORDINAL.sub(lambda m: " " * len(m.group()), body)
         body = _NTH.sub(lambda m: " " * len(m.group()), body)
+        body = _QUARTER.sub(lambda m: " " * len(m.group()), body)
         unmatched: list[str] = []
         body = _strip_dates(body, dates, unmatched)
         hypothetical = _HYPOTHETICAL.search(body) is not None
@@ -305,6 +310,9 @@ def _text_numbers(text: str) -> list[Decimal]:
         except InvalidOperation:
             continue
         found.append(-value if match.group(1) else value)
+        prefix = text[max(0, match.start() - 15) : match.start()]
+        if not match.group(1) and _LOSS_OR_DROP.search(prefix) is not None:
+            found.append(-value)
     return found
 
 

@@ -734,3 +734,43 @@ def test_semicolon_clause_inherits_trailing_citation_and_question_numbers_pass()
     )
     assert (result.grounding, result.text) == ("full", text)
     assert [item["n"] for item in result.sources] == [1, 2]
+
+
+def test_headline_sentence_shares_turn_citations_when_body_cites_source() -> None:
+    text = "**核心结论：三季度良率已经提升到 92%。**\n- 调研纪要显示三季度良率提升到 92%[1]。"
+    result, _events, _ = run(
+        FakeModel(call(CORPUS), say(text)),
+        extra_tools=(FakeCorpus(),),
+    )
+    assert (result.grounding, result.text) == ("full", text)
+    assert [item["n"] for item in result.sources] == [1]
+
+
+def test_planner_mode_nudges_when_write_step_emits_dsml_tool_call() -> None:
+    from app.services.assistant.llm_tools import ToolCall
+
+    plan = '{"calls":[{"tool":"macro_series","args":{"code":"CPIAUCSL"}}]}'
+    dsml = ModelReply(content="", tool_calls=(ToolCall("dsml_0", "calc", "{}"),))
+    model = FakeModel(say(plan), dsml, say("最新是 323.0。"))
+    result, _events, series = run(model, tools_supported=False)
+    assert series.runs == 1
+    assert (result.status, result.grounding, result.text) == ("completed", "full", "最新是 323.0。")
+
+
+def test_build_preserves_prose_when_tools_disallowed_and_dsml_appended() -> None:
+    from app.services.assistant.llm_tools import _build
+
+    raw = (
+        "节点是指短线情绪周期中的关键转折日。\n"
+        '<｜DSML｜function_calls><｜DSML｜invoke name="corpus_save">'
+        '<｜DSML｜parameter name="title" string="true">节点</｜DSML｜parameter>'
+        "</｜DSML｜invoke></｜DSML｜function_calls>"
+    )
+    reply_no_tools = _build({}, raw, {}, allow_tools=False)
+    assert reply_no_tools.content == "节点是指短线情绪周期中的关键转折日。"
+    assert reply_no_tools.tool_calls == ()
+
+    reply_with_tools = _build({}, raw, {}, allow_tools=True)
+    assert reply_with_tools.content == ""
+    assert len(reply_with_tools.tool_calls) == 1
+    assert reply_with_tools.tool_calls[0].name == "corpus_save"
