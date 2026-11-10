@@ -217,7 +217,7 @@ class MarketSentimentService:
         return await self.cache.get(
             f"pool:{kind}:{day.isoformat()}",
             ttl,
-            lambda: self._fetch(es.pool_url(kind, day), es.parse_pool),
+            lambda: self._fetch(es.pool_url(kind, day), lambda raw: es.parse_pool(raw, day)),
         )
 
     async def _optional_pool(

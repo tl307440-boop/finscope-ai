@@ -68,6 +68,7 @@ STEP_LABELS = {
     "watchlist": "读我的自选",
     "calc": "计算",
     "corpus_search": "检索资料",
+    "corpus_save": "保存到语料库",
     "filing_fetch": "读取公告",
     "web_search": "联网检索",
     "news_flash": "查实时快讯",
@@ -446,7 +447,11 @@ class Agent:
 
     # ------------------------------------------------------------------ 按句校验与推送
     def _publish(self, turn: _Turn, narrative: str) -> tuple[list[str], str]:
-        grounder = Grounder(turn.ctx.book)
+        grounder = Grounder(
+            turn.ctx.book,
+            extra_text=turn.request.question,
+            extra_dates=(turn.ctx.today_cn,),
+        )
         pushed: list[str] = []
         failed = self._push(turn, grounder, narrative, pushed)
         if failed is None:
@@ -480,13 +485,16 @@ class Agent:
         """
 
         shown = {item.strip() for item in pushed} if skip_repeats else set()
-        for sentence in split_sentences(text):
+        sentences = split_sentences(text)
+        for index, sentence in enumerate(sentences):
             if sentence.strip() and sentence.strip() in shown:
                 continue
-            result = grounder.check(sentence)
+            trailing = _trailing_citations(sentences, index)
+            checked = sentence + trailing if trailing else sentence
+            result = grounder.check(checked)
             if not result.ok:
                 return result
-            self._cite(turn, sentence)
+            self._cite(turn, checked)
             turn.emit({"type": "delta", "delta": sentence})
             pushed.append(sentence)
         return None
@@ -737,3 +745,18 @@ def _notes_for(call: Mapping[str, Any]) -> list[str]:
             first = found[0]
             return [f"证券 {str(first.get('name'))[:40]}（{str(first.get('symbol'))[:20]}）"]
     return []
+
+
+def _trailing_citations(sentences: Sequence[str], index: int) -> str:
+    """分号切开的前半句（以 `；` 或 `;` 结尾）继承同一整句句末的 `[n]` 引用。"""
+
+    current = sentences[index].rstrip(" \t\r")
+    if not current.endswith(("；", ";")):
+        return ""
+    found: list[str] = []
+    for later in sentences[index + 1 :]:
+        found.extend(f"[{m}]" for m in CITATION.findall(later))
+        stripped = later.rstrip(" \t\r")
+        if not stripped.endswith(("；", ";")):
+            break
+    return "".join(found)

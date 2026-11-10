@@ -397,3 +397,80 @@ def test_upstream_failures_become_unavailable_results() -> None:
 def test_bad_arguments_are_rejected() -> None:
     assert _run('{"view": "rumors"}').status == "unavailable"
     assert _run('{"view": "surveys", "days": 400}').status == "unavailable"
+
+
+def test_pullback_view_reports_current_session_and_historical_broken_pool_when_mismatched() -> None:
+    from app.services import ashare_calc as calc
+    from app.services.ashare_panorama import IntradayPullback
+
+    swing = calc.Swing(
+        code="002045",
+        name="国光电器",
+        price=9.86,
+        change_pct=-0.40,
+        peak_pct=10.0,
+        trough_pct=-1.0,
+        sector="消费电子",
+    )
+
+    async def fake_pullbacks(threshold: float) -> IntradayPullback:
+        return IntradayPullback(trade_date=DAY, hits=(swing,))
+
+    # 1) 当日查询：直接返回回头波家数与最大回落幅度
+    tool_today = sentiment_tools.MarketSentimentTool(
+        cast(MarketSentimentService, FakeSentiment(limit_up=_limit_up())),
+        cast(IndustryMarketService, FakeMarket(_hot())),
+        pullbacks=fake_pullbacks,
+    )
+    res_today = (
+        ToolRegistry([tool_today])
+        .execute("market_sentiment", '{"view": "pullback", "threshold": 10}', context())
+        .result
+    )
+    assert res_today.status == "ok" and res_today.as_of == DAY
+    rows_today = _items(res_today)
+    assert rows_today["回头波家数"]["value"] == "1"
+    assert "国光电器" in str(rows_today["回头波家数"]["note"])
+    assert rows_today["最大回落幅度"]["value"] == "10.4"
+
+    # 2) 历史交易日查询（如 2026-10-16）：标明全市场回头波无历史快照，同时给出该日炸板池回落达标家数
+    past_day = date(2026, 10, 16)
+    broken_list = [
+        _stock(
+            "002529",
+            "海源复材",
+            1,
+            price=Decimal("9.72"),
+            limit_price=Decimal("10.89"),
+            change_pct=Decimal("-1.82"),
+        ),
+        _stock(
+            "603334",
+            "丰倍生物",
+            1,
+            price=Decimal("10.45"),
+            limit_price=Decimal("11.00"),
+            change_pct=Decimal("4.50"),
+        ),
+    ]
+    past_pool = _limit_up(trade_date=past_day, broken=2, broken_stocks=broken_list)
+    tool_past = sentiment_tools.MarketSentimentTool(
+        cast(MarketSentimentService, FakeSentiment(limit_up=past_pool)),
+        cast(IndustryMarketService, FakeMarket(_hot())),
+        pullbacks=fake_pullbacks,
+    )
+    res_past = (
+        ToolRegistry([tool_past])
+        .execute(
+            "market_sentiment",
+            '{"view": "pullback", "threshold": 10, "as_of": "2026-10-16"}',
+            context(),
+        )
+        .result
+    )
+    assert res_past.status == "stale"
+    rows_past = _items(res_past)
+    assert rows_past["请求日回头波家数"]["value"] is None
+    assert rows_past["请求日炸板池回落达标家数"]["value"] == "1"
+    assert "海源复材" in str(rows_past["请求日炸板池回落达标家数"]["note"])
+    assert rows_past["当前交易日回头波家数"]["value"] == "1"

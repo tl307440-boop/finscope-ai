@@ -23,7 +23,7 @@ from app.services.assistant.tools.backtest import RunBacktestTool
 from app.services.assistant.tools.base import Tool, ToolContext, compact_schema
 from app.services.assistant.tools.board_detail import BoardDetailTool
 from app.services.assistant.tools.boards import IndustryBoardTool
-from app.services.assistant.tools.corpus import CorpusSearchTool
+from app.services.assistant.tools.corpus import CorpusSaveTool, CorpusSearchTool
 from app.services.assistant.tools.events import HotspotEventsTool
 from app.services.assistant.tools.factors import FactorRankTool
 from app.services.assistant.tools.fetch import FetchUrlTool
@@ -182,7 +182,7 @@ def default_registry(
             min_similarity=corpus_min_similarity,
             embed_query=corpus_embed_query,
         )
-        tools.extend((corpus, FilingFetchTool(), QuoteTableTool()))
+        tools.extend((corpus, CorpusSaveTool(), FilingFetchTool(), QuoteTableTool()))
     return ToolRegistry(tools, cache)
 
 

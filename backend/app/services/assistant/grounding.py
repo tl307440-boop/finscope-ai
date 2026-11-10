@@ -28,7 +28,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from app.services.assistant.evidence import EvidenceBook
 
 CITATION = re.compile(r"\[(\d+)\]")
-_EVIDENCE_REF = re.compile(r"\[E\d+\]")
+_EVIDENCE_REF = re.compile(r"\[E(\d{1,3})\]|[（(]E(\d{1,3})[)）]")
 _ORDINAL = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?(?:\d+[.、](?!\d)|[（(]\d+[)）]|\d+[)）])")
 _NTH = re.compile(r"第\s*\d+")
 _NUMBER = re.compile(
@@ -52,6 +52,7 @@ _DATE_FULL_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年\s*(\d{{1,2}}){_S}月\s*(\d
 _DATE_YM_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年\s*(\d{{1,2}}){_S}月(?!{_S}\d{{1,2}}{_S}日)")
 _DATE_YM_DASH = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})(?![\d-])")
 _DATE_MD_CN = re.compile(rf"(?<!\d)(\d{{1,2}}){_S}月\s*(\d{{1,2}}){_S}日")
+_DATE_MD_DASH = re.compile(r"(?<![\d.-])(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?![\d.-])")
 _DATE_Y_CN = re.compile(rf"(?<!\d)(\d{{4}}){_S}年")
 _DATE_M_CN = re.compile(rf"(?<!\d)(\d{{1,2}}){_S}月(?!\d)")
 _DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -60,6 +61,7 @@ _DATE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (_DATE_YM_CN, "ym"),
     (_DATE_YM_DASH, "ym"),
     (_DATE_MD_CN, "md"),
+    (_DATE_MD_DASH, "md"),
     (_DATE_Y_CN, "y"),
     (_DATE_M_CN, "m"),
 )
@@ -130,13 +132,24 @@ class GroundingResult:
 class Grounder:
     """对一个回合的证据反复校验；证据登记完再创建，校验期间证据不再变化。"""
 
-    def __init__(self, book: EvidenceBook, sources: frozenset[int] | None = None) -> None:
+    def __init__(
+        self,
+        book: EvidenceBook,
+        sources: frozenset[int] | None = None,
+        *,
+        extra_text: str = "",
+        extra_dates: Iterable[date] = (),
+    ) -> None:
         self._book = book
-        self._numbers = book.numbers()
+        self._dates = _Dates.of([*book.dates(), *extra_dates])
+        extra_nums: list[Decimal] = []
+        if extra_text:
+            rest = _scan_dates(extra_text, self._dates)
+            extra_nums = _text_numbers(rest)
+        self._numbers = [*book.numbers(), *extra_nums]
         self._abs_numbers = [abs(item) for item in self._numbers]
         self._assumed = book.hypothetical_numbers()
         self._abs_assumed = [abs(item) for item in self._assumed]
-        self._dates = _Dates.of(book.dates())
         self._cited: dict[int, tuple[list[Decimal], _Dates]] = {}
         # 序列名按去掉空格后的形式比较：列名写「5 年分位」，模型写「5年分位」也是同一个名字。
         self._names = _BLANKS_RE.sub("", book.name_text())
@@ -149,9 +162,15 @@ class Grounder:
     def check(self, text: str) -> GroundingResult:
         cited = {int(m) for m in CITATION.findall(text)}
         bad = tuple(sorted(cited - self._sources))
+        active = cited & self._sources
+        if not cited:
+            for ref in _EVIDENCE_REF.finditer(text):
+                item = self._book.get(f"E{ref.group(1) or ref.group(2)}")
+                if item is not None:
+                    active |= set(item.sources) & self._sources
         quoted: list[Decimal] = []
         dates = self._dates
-        for number in sorted(cited & self._sources):
+        for number in sorted(active):
             numbers, found = self._passage_facts(number)
             quoted.extend(numbers)
             dates = dates.merged(found)
@@ -173,14 +192,19 @@ class Grounder:
         )
 
     def _passage_facts(self, number: int) -> tuple[list[Decimal], _Dates]:
-        """来源 [n] 原文里的数字与日期；同一个 Grounder 内只算一次。"""
+        """来源 [n] 标题、发布日与原文里的数字与日期；同一个 Grounder 内只算一次。"""
 
         known = self._cited.get(number)
         if known is None:
             passage = self._book.source(number)
-            content = passage.content if passage is not None else ""
+            text = f"{passage.title}\n{passage.content}" if passage is not None else ""
             found = _Dates()
-            rest = _scan_dates(content, found)
+            if passage is not None and passage.published is not None:
+                found.add(
+                    "ymd",
+                    (passage.published.year, passage.published.month, passage.published.day),
+                )
+            rest = _scan_dates(text, found)
             known = (_text_numbers(rest), found)
             self._cited[number] = known
         return known

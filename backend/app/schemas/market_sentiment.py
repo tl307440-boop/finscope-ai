@@ -28,6 +28,7 @@ class PoolStockItem(BaseModel):
     industry: str | None = None
     limit_days: int | None = None
     limit_times: int | None = None
+    limit_price: Decimal | None = None
 
 
 class LadderStep(BaseModel):

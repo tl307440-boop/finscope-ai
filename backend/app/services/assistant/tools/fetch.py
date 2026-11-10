@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.providers.polite import (
     PoliteClient,
     PoliteError,
@@ -27,6 +27,7 @@ from app.providers.polite import (
 from app.services.assistant.results import Column, Passage, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext
 from app.services.page_text import ArticleText, extract_article
+from app.services.runtime_settings import effective_settings
 
 SOURCE = "网页正文（本回合读取，未入库）"
 MAX_FETCHES_PER_TURN = 3
@@ -67,6 +68,15 @@ SITES: tuple[Site, ...] = (
     Site("cnstock.com", "中国证券网", "media"),
     Site("cs.com.cn", "中证网", "media"),
     Site("yicai.com", "第一财经", "media"),
+    Site("cls.cn", "财联社", "media"),
+    Site("wallstreetcn.com", "华尔街见闻", "media"),
+    Site("sina.com.cn", "新浪财经", "media"),
+    Site("stockstar.com", "证券之星", "media"),
+    Site("chnfund.com", "中国基金报", "media"),
+    Site("cfi.cn", "中财网", "media"),
+    Site("qq.com", "腾讯新闻", "media"),
+    Site("163.com", "网易财经", "media"),
+    Site("ifeng.com", "凤凰财经", "media"),
     Site("xinhuanet.com", "新华网", "media"),
     Site("news.cn", "新华社", "media"),
 )
@@ -112,7 +122,12 @@ class FetchUrlTool:
             return unavailable(self.name, title, today, _LIMIT_REASON, SOURCE)
         fetch = self._fetch
         if fetch is None:
-            email = self._email or contact_email(get_settings().sec_user_agent)
+            settings = _settings(ctx)
+            email = (
+                self._email
+                or contact_email(settings.sec_user_agent)
+                or contact_email(settings.admin_email)
+            )
             if email is None:
                 return unavailable(
                     self.name,
@@ -269,3 +284,9 @@ def _client(email: str, suffix: str) -> PoliteClient:
         allowed_suffixes=frozenset({suffix}),
         opener=httpx_opener(raw),
     )
+
+
+def _settings(ctx: ToolContext) -> Settings:
+    if ctx.engine is None:
+        return get_settings()
+    return effective_settings(ctx.engine)

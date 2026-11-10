@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.providers.errors import ProviderError
 from app.providers.polite import PoliteError, contact_email, live_client
 from app.repositories.corpus import CNINFO_SOURCE, SEC_SOURCE, CorpusRepository
@@ -25,6 +25,7 @@ from app.services.assistant.tools.market import _resolve
 from app.services.cninfo_filings import CNINFO_HOSTS, CninfoCatalog, store_filing
 from app.services.filing_meta import FilingHit
 from app.services.pdf_text import extract_pages
+from app.services.runtime_settings import effective_settings
 from app.services.sec_filings import SEC_HOSTS, SecCatalog, pages_from_body
 
 BUDGET_SECONDS = 20.0
@@ -107,7 +108,7 @@ class FilingFetchTool:
             return unavailable(
                 self.name, found.display_symbol, ctx.today_cn, "不是 6 位 A 股代码", SOURCE
             )
-        catalog = self._live_catalog()
+        catalog = self._live_catalog(ctx)
         if catalog is None:
             return unavailable(self.name, found.display_symbol, ctx.today_cn, _NO_CONTACT, SOURCE)
         start, end = _window(ctx.today_cn, args)
@@ -176,7 +177,7 @@ class FilingFetchTool:
                 "这只美股没有 CIK，不能查 EDGAR",
                 _SEC_SOURCE_LABEL,
             )
-        catalog = self._sec if self._sec is not None else self._live_sec()
+        catalog = self._sec if self._sec is not None else self._live_sec(ctx)
         if catalog is None:
             return unavailable(
                 self.name, found.display_symbol, ctx.today_cn, _NO_CONTACT, _SEC_SOURCE_LABEL
@@ -231,8 +232,9 @@ class FilingFetchTool:
             )
         )
 
-    def _live_sec(self) -> SecCatalog | None:
-        email = contact_email(get_settings().sec_user_agent)
+    def _live_sec(self, ctx: ToolContext | None = None) -> SecCatalog | None:
+        settings = _settings(ctx)
+        email = contact_email(settings.sec_user_agent) or contact_email(settings.admin_email)
         if email is None:
             return None
         return SecCatalog(live_client(email, SEC_HOSTS))
@@ -283,13 +285,20 @@ class FilingFetchTool:
             return
         _enqueue(ctx, instrument, hit, source=source)
 
-    def _live_catalog(self) -> CninfoCatalog | None:
+    def _live_catalog(self, ctx: ToolContext | None = None) -> CninfoCatalog | None:
         if self._catalog is not None:
             return self._catalog
-        email = contact_email(get_settings().sec_user_agent)
+        settings = _settings(ctx)
+        email = contact_email(settings.sec_user_agent) or contact_email(settings.admin_email)
         if email is None:
             return None
         return CninfoCatalog(live_client(email, CNINFO_HOSTS))
+
+
+def _settings(ctx: ToolContext | None) -> Settings:
+    if ctx is None or ctx.engine is None:
+        return get_settings()
+    return effective_settings(ctx.engine)
 
 
 def _window(today: date, args: FilingFetchArgs) -> tuple[date, date]:

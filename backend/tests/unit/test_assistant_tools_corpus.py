@@ -127,8 +127,37 @@ def test_args_need_at_least_one_real_keyword() -> None:
 
 
 def test_tool_is_registered_only_when_enabled_and_never_cached() -> None:
-    assert not {"corpus_search", "quote_table"} & set(default_registry().names)
-    assert {"corpus_search", "filing_fetch", "quote_table"} <= set(
+    assert not {"corpus_search", "corpus_save", "quote_table"} & set(default_registry().names)
+    assert {"corpus_search", "corpus_save", "filing_fetch", "quote_table"} <= set(
         default_registry(corpus_min_rank=0.0).names
     )
-    assert {"corpus_search", "quote_table"} <= NEVER_CACHED
+    assert {"corpus_search", "corpus_save", "quote_table"} <= NEVER_CACHED
+
+
+def test_corpus_save_tool_stores_user_note_and_returns_passage() -> None:
+    from app.services.assistant.tools.corpus import CorpusSaveArgs, CorpusSaveTool
+
+    saved_docs: list[tuple[Any, Any]] = []
+
+    def fake_save(doc: Any, chunks: Any) -> Any:
+        saved_docs.append((doc, list(chunks)))
+        return uuid4()
+
+    tool = CorpusSaveTool(save_fn=fake_save)
+    ctx = _ctx()
+    args = CorpusSaveArgs(
+        title="短线情绪周期：节点",
+        content="节点是指市场经历冰点或大分化之后，开启一波主升行情的起点与共振锚点。",
+        section_title="短线交易术语",
+    )
+    res = tool.run(ctx, args)
+    assert res.status == "ok"
+    assert len(saved_docs) == 1
+    doc, chunks = saved_docs[0]
+    assert (
+        doc.title == "短线情绪周期：节点"
+        and doc.kind == "user"
+        and doc.owner_user_id == ctx.user_id
+    )
+    assert len(chunks) == 1 and "主升行情的起点" in chunks[0].content
+    assert len(res.passages) == 1 and res.passages[0].title == "短线情绪周期：节点"

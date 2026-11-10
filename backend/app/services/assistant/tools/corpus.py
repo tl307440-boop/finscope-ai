@@ -6,17 +6,27 @@
 配了语料向量密钥时是混合检索（全文 + 语义），转向量失败就只用全文，见 `corpus_vectors.py`。
 """
 
-from collections.abc import Callable
+import hashlib
+from collections.abc import Callable, Sequence
 from datetime import date
 from typing import Any, ClassVar, Literal, Self
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Engine
 
-from app.repositories.corpus import CorpusQuery, CorpusRepository, QueryVector, semantic_query_text
+from app.repositories.corpus import (
+    USER_UPLOAD_SOURCE,
+    CorpusQuery,
+    CorpusRepository,
+    NewChunk,
+    NewDocument,
+    QueryVector,
+    semantic_query_text,
+)
 from app.repositories.corpus import Passage as StoredPassage
-from app.services.assistant.results import Passage, ToolResult, unavailable
+from app.services.assistant.results import Column, Passage, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext
 
 SOURCE_LABEL = "本系统语料库"
@@ -147,3 +157,114 @@ def _passage(item: StoredPassage) -> Passage:
         page_start=item.page_start,
         page_end=item.page_end,
     )
+
+
+SAVE_COLUMNS = (
+    Column("title", "标题", "", "text"),
+    Column("section", "分类", "", "text"),
+    Column("chars", "字数", "字", "number"),
+    Column("status", "状态", "", "text"),
+)
+
+
+class CorpusSaveArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(
+        min_length=1,
+        max_length=120,
+        description="词条或研究笔记标题，如「短线情绪周期：节点」",
+    )
+    content: str = Field(
+        min_length=4,
+        max_length=4000,
+        description="词条定义或研究笔记正文，写清楚核心口径、适用场景与注意事项",
+    )
+    section_title: str | None = Field(
+        default=None,
+        max_length=80,
+        description="可选的章节或分类名，如「短线交易术语」「研究笔记」",
+    )
+
+
+class CorpusSaveTool:
+    name: ClassVar[str] = "corpus_save"
+    description: ClassVar[str] = (
+        "把用户整理或确认的概念词条、交易术语、投研笔记保存到本人的语料库"
+        "（保存后即可通过 corpus_search 检索引用）。"
+        "只在用户明确要求「加入语料库」「存进知识库」「记下这条笔记」时使用。"
+    )
+    args_model: ClassVar[type[BaseModel]] = CorpusSaveArgs
+
+    def __init__(
+        self,
+        save_fn: Callable[[NewDocument, Sequence[NewChunk]], UUID | None] | None = None,
+    ) -> None:
+        self._save_fn = save_fn
+
+    def run(self, ctx: ToolContext, args: Any) -> ToolResult:
+        assert isinstance(args, CorpusSaveArgs)
+        title = args.title.strip()
+        content = args.content.strip()
+        section = args.section_title.strip() if args.section_title else None
+        if not title or not content:
+            return unavailable(
+                self.name, title or "保存语料", ctx.today_cn, "标题和正文不能为空", SOURCE_LABEL
+            )
+        if self._save_fn is None and ctx.engine is None:
+            return unavailable(
+                self.name, title, ctx.today_cn, "当前环境未连接语料库，无法写入", SOURCE_LABEL
+            )
+        title_hash = hashlib.sha256(title.encode("utf-8")).hexdigest()[:16]
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        canonical_url = f"user-note://{ctx.user_id}/{title_hash}"
+        doc = NewDocument(
+            source_id=USER_UPLOAD_SOURCE,
+            canonical_url=canonical_url,
+            kind="user",
+            title=title,
+            doc_type="note",
+            language="zh",
+            published_at=ctx.now,
+            content_hash=content_hash,
+            authority="user",
+            owner_user_id=ctx.user_id,
+            summary=content[:200],
+            license_note="用户保存在助手中的个人研究笔记与词条",
+        )
+        chunk = NewChunk(
+            content=content,
+            char_start=0,
+            char_end=len(content),
+            token_count=max(1, len(content) // 2),
+            section_title=section,
+            context_header=f"{title} {section or ''}".strip(),
+        )
+        saver = self._save_fn or CorpusRepository(ctx.engine).save
+        doc_id = saver(doc, [chunk])
+        status_note = "已写入语料库" if doc_id is not None else "语料库已有相同内容，无需重复写入"
+        passage = Passage(
+            key=f"note:{title_hash}",
+            title=title,
+            publisher="你上传的文档",
+            corpus_kind="user",
+            published=ctx.today_cn,
+            content=content,
+            url="",
+            section=section,
+        )
+        row: dict[str, str | None] = {
+            "title": title,
+            "section": section or "个人笔记",
+            "chars": str(len(content)),
+            "status": status_note,
+        }
+        return ToolResult(
+            tool=self.name,
+            title=f"已保存语料：{title[:40]}",
+            columns=SAVE_COLUMNS,
+            rows=(row,),
+            as_of=ctx.today_cn,
+            source=SOURCE_LABEL,
+            passages=(passage,),
+        )

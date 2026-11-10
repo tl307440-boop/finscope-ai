@@ -54,6 +54,7 @@ class PoolStock:
     industry: str | None
     limit_days: int | None
     limit_times: int | None
+    limit_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,7 @@ def survey_url(since: date, page: int, page_size: int = 500) -> str:
     return f"{_DATACENTER_URL}?{query}"
 
 
-def parse_pool(payload: bytes) -> PoolPage:
+def parse_pool(payload: bytes, requested_day: date | None = None) -> PoolPage:
     document = em._object(em._decode(payload, "涨停股池"), "涨停股池")
     data = document.get("data")
     if data is None:
@@ -157,6 +158,7 @@ def parse_pool(payload: bytes) -> PoolPage:
         if code is None or name is None:
             continue
         price = em._number(row.get("p"))
+        limit_price = em._number(row.get("ztp"))
         stats = row.get("zttj")
         stat = em._object(stats, "涨停股池") if isinstance(stats, dict) else {}
         stocks.append(
@@ -178,9 +180,13 @@ def parse_pool(payload: bytes) -> PoolPage:
                 industry=em._text(row.get("hybk")),
                 limit_days=em._int(stat.get("days")),
                 limit_times=em._int(stat.get("ct")),
+                limit_price=None if limit_price is None else limit_price / _PRICE_SCALE,
             )
         )
-    return PoolPage(trade_date=_compact_day(body.get("qdate")), stocks=tuple(stocks))
+    if not stocks:
+        return PoolPage(trade_date=None, stocks=())
+    trade_date = requested_day if requested_day is not None else _compact_day(body.get("qdate"))
+    return PoolPage(trade_date=trade_date, stocks=tuple(stocks))
 
 
 def parse_surveys(payload: bytes) -> SurveyPage:
