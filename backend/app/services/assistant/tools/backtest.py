@@ -8,6 +8,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -23,7 +24,38 @@ from app.services.backtest import Bar, run_sma_cross
 
 MAX_BACKTEST_BARS = 750
 DEFAULT_BACKTEST_DAYS = 3 * 365
-SOURCE = "本系统前复权日线回测（信号用当日收盘价，下一交易日开盘价成交，只做多，含单边费率）"
+SOURCE = "本系统日线回测（信号用当日收盘价，下一交易日开盘价成交，只做多，含单边费率）"
+
+
+UNADJUSTED_NOTE = "库里没有前复权日线，改用未复权价，除权除息日可能出现假跳空，收益仅供参考"
+
+
+def load_bars(
+    ctx: ToolContext,
+    instrument_id: UUID,
+    market: str,
+    start: date,
+    end: date,
+    pit: date,
+    limit: int,
+) -> tuple[list[Bar], bool, str]:
+    """取日线转成回测用的 Bar：优先前复权，没有就退回未复权，并返回实际用的口径。"""
+
+    repository = MarketBarRepository(ctx.engine)
+    provider_id = repository.provider_id_for_market(market)
+    for adjustment in ("qfq", "none"):
+        rows, truncated = repository.list_daily(
+            instrument_id=instrument_id,
+            provider_id=provider_id,
+            adjustment=adjustment,
+            start=start,
+            end=end,
+            pit=pit,
+            limit=limit,
+        )
+        if rows:
+            return [Bar(r.trade_date, r.open, r.close) for r in rows], truncated, adjustment
+    return [], False, "qfq"
 
 
 class RunBacktestArgs(BaseModel):
@@ -70,21 +102,9 @@ class RunBacktestTool:
         pit = effective_as_of(args.as_of, _market_today(ctx, found))
         end = min(args.end, pit) if args.end else pit
         start = args.start or end - timedelta(days=DEFAULT_BACKTEST_DAYS)
-        repository = MarketBarRepository(ctx.engine)
-        rows, truncated = repository.list_daily(
-            instrument_id=found.id,
-            provider_id=repository.provider_id_for_market(found.market),
-            adjustment="qfq",
-            start=start,
-            end=end,
-            pit=pit,
-            limit=MAX_BACKTEST_BARS,
+        bars, truncated, adjustment = load_bars(
+            ctx, found.id, found.market, start, end, pit, MAX_BACKTEST_BARS
         )
-        bars = [
-            Bar(r.trade_date, r.open, r.close)
-            for r in rows
-            if r.open is not None and r.close is not None
-        ]
         if len(bars) < args.slow + 2:
             return unavailable(
                 self.name,
@@ -98,6 +118,8 @@ class RunBacktestTool:
         except ValueError as exc:
             return unavailable(self.name, title, pit, str(exc), SOURCE)
         notes = []
+        if adjustment != "qfq":
+            notes.append(UNADJUSTED_NOTE)
         if not result.enough_trades:
             notes.append(f"只成交 {result.trades} 次，统计意义很弱")
         if truncated:
