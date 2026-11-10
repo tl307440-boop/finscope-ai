@@ -1,17 +1,19 @@
-"""`market_sentiment`：短线情绪和热点：涨停 / 炸板 / 跌停与连板梯队、机构调研、热榜。
+"""`market_sentiment`：短线情绪和热点：涨停 / 炸板 / 跌停与连板梯队、回头波、机构调研、热榜。
 
 数据来自和「产业研究」页面同一批服务（东方财富涨停板行情、东财机构调研、东财人气榜和同花顺热榜）。
 - limit_up：涨停、炸板、跌停家数、封板率、最高连板、涨停集中的行业和连板梯队；
   可以按 as_of 查某个交易日；
 - limit_up_stocks：涨停股清单（连板数、所属行业、总市值与流通市值、首次封板时间、封单资金），
   可以按总市值或流通市值区间、是否只看沪深主板先筛选再取前 N 行；
+- pullback：回头波（冲高回落：日内最高涨幅减收盘涨幅达到阈值的家数，与行情页同一口径）；
 - surveys：近 N 天机构调研最密集的公司（接待次数、参与机构家数）；
 - hot：东财人气榜与同花顺热股、热门行业、热门概念。
 只描述已经发生的盘面和关注度，不构成买卖建议。调研和热榜只有实时数据。金额按亿元给出。
 """
 
+from collections.abc import Awaitable, Callable
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.providers.errors import ProviderError
 from app.schemas.industry_market import HotList, HotPlateItem, HotStockItem, Section
 from app.schemas.market_sentiment import LimitUpView, PoolStockItem, SurveyView
+from app.services.ashare_panorama import IntradayPullback
 from app.services.assistant.loop_bridge import call_async
 from app.services.assistant.results import Column, ToolResult, unavailable
 from app.services.assistant.tools.base import ToolContext, effective_as_of
@@ -37,7 +40,9 @@ MAX_LADDER_ROWS = 6
 MAX_INDUSTRY_ROWS = 8
 MAX_NAMES = 6
 HOT_PER_LIST = 10
-View = Literal["limit_up", "limit_up_stocks", "surveys", "hot"]
+View = Literal["limit_up", "limit_up_stocks", "pullback", "surveys", "hot"]
+PullbackLoad = Callable[[float], Awaitable[IntradayPullback]]
+_CENT = Decimal("0.01")
 CapBasis = Literal["total", "float"]
 CAP_LABELS: dict[str, str] = {"total": "总市值", "float": "流通市值"}
 # 沪深主板：沪市 600 / 601 / 603 / 605，深市 000 / 001 / 002 / 003（中小板已并入主板）。
@@ -50,6 +55,7 @@ class MarketSentimentArgs(BaseModel):
     view: View = Field(
         description=(
             "limit_up 涨停炸板跌停与连板梯队；limit_up_stocks 涨停股清单；"
+            "pullback 回头波（冲高回落：日内最高涨幅减收盘涨幅达到阈值的家数，和行情页同一口径）；"
             "surveys 机构调研；hot 热榜（人气榜、热股、热门行业与概念）"
         )
     )
@@ -61,7 +67,8 @@ class MarketSentimentArgs(BaseModel):
         description="清单类视图返回几行，默认 15；涨停股清单一天可能有几十只，要看全可以到 60",
     )
     as_of: date | None = Field(
-        default=None, description="limit_up / limit_up_stocks 可以指定交易日；其余只有实时"
+        default=None,
+        description="limit_up / limit_up_stocks / pullback 可以指定交易日；其余只有实时",
     )
     min_cap: float | None = Field(
         default=None,
@@ -81,16 +88,24 @@ class MarketSentimentArgs(BaseModel):
         default=False,
         description="limit_up_stocks 只看沪深主板（不含创业板、科创板、北交所）",
     )
+    threshold: float = Field(
+        default=10,
+        ge=1,
+        le=30,
+        description="pullback 的回落阈值，单位个百分点，默认和行情页同一档",
+    )
 
 
 class MarketSentimentTool:
     name: ClassVar[str] = "market_sentiment"
     description: ClassVar[str] = (
         "查 A 股短线情绪与市场热点：涨停 / 炸板 / 跌停家数、封板率、连板梯队、涨停集中的行业，"
-        "涨停股清单（可按总市值 / 流通市值区间、沪深主板先筛选），近期机构调研最密集的公司，"
-        "东财人气榜与同花顺热榜。问「最近市场在炒什么」「哪些方向最热」「资金关注谁」"
-        "「今天涨停的股票里市值在某个区间的有哪些」时用。描述的是已经发生的盘面和关注度，"
-        "不是预测，也不构成买卖建议。"
+        "涨停股清单（可按总市值 / 流通市值区间、沪深主板先筛选），回头波（冲高回落家数，"
+        "和行情页同一口径），近期机构调研最密集的公司，东财人气榜与同花顺热榜。"
+        "问「最近市场在炒什么」「哪些方向最热」「资金关注谁」「回头波大于某个幅度的有多少只」"
+        "「今天涨停的股票里市值在某个区间的有哪些」时用。回头波的全市场高低价来自当前交易日振幅榜；"
+        "若指定历史日期，会标明全市场冲高回落无历史快照，同时给出该日炸板池里回落达标的家数与当前交易日家数。"
+        "描述的是已经发生的盘面和关注度，不是预测，也不构成买卖建议。"
     )
     args_model: ClassVar[type[BaseModel]] = MarketSentimentArgs
 
@@ -98,16 +113,18 @@ class MarketSentimentTool:
         self,
         sentiment: MarketSentimentService | None = None,
         market: IndustryMarketService | None = None,
+        pullbacks: PullbackLoad | None = None,
     ) -> None:
         self._sentiment = sentiment
         self._market = market
+        self._pullbacks = pullbacks
 
     def run(self, ctx: ToolContext, args: Any) -> ToolResult:
         assert isinstance(args, MarketSentimentArgs)
         today = ctx.today_cn
         pit = effective_as_of(args.as_of, today)
         title = _TITLES[args.view]
-        if args.view not in ("limit_up", "limit_up_stocks"):
+        if args.view not in ("limit_up", "limit_up_stocks", "pullback"):
             refusal = live_only_reason(args.as_of, today, title)
             if refusal is not None:
                 return unavailable(self.name, title, pit, refusal, SOURCE)
@@ -118,6 +135,17 @@ class MarketSentimentTool:
 
     def _run(self, ctx: ToolContext, args: MarketSentimentArgs, pit: date) -> ToolResult:
         sentiment = self._sentiment or sentiment_service()
+        if args.view == "pullback":
+            loader = self._pullbacks or _live_pullbacks
+            board = call_async(lambda: loader(args.threshold), timeout=45.0)
+            session = board.trade_date or pit
+            past_pool: LimitUpView | None = None
+            if args.as_of is not None and args.as_of != session:
+                try:
+                    past_pool = call_async(lambda: sentiment.limit_up(args.as_of), timeout=30.0)
+                except Exception:
+                    past_pool = None
+            return _pullback(self.name, board, args, pit, past_pool=past_pool)
         if args.view in ("limit_up", "limit_up_stocks"):
             day = pit if args.as_of is not None else None
             pool = call_async(lambda: sentiment.limit_up(day), timeout=45.0)
@@ -135,9 +163,18 @@ class MarketSentimentTool:
 _TITLES: dict[str, str] = {
     "limit_up": "涨停与情绪",
     "limit_up_stocks": "涨停股清单",
+    "pullback": "回头波",
     "surveys": "机构调研",
     "hot": "市场热榜",
 }
+PULLBACK_SOURCE = "东方财富行情"
+PULLBACK_COLUMNS = (
+    Column("item", "指标", "", "text"),
+    Column("value", "数值", "", "number"),
+    Column("unit", "单位", "", "text"),
+    Column("day", "日期", "", "date"),
+    Column("note", "说明", "", "text"),
+)
 
 LIMIT_COLUMNS = (
     Column("item", "指标", "", "text"),
@@ -409,3 +446,147 @@ def _hot_row(label: str, item: HotStockItem | HotPlateItem) -> dict[str, str | N
         "heat": plain(item.heat),
         "note": note,
     }
+
+
+async def _live_pullbacks(threshold: float) -> IntradayPullback:
+    from app.services.ashare_panorama import get_panorama_service
+
+    return await get_panorama_service().intraday_pullbacks(threshold)
+
+
+def _broken_pool_pullbacks(
+    pool: LimitUpView | None, threshold: float
+) -> tuple[int, list[tuple[str, float]]] | None:
+    """从历史交易日的炸板池（盘中触及涨停后打开）里算回落达到阈值的股票。"""
+
+    if pool is None or pool.trade_date is None or not pool.broken_stocks:
+        return None
+    hits: list[tuple[str, float]] = []
+    for stock in pool.broken_stocks:
+        if (
+            stock.price is None
+            or stock.limit_price is None
+            or stock.change_pct is None
+            or stock.price <= 0
+        ):
+            continue
+        factor = Decimal(1) + stock.change_pct / Decimal(100)
+        if factor <= 0:
+            continue
+        pre_close = stock.price / factor
+        if pre_close <= 0:
+            continue
+        peak_pct = float((stock.limit_price - pre_close) / pre_close * Decimal(100))
+        drop = peak_pct - float(stock.change_pct)
+        if drop >= threshold:
+            hits.append((stock.name, drop))
+    hits.sort(key=lambda item: item[1], reverse=True)
+    return len(pool.broken_stocks), hits
+
+
+def _pullback(
+    tool: str,
+    board: IntradayPullback,
+    args: MarketSentimentArgs,
+    pit: date,
+    *,
+    past_pool: LimitUpView | None = None,
+) -> ToolResult:
+    """回头波家数。历史日没有全市场逐只高低价时，给出炸板池回落达标家数与当前交易日全市场家数。"""
+
+    title = _TITLES["pullback"]
+    session = board.trade_date or pit
+    if board.error and not board.hits:
+        return unavailable(tool, title, session, board.error, PULLBACK_SOURCE)
+    requested = args.as_of
+    mismatch = requested is not None and requested != session
+    names = "、".join(item.name for item in board.hits[:6])
+    rows: list[dict[str, str | None]] = [
+        _pullback_row(
+            "回落阈值",
+            _points(args.threshold),
+            "个百分点",
+            session,
+            "日内最高涨幅减收盘涨幅，与行情页冲高回落同一口径",
+        )
+    ]
+    if mismatch and requested is not None:
+        rows.append(
+            _pullback_row(
+                "请求日回头波家数",
+                None,
+                "家",
+                requested,
+                "行情页全市场冲高回落只看实时振幅榜，未按历史日落库，不能回看全市场家数",
+            )
+        )
+        broken_stats = _broken_pool_pullbacks(past_pool, args.threshold)
+        if broken_stats is not None:
+            total_broken, broken_hits = broken_stats
+            sample = "、".join(f"{name}（{_points(drop)}%）" for name, drop in broken_hits[:6])
+            broken_note = (
+                f"炸板池 {total_broken} 只里回落达到阈值的：{sample}"
+                if sample
+                else f"炸板池 {total_broken} 只里没有回落达到阈值的股票"
+            )
+            rows.append(
+                _pullback_row(
+                    "请求日炸板池回落达标家数",
+                    count(len(broken_hits)),
+                    "家",
+                    requested,
+                    broken_note,
+                )
+            )
+        count_label = "当前交易日回头波家数"
+        count_note = (
+            f"不是请求日，不能当成请求日的家数（当前样本：{names}）"
+            if names
+            else "不是请求日，不能当成请求日的家数"
+        )
+    else:
+        count_label = "回头波家数"
+        count_note = names or "没有达到阈值的股票"
+    rows.append(_pullback_row(count_label, count(len(board.hits)), "家", session, count_note))
+    widest = max(board.hits, key=lambda item: item.peak_pct - item.change_pct, default=None)
+    if widest is not None:
+        rows.append(
+            _pullback_row(
+                "最大回落幅度",
+                _points(widest.peak_pct - widest.change_pct),
+                "个百分点",
+                session,
+                widest.name,
+            )
+        )
+    notes = [board.note] if board.note else []
+    if board.trade_date is None:
+        notes.append("没有对上交易日，日期先按今天")
+    stale = bool(notes) or mismatch or board.trade_date is None
+    return ToolResult(
+        tool=tool,
+        title=title,
+        columns=PULLBACK_COLUMNS,
+        rows=tuple(rows),
+        as_of=session,
+        source=PULLBACK_SOURCE,
+        status="stale" if stale else "ok",
+        reason="；".join(notes) or None,
+    )
+
+
+def _pullback_row(
+    label: str, value: str | None, unit: str, day: date, note: str
+) -> dict[str, str | None]:
+    return {
+        "item": label,
+        "value": value,
+        "unit": unit,
+        "day": day.isoformat(),
+        "note": note,
+    }
+
+
+def _points(value: float) -> str:
+    number = Decimal(str(round(value, 4))).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return plain(number) or "0"

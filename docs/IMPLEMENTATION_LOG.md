@@ -2937,3 +2937,33 @@ TickFlow 探测过：只有申万行业 universe，且成分数明显不全（�
 - 服务器 `/opt/finscope/.env`：删除上一轮追加的 `FUYAO_API_KEY` 三行（注释 + 空行 + 密钥），与 `.env.bak-20261110` 只差结尾换行；没有留下含密钥的备份文件。已运行的容器进程里仍带着启动时读到的旧环境变量，这次部署重建容器后才彻底消失。
 - 测试：`test_integration_probe.py` 新增 2 个（扶摇密钥有效 / 被拒绝，且不回显密钥）；`test_stock_boards.py` 新增 1 个（界面值运行时优先于初始默认）。`ruff check` / `ruff format --check` / `mypy app` 通过，`pytest tests/unit` 全部通过。
 - 部署：这次提交推到 `feat/market-panorama-jygs`（PR #53）后合并到 master，由 deploy 工作流部署。页面上出现这三项之后，由管理员在「数据管理」里填写密钥，扶摇可以点「测试连接」。
+
+## 2026-11-10（续十）投研助手（`/assistant`）公告与网页取文、语料入库、回头波与历史股池日期、引用核对优化
+
+### 起因
+用户在 `/assistant` 连续提问「襄阳轴承的三季报发布了，你看一看」「用联网搜索看一看」「能看到它业绩内容吗」「你知不知道什么是节点」「把节点加入语料库」「上周五回头波大于等于10%的股票数有多少个」时暴露出四个问题：
+1. **定期报告与财经报道正文抓取受阻**：`filing_fetch`、`fetch_url`、`web_search` 未优先读取数据库运行时设置（`effective_settings(ctx.engine)`）且未在 `SEC_USER_AGENT` 为空时回退 `admin_email`；`fetch_url` 白名单缺少 `web_search` 常返回的证券之星、财联社、华尔街见闻、新浪财经、中财网、中国基金报、腾讯新闻等主流财经媒体域名；`documents` 技能摘要未写明定期报告（一季报、中报、三季报、年报）。
+2. **联网与事件表回答被 Grounder 误杀隐藏**：当回合仅调用 `web_search` / `news_flash`（均标记 `excerpt=True`）时，`EvidenceBook.dates()` 为空且 `_passage_facts` 只扫描 `passage.content` 而忽略了 `passage.title` 与 `passage.published`，导致模型引用标题里的业绩数字或写日期时整段回答被拦下（显示「没能生成可核对的文字回答」）；`hotspot_events` 等无数字列的事件表在模型汇总条数或写 `10-24` 月日格式时也会被误拦；分号 `；` 断句导致前半句丢失句末 `[n]` 角标。
+3. **缺少把概念词条 / 研究笔记存入语料库的工具**：用户要求「把节点加入语料库」时，助手只有只读检索工具 `corpus_search`，无法入库。
+4. **市场热度缺少「回头波」视图且东财历史股池日期被篡改**：东财涨停 / 炸板 / 跌停池接口在查询历史日期（如上周五）时外层 `qdate` 仍返回今日日期，导致历史股池被贴上今日日期或空池被当成有效交易日；同时 `market_sentiment` 缺少市场全景已有的「冲高回落 / 回头波（日内最高涨幅 − 当前涨幅 ≥ 阈值）」统计。
+
+### 变更
+- **东财股池历史日期修复与涨停价字段**（`providers/eastmoney_sentiment.py`、`schemas/market_sentiment.py`、`services/market_sentiment.py`）：
+  - `parse_pool(payload, requested_day)`：空池返回 `trade_date=None`，不再把非交易日空池当成今日有效数据；指定 `requested_day` 且有数据时保留请求日，不被东财外层恒为今日的 `qdate` 覆盖。
+  - `PoolStock` / `PoolStockItem` 新增 `limit_price`（`ztp / 1000`），供计算历史炸板池个股从涨停价回落的幅度。
+- **回头波（冲高回落）统计接入全景与助手工具**（`services/ashare_panorama.py`、`services/assistant/tools/sentiment.py`、`prompts/skills/hotspot.md`）：
+  - `ASharePanoramaService.intraday_pullbacks(threshold=10.0)`：按可配置阈值统计全市场日内冲高回落（`high_pct - change_pct >= threshold`）家数、最大回落幅度与前 30 只明细。
+  - `market_sentiment` 新增 `view="pullback"` 与 `threshold` 参数（3%–30%，默认 10%）：查当日时返回全市场回头波家数与明细；查历史日期（`as_of < 当前交易日`）时如实说明全市场振幅榜仅有实时数据（`请求日回头波家数` 为空），同时用该历史日东财炸板池的 `limit_price`、`pre_close`、`change_pct` 精确算出 `请求日炸板池回落达标家数` 及达标股票名单，并附上当前交易日回头波家数供对照。
+- **语料库写入工具 `corpus_save` 与公告 / 网页抓取增强**（`services/assistant/tools/corpus.py`、`filings.py`、`fetch.py`、`web.py`、`tool_cache.py`、`prompts/skills/documents.md`、`news.md`）：
+  - 新增 `CorpusSaveTool`（`corpus_save`）：将用户确认的概念词条、交易术语或投研笔记写入 `CorpusRepository`（`source_id="user_upload"`，`kind="user"`，`doc_type="note"`，`owner_user_id=ctx.user_id`），入库后立即可由 `corpus_search` 检索并带 `[n]` 引用；加入 `NEVER_CACHED` 与 `STEP_LABELS`。
+  - `filing_fetch`、`fetch_url`、`web_search` 优先读取 `effective_settings(ctx.engine)`，在未单独配置 `SEC_USER_AGENT` 时回退 `admin_email` 作为合规联系邮箱。
+  - `fetch_url` 的 `SITES` 白名单扩充 `cls.cn`、`wallstreetcn.com`、`sina.com.cn`、`stockstar.com`、`chnfund.com`、`cfi.cn`、`qq.com`、`163.com`、`ifeng.com`。
+- **引用与数字核对（`grounding.py`、`evidence.py`、`agent.py`、`prompts/assistant_v4.txt`）**：
+  - `_passage_facts` 同时扫描 `passage.title` 与 `passage.content`，并将 `passage.published` 计入该引用来源的合法日期；句子未写 `[n]` 但写明 `[E1]` / `（E1）` 时自动关联该证据下的片段来源。
+  - `EvidenceBook.dates()` 与 `name_text()` 纳入非假设、非 `quote_table` 工具的 `as_of` 与标题；无数字列的事实表（如 `hotspot_events`）放行 `1..len(rows)` 的条数与子集计数；日期正则新增 `MM-DD`（如 `10-24`）月日匹配。
+  - `Grounder` 支持 `extra_text` 与 `extra_dates`，`Agent._publish` 传入用户原问题与 `today_cn`，避免复述用户问题里的阈值（如 `10%`）或今日日期时被误拦；`Agent._push` 让分号 `；` 切开的前半句继承同一整句句末的 `[n]` 引用。
+
+### 验证
+- 后端按 TDD 编写并更新单元测试：`test_market_sentiment.py`、`test_ashare_panorama.py`、`test_assistant_tools_sentiment.py`、`test_filing_fetch.py`、`test_assistant_tools_fetch.py`、`test_assistant_tools_corpus.py`、`test_assistant_grounding.py`、`test_assistant_agent.py`。
+- `ruff check .`、`ruff format --check .`、`mypy app`（316 个源文件）全部通过；`pytest tests/unit` 全量通过。
+

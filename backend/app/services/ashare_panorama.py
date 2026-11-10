@@ -131,6 +131,16 @@ def _parse_iso(value: str) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+@dataclass(frozen=True)
+class IntradayPullback:
+    """当前行情算出的回头波。`error` 有值且 `hits` 为空才是没取到；`note` 是扫不全的提醒。"""
+
+    trade_date: date | None
+    hits: tuple[calc.Swing, ...]
+    error: str | None = None
+    note: str | None = None
+
+
 @dataclass
 class _Acc:
     """一次请求内汇总各上游的状态，最后折成 `PanoramaMeta`。"""
@@ -850,17 +860,21 @@ class ASharePanoramaService:
                 values.append(calc.num(calc.as_doc(rows[index]).get("f3")))
         return calc.mean_of(values)
 
-    async def _swings_tencent(self, acc: _Acc) -> list[calc.Swing] | None:
+    async def _swings_tencent(
+        self, acc: _Acc, *, min_amplitude: float = 10.0
+    ) -> list[calc.Swing] | None:
         """东财振幅榜取不到时：腾讯振幅榜筛出振幅 ≥ 9% 的候选（冲高回落 / 探底回升必然振幅 ≥ 10%），
         再用腾讯报价取这些股票的最高 / 最低 / 昨收，口径与东财一致。"""
+
+        floor = max(1.0, min(9.0, min_amplitude - 1.0))
 
         async def load() -> list[calc.Swing]:
             codes: list[str] = []
             for offset in range(0, 600, 200):
                 page = await self.gateway.get(tq.rank_url("amplitude", offset, 200), tq.HEADERS)
                 rows = tq.parse_rank(page)[1]
-                codes += [r.code for r in rows if (r.amplitude_pct or 0) >= 9.0]
-                if len(rows) < 200 or (rows[-1].amplitude_pct or 0) < 9.0:
+                codes += [r.code for r in rows if (r.amplitude_pct or 0) >= floor]
+                if len(rows) < 200 or (rows[-1].amplitude_pct or 0) < floor:
                     break
             rows_out: list[calc.Doc] = []
             for start in range(0, len(codes), 80):
@@ -870,7 +884,7 @@ class ASharePanoramaService:
             return calc.swing_rows(rows_out)
 
         swings: list[calc.Swing] | None = await self._tencent(
-            acc, "振幅榜", self._ttl(), load, "腾讯财经 振幅榜"
+            acc, f"振幅榜:{floor}", self._ttl(), load, "腾讯财经 振幅榜"
         )
         if swings is not None:
             acc.unavailable.pop("振幅榜", None)
@@ -878,9 +892,11 @@ class ASharePanoramaService:
                 "东方财富振幅榜在本服务器连不上：冲高回落 / 探底回升取腾讯振幅榜（振幅≥9%候选）"
                 "再按最高 / 最低 / 昨收重算；行业列由同花顺涨停原因补充，没有则为空。"
             )
+            if len(swings) >= 500 and min_amplitude < 10:
+                acc.notes.append("振幅榜没有向下翻完，家数可能偏少")
         return swings
 
-    async def _swings(self, acc: _Acc) -> list[calc.Swing] | None:
+    async def _swings(self, acc: _Acc, *, min_amplitude: float = 10.0) -> list[calc.Swing] | None:
         rows: list[calc.Doc] = []
         for page in range(1, _MAX_SWING_PAGES + 1):
             doc = await self._doc(
@@ -892,7 +908,7 @@ class ASharePanoramaService:
             )
             if doc is None:
                 if not rows:
-                    return await self._swings_tencent(acc)
+                    return await self._swings_tencent(acc, min_amplitude=min_amplitude)
                 return calc.swing_rows(rows)
             batch = [
                 calc.as_doc(r)
@@ -900,9 +916,27 @@ class ASharePanoramaService:
             ]
             rows += batch
             tail = calc.num(batch[-1].get("f7")) if batch else None
-            if len(batch) < src.PAGE_SIZE or tail is None or tail < 10:
+            if len(batch) < src.PAGE_SIZE or tail is None or tail < min_amplitude:
                 break
+        else:
+            if rows and min_amplitude < 10:
+                acc.notes.append("振幅榜没有向下翻完，家数可能偏少")
         return calc.swing_rows(rows)
+
+    async def intraday_pullbacks(self, threshold: float = 10.0) -> IntradayPullback:
+        """当前交易日的回头波：日内最高涨幅 − 收盘涨幅 ≥ 阈值。
+
+        高低价来自实时行情，不是历史日逐只回放。交易日是上证指数日 K 的最后一根。
+        """
+
+        acc = _Acc()
+        day, _session, _days = await self._resolve(acc)
+        swings = await self._swings(acc, min_amplitude=threshold)
+        if swings is None:
+            reason = acc.unavailable.get("振幅榜") or "没有取到全市场的最高价和收盘价"
+            return IntradayPullback(day, (), reason)
+        note = next((item for item in acc.notes if item.startswith("振幅榜")), None)
+        return IntradayPullback(day, tuple(calc.pullbacks(swings, threshold)), note=note)
 
     async def _broken_premium(self, acc: _Acc, previous: date | None) -> float | None:
         if previous is None:
@@ -2431,4 +2465,4 @@ def get_panorama_service() -> ASharePanoramaService:
     return _service
 
 
-__all__ = ["ASharePanoramaService", "get_panorama_service"]
+__all__ = ["ASharePanoramaService", "IntradayPullback", "get_panorama_service"]

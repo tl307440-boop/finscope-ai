@@ -133,6 +133,17 @@ def test_pool_parse_scales_price_and_keeps_missing_values() -> None:
     assert es.parse_pool(json.dumps({"data": None}).encode()).trade_date is None
 
 
+def test_pool_parse_preserves_requested_day_when_eastmoney_qdate_is_today() -> None:
+    requested = date(2026, 11, 6)
+    row = {"c": "002045", "m": 0, "n": "国光电器", "p": 9860, "ztp": 10890, "zdp": -0.40}
+    page = es.parse_pool(_pool([row], qdate=20261110), requested_day=requested)
+    assert page.trade_date == requested
+    assert page.stocks[0].limit_price == Decimal("10.89")
+    # 非交易日返回空 pool 但 qdate 仍是今天时，trade_date 应为 None
+    empty = es.parse_pool(_pool([], qdate=20261110), requested_day=date(2026, 11, 7))
+    assert empty.trade_date is None and empty.stocks == ()
+
+
 def test_limit_up_walks_back_to_latest_session_and_summarises() -> None:
     gateway = FakeGateway()
     view = asyncio.run(_service(gateway, datetime(2026, 10, 18, 10, tzinfo=SHANGHAI)).limit_up())

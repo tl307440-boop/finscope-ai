@@ -90,11 +90,13 @@ class EvidenceBook:
         return found
 
     def dates(self) -> set[date]:
-        """日期列里的日期，加上每条证据的 as_of。叙述里的日期按这个放行。"""
+        """日期列里的日期，加上每条非假设证据的 as_of。叙述里的日期按这个放行。"""
 
         found: set[date] = set()
+        for item in self._items:
+            if not item.result.hypothetical and item.result.tool != "quote_table":
+                found.add(item.result.as_of)
         for item in self.facts():
-            found.add(item.result.as_of)
             keys = [column.key for column in item.result.columns if column.kind == "date"]
             for row in item.result.rows:
                 for key in keys:
@@ -107,8 +109,10 @@ class EvidenceBook:
         """证据标题、列名、来源拼成的文字。序列名里的数字（「10年期」「沪深300」）按这里放行。"""
 
         parts: list[str] = []
+        for item in self._items:
+            if not item.result.hypothetical and item.result.tool != "quote_table":
+                parts.extend((item.result.title, item.result.source))
         for item in self.facts():
-            parts.extend((item.result.title, item.result.source))
             parts.extend(f"{column.label}{column.unit}" for column in item.result.columns)
         return "\n".join(parts)
 
@@ -128,6 +132,8 @@ def _numeric_values(result: ToolResult) -> list[Decimal]:
             value = to_decimal(row.get(key))
             if value is not None:
                 found.append(value)
+    if not numeric and len(result.rows) >= 2:
+        found.extend(Decimal(count) for count in range(1, len(result.rows) + 1))
     return found
 
 

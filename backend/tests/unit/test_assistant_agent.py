@@ -720,3 +720,17 @@ def test_no_queried_note_when_nothing_was_queried_before() -> None:
     model = FakeModel(say("好。"))
     run(model, "你好")
     assert "上文查过的数据" not in model.calls[0][0][1]["content"]
+
+
+def test_semicolon_clause_inherits_trailing_citation_and_question_numbers_pass() -> None:
+    text = (
+        "三季度良率提升到 92%；公司计划 2027 年新增两条产线[1][2]。"
+        "至于你问的 10% 阈值，目前没有更多数据。"
+    )
+    result, _events, _ = run(
+        FakeModel(call(CORPUS), say(text)),
+        "回头波大于等于10%的有多少",
+        extra_tools=(FakeCorpus(),),
+    )
+    assert (result.grounding, result.text) == ("full", text)
+    assert [item["n"] for item in result.sources] == [1, 2]

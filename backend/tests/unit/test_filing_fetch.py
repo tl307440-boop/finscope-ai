@@ -261,3 +261,20 @@ def test_missing_contact_email_blocks_a_live_catalog() -> None:
     result = tool.run(_ctx(), FilingFetchArgs(instrument_id="x"))
     assert result.status == "unavailable"
     assert "联系邮箱" in (result.reason or "")
+
+
+def test_live_catalog_reads_effective_settings_when_engine_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.services.assistant.tools import filings as filings_mod
+
+    monkeypatch.setattr(
+        filings_mod,
+        "effective_settings",
+        lambda _engine: Settings(sec_user_agent="FinScopeAI admin@finscope.cn"),
+    )
+    tool = FilingFetchTool(resolve=lambda _ctx, _raw: _stock())
+    ctx = ToolContext(engine=object(), user_id=uuid4(), now=NOW)  # type: ignore[arg-type]
+    assert tool._live_catalog(ctx) is not None
+    assert tool._live_sec(ctx) is not None

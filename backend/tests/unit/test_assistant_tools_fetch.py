@@ -129,7 +129,14 @@ def test_subdomains_of_whitelisted_suffixes_are_allowed_and_classified() -> None
     fetcher = Fetcher(_page(5))
     _run(fetcher, "https://www.miit.gov.cn/xwfb/a.html")
     _run(fetcher, "https://www.sec.gov/Archives/edgar/data/1/a.htm")
-    assert [site.suffix for _, site in fetcher.calls] == ["gov.cn", "sec.gov"]
+    _run(fetcher, "https://stock.stockstar.com/notice/IG2026102800037816.shtml")
+    _run(fetcher, "https://www.cls.cn/detail/123456")
+    assert [site.suffix for _, site in fetcher.calls] == [
+        "gov.cn",
+        "sec.gov",
+        "stockstar.com",
+        "cls.cn",
+    ]
 
 
 @pytest.mark.parametrize(

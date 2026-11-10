@@ -189,17 +189,15 @@ class WebSearchTool:
         if code is not None and not parts.path.startswith(_OFFICIAL_PATHS.get(code, "/")):
             code = None
         feed = FEEDS.get(code or "")
-        if (
-            feed is None
-            or self._fetch_page is None
-            and contact_email(get_settings().sec_user_agent) is None
-        ):
+        settings = _settings(ctx)
+        email = contact_email(settings.sec_user_agent) or contact_email(settings.admin_email)
+        if feed is None or (self._fetch_page is None and email is None):
             return []
         try:
             text = (
                 self._fetch_page(hit.url)
                 if self._fetch_page is not None
-                else _fetch_official(feed, hit.url)
+                else _fetch_official(feed, hit.url, email=email)
             )
         except PoliteError:
             return []
@@ -347,11 +345,11 @@ def _ask(
     )
 
 
-def _fetch_official(feed: OfficialFeed, url: str) -> str:
+def _fetch_official(feed: OfficialFeed, url: str, *, email: str | None = None) -> str:
     from app.services.html_text import article_text
 
-    email = contact_email(get_settings().sec_user_agent)
-    if email is None:
+    resolved_email = email or contact_email(get_settings().sec_user_agent)
+    if resolved_email is None:
         return ""
-    data = live_client(email, feed.hosts).get(url, respect_robots=feed.respect_robots)
+    data = live_client(resolved_email, feed.hosts).get(url, respect_robots=feed.respect_robots)
     return article_text(data, element_id=feed.element_id, css_class=feed.css_class)

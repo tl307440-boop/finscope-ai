@@ -386,3 +386,86 @@ def test_grounder_can_be_reused_across_sentences() -> None:
     assert grounder.check("最新 3.1%。").ok
     assert not grounder.check("另一个 9.9%。").ok
     assert grounder.check("上月 2.9%。").ok
+
+
+def test_passage_title_and_published_date_are_grounded_when_cited() -> None:
+    book = _book(
+        ToolResult(
+            tool="web_search",
+            title="襄阳轴承 2026年第三季度报告",
+            columns=(Column("published", "发布日", "", "date"), Column("title", "标题")),
+            rows=(
+                {
+                    "published": "2026-10-28",
+                    "title": "襄阳轴承(000678.SZ)发布前三季度业绩,归母净亏损2617.4万元",
+                },
+            ),
+            as_of=date(2026, 10, 28),
+            source="联网",
+            passages=(
+                Passage(
+                    key="web:bocha:0:https://stock.stockstar.com/notice/1.shtml",
+                    title="襄阳轴承(000678.SZ)发布前三季度业绩,归母净亏损2617.4万元",
+                    publisher="bocha",
+                    corpus_kind="web",
+                    published=date(2026, 10, 28),
+                    content="证券之星讯，公司披露第三季度报告。",
+                    url="https://stock.stockstar.com/notice/1.shtml",
+                    verified=False,
+                ),
+            ),
+            excerpt=True,
+        )
+    )
+    assert check("截至 2026-10-28，联网检索到的三季报报道如下。", book).ok
+    assert check(
+        "2026年10月28日证券之星报道称，襄阳轴承（000678.SZ）前三季度归母净亏损 2617.4 万元[1]。",
+        book,
+    ).ok
+    assert check("10-28 的报道提到归母净亏损 2617.4 万元[1]。", book).ok
+    assert check("联网结果 [E1] 显示前三季度归母净亏损 2617.4 万元。", book).ok
+    assert not check("前三季度归母净亏损 2617.4 万元。", book).ok
+
+
+def test_event_table_without_numeric_columns_grounds_row_and_subset_counts() -> None:
+    rows = tuple(
+        {
+            "published": "2026-10-24" if idx < 10 else "2026-10-08",
+            "category": "治理与股权" if idx < 10 else "其他公告",
+            "title": "襄阳轴承：关于董事会换届选举的公告",
+        }
+        for idx in range(12)
+    )
+    book = _book(
+        ToolResult(
+            tool="hotspot_events",
+            title="披露事件：襄阳轴承",
+            columns=(
+                Column("published", "公布日", "", "date"),
+                Column("category", "类型"),
+                Column("title", "标题"),
+            ),
+            rows=rows,
+            as_of=date(2026, 10, 24),
+            source="巨潮资讯",
+        )
+    )
+    assert check(
+        "披露列表共有 12 条公告，其中 10-24 单日有 10 条，"
+        "包含 3 份独立董事候选人声明和 2 份异常波动公告。",
+        book,
+    ).ok
+    assert not check("公司三季度亏损 500 万元。", book).ok
+    assert not check("营收增长 15.6%。", book).ok
+
+
+def test_extra_text_and_extra_dates_ground_user_question_parameters() -> None:
+    grounder = Grounder(
+        EvidenceBook(),
+        extra_text="上周五（2026-11-06）回头波大于等于10%的股票数有多少个？",
+        extra_dates=(date(2026, 11, 10),),
+    )
+    assert grounder.check(
+        "截至 2026-11-10，2026-11-06 回头波大于等于 10% 的全市场股票家数暂缺。"
+    ).ok
+    assert not grounder.check("共有 25 只股票。").ok

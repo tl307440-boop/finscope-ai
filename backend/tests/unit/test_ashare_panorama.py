@@ -324,3 +324,20 @@ def test_stock_detail_rejects_bad_code() -> None:
     with pytest.raises(ProviderError) as info:
         asyncio.run(_service(_Gateway({})).stock_detail("12ab"))
     assert info.value.status_code == 422
+
+
+def test_intraday_pullbacks_uses_eastmoney_or_falls_back_to_tencent() -> None:
+    kline = {"data": {"klines": ["2026-11-05,1,1,1,1,1,1", "2026-11-06,1,1,1,1,1,1"]}}
+    clist = {
+        "data": {
+            "diff": [
+                _row("002045", "国光电器", 9.86, -0.40, 10.89, 9.80, 9.90),
+                _row("000001", "平安银行", 10.10, 1.00, 10.20, 9.95, 10.00),
+            ]
+        }
+    }
+    gateway = _Gateway({"kline/get": kline, "clist/get": clist}, fail=("web.ifzq.gtimg.cn",))
+    res = asyncio.run(_service(gateway).intraday_pullbacks(10.0))
+    assert str(res.trade_date) == "2026-11-06"
+    assert [s.name for s in res.hits] == ["国光电器"]
+    assert res.error is None
