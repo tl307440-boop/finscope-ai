@@ -254,6 +254,20 @@ def test_fuyao_lookup_skips_without_key_and_reports_building() -> None:
     assert boards is None and reason == BUILDING
 
 
+def test_fuyao_key_is_read_at_runtime_from_the_managed_settings_first() -> None:
+    """界面保存的密钥（fuyao_credentials）优先于初始默认；改完不用重建服务。"""
+
+    current = {"key": ""}
+    service = _service(_Gateway({}), fuyao_key="env-default")
+    assert service._fuyao_key() == "env-default"
+    service.fuyao_credentials = lambda: current["key"]
+    assert service._fuyao_key() == ""
+    assert service._fuyao.configured() is False
+    current["key"] = _FAKE_KEY
+    assert service._fuyao_key() == _FAKE_KEY
+    assert service._fuyao.configured() is True
+
+
 def test_fuyao_revoked_key_is_reported_without_echoing_it() -> None:
     gateway = _Gateway({"ths-index-list": {"code": 2003, "message": "Invalid or revoked API key"}})
     index = FuyaoBoardIndex(gateway=gateway, api_key=lambda: _FAKE_KEY)

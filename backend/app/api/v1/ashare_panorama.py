@@ -13,18 +13,21 @@ from sqlalchemy import Engine
 from app.api.responses import success_response
 from app.core.exceptions import AppError
 from app.providers.errors import ProviderError
-from app.services import jygs
+from app.services import fuyao_board_index, jygs
 from app.services.ashare_panorama import ASharePanoramaService, get_panorama_service
 
 router = APIRouter(tags=["A股全景增强"])
 
 
 def _panorama(request: Request) -> ASharePanoramaService:
-    """同一个服务实例；首次请求时接上「界面保存的加密配置 > 环境变量」里的韭研会话。"""
+    """同一个服务实例；首次请求时接上「界面保存的加密配置 > 环境变量」里的韭研会话与扶摇密钥。"""
 
     service = get_panorama_service()
+    engine = cast(Engine, request.app.state.engine)
     if service.jygs_credentials is None:
-        service.jygs_credentials = jygs.credentials_from(cast(Engine, request.app.state.engine))
+        service.jygs_credentials = jygs.credentials_from(engine)
+    if service.fuyao_credentials is None:
+        service.fuyao_credentials = fuyao_board_index.credentials_from(engine)
     return service
 
 

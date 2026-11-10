@@ -2923,3 +2923,17 @@ TickFlow 探测过：只有申万行业 universe，且成分数明显不全（�
 
 ### 仍然如实说明
 这是前端字典与匹配规则的改动，不影响后端接口。龙虎榜只能识别字典里有的席位；新席位需要在席位管理里自己添加，请填全称。
+
+## 更正：数据源密钥改为在「数据管理」网页里配置（2026-11-10）
+
+上一节「Key 管理」写的是「只用环境变量 `FUYAO_API_KEY`、服务器 `.env` 由 SSH 追加」，**与项目一贯做法不符**（其余密钥都在「数据管理 → 密钥与数据源配置」里填，加密存库）。本轮更正，以本节为准：
+
+- `services/runtime_settings.py`：`MANAGED` 新增 `FUYAO_API_KEY`（同花顺扶摇）、`TICKFLOW_API_KEY`、`TDX_API_KEY`，分组「A 股行情」，和韭研会话同组；页面复用 `IntegrationsPanel.vue`，没有新做一套 UI，所以样式、状态胶囊、测试连接 / 保存 / 清除与其他板块完全一致。
+- `core/config.py`：加 `tickflow_api_key`、`tdx_api_key`，三者都只是初始默认。
+- 扶摇密钥运行时读取：`ASharePanoramaService.fuyao_credentials` ← `fuyao_board_index.credentials_from(engine)`（`effective_settings`，界面值 > 环境变量，5 秒缓存），路由 `_panorama` 首次请求时接上，和韭研会话同一套机制；在网页改完几秒内生效，不用重启。
+- `services/integration_probe.py`：新增扶摇「测试连接」（拉一次行业板块目录，信封 code=0 且有板块才算有效，密钥只进请求头，不进 URL / 返回文案）。TickFlow / 通达信没有取数代码，也就没有连接测试，`help` 里如实写「已预留，目前未接入」。
+- `.env.example`、`deploy/env.production.example`：删掉 `FUYAO_API_KEY=` 行，改成「去网页填」的说明。
+- `AGENTS.md`：新增「数据源密钥与配置规则」：取数密钥一律在网页配置；新增密钥的固定三步；不得写进服务器 `.env` / 仓库 / 文档 / 日志；UI 复用现有面板。
+- 服务器 `/opt/finscope/.env`：删除上一轮追加的 `FUYAO_API_KEY` 三行（注释 + 空行 + 密钥），与 `.env.bak-20261110` 只差结尾换行；没有留下含密钥的备份文件。已运行的容器进程里仍带着启动时读到的旧环境变量，这次部署重建容器后才彻底消失。
+- 测试：`test_integration_probe.py` 新增 2 个（扶摇密钥有效 / 被拒绝，且不回显密钥）；`test_stock_boards.py` 新增 1 个（界面值运行时优先于初始默认）。`ruff check` / `ruff format --check` / `mypy app` 通过，`pytest tests/unit` 全部通过。
+- 部署：这次提交推到 `feat/market-panorama-jygs`（PR #53）后合并到 master，由 deploy 工作流部署。页面上出现这三项之后，由管理员在「数据管理」里填写密钥，扶摇可以点「测试连接」。

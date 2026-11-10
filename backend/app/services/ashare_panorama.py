@@ -168,12 +168,19 @@ class ASharePanoramaService:
     # 运行时取 (会话, 到期时间)：生产里读「界面保存的加密配置 > 环境变量」，所以扫码登录后立刻生效。
     jygs_credentials: Callable[[], tuple[str, str]] | None = None
     _jygs_checked: tuple[float, str] | None = field(default=None, repr=False)
-    # 同花顺扶摇 Key：只读环境变量 FUYAO_API_KEY，留空则个股所属板块的扶摇兜底自动跳过。
+    # 同花顺扶摇 Key：初始值来自环境变量；生产里由 fuyao_credentials 在运行时读「界面保存的加密配置
+    # 优先，其次环境变量」，所以在数据管理里改完几秒内生效。留空则个股所属板块的扶摇兜底自动跳过。
     fuyao_api_key: str = ""
+    fuyao_credentials: Callable[[], str] | None = None
     _fuyao: FuyaoBoardIndex = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._fuyao = FuyaoBoardIndex(gateway=self.gateway, api_key=lambda: self.fuyao_api_key)
+        self._fuyao = FuyaoBoardIndex(gateway=self.gateway, api_key=self._fuyao_key)
+
+    def _fuyao_key(self) -> str:
+        if self.fuyao_credentials is None:
+            return self.fuyao_api_key
+        return self.fuyao_credentials()
 
     # ───────────── 基础：取数 / 交易日 ─────────────
 

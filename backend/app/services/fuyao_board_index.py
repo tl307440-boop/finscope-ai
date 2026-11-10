@@ -3,7 +3,8 @@
 扶摇只有「板块 → 成分股」接口，所以把概念板块与行业板块的成分全量拉一遍，反查成映射缓存起来。
 成本：约 700 次请求、几分钟，所以只在东财 F10 与腾讯都取不到时才触发，并且在后台构建，
 构建期间的请求直接返回「正在构建」而不是干等；索引缓存 12 小时（板块成分一天变不了几次）。
-API Key 由调用方从环境变量 `FUYAO_API_KEY` 取来传入；本模块不保存、不记录它。
+API Key 由调用方传入（生产里读「数据管理」里保存的加密配置，其次是环境变量）；
+本模块不保存、不记录它。
 """
 
 from __future__ import annotations
@@ -14,18 +15,30 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from time import monotonic
 
+from sqlalchemy import Engine
+
 from app.providers import stock_boards as sb
 from app.providers.errors import ProviderError
 from app.services import ashare_calc as calc
 from app.services.industry_market import Gateway
+from app.services.runtime_settings import effective_settings
 
 logger = logging.getLogger(__name__)
 
-NOT_CONFIGURED = "未配置 FUYAO_API_KEY，同花顺扶摇来源已跳过"
+NOT_CONFIGURED = "未配置同花顺扶摇密钥（数据管理 → 密钥与数据源配置），该来源已跳过"
 BUILDING = "同花顺扶摇板块索引正在后台构建，稍后刷新即可"
 _CONCEPT_TAG = "cn_concept"
 _INDUSTRY_TAG = "industry"
 _MAX_FAIL_RATIO = 0.2
+
+
+def credentials_from(engine: Engine) -> Callable[[], str]:
+    """运行时读「数据管理里保存的加密配置 > 环境变量」里的扶摇密钥（带 5 秒缓存）。"""
+
+    def read() -> str:
+        return effective_settings(engine).fuyao_api_key
+
+    return read
 
 
 @dataclass

@@ -22,6 +22,15 @@
 - 论文需要可复现实验：核心计算规则必须独立、无副作用、可离线测试。
 - 严禁 `git add .env`、真实 API key、数据库备份或用户上传真实资料。
 
+## 数据源密钥与配置规则（强制）
+
+- **所有取数密钥 / Token / 会话（同花顺扶摇、TickFlow、通达信、Tiingo、FRED、韭研 SESSION、大模型、搜索等）一律在网页「数据管理 → 密钥与数据源配置」里由管理员填写**，加密存库、页面只显示末四位、几秒内对 api / worker / scheduler 生效。
+- 新增数据源密钥的做法固定三步：① `services/runtime_settings.py` 的 `MANAGED` 里加一项 `ManagedKey`（`group` 归到已有分组，如「A 股行情」，secret=True）；② `core/config.py` 加同名 Settings 字段（只作初始默认，默认值留空）；③ 取数代码通过 `effective_settings(engine)` 读取，不得直接 `get_settings()` 读密钥。能做连接测试的在 `services/integration_probe.py` 补 `probe` 分支。
+- **不得**把真实密钥写进服务器 `/opt/finscope/.env`、`docker-compose.yml`、`deploy/*.example`、代码、测试、文档、日志、提交说明或 `IMPLEMENTATION_LOG.md`；`.env.example` / `deploy/*.example` 里只写「去网页填」的说明，不再为这类密钥保留变量行。用户在聊天里发来的密钥只用于引导他在网页里填写，不要抄进仓库。
+- 密钥只能放在请求头或 body 里，不进 URL、不进报错文案、不回显给前端；测试里只用明显的假值。
+- 界面保持和其他板块一致：不另做一套配置页，复用 `components/ui/IntegrationsPanel.vue`（分组、状态胶囊、测试连接 / 保存 / 清除），样式用现有 CSS 变量。
+- 尚无取数代码使用的密钥可以先占位，但 `help` 必须如实写「已预留，目前未接入」，不得让用户误以为已经生效。
+
 ## 每个任务的完成定义 DoD
 
 - 先给出验收点，然后实现一个端到端切片（迁移 → Repo → Service → API → View → Test）。
