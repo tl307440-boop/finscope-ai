@@ -1,70 +1,55 @@
-# AGENTS.md — FinScope AI / Codex 开发代理规则
+# AGENTS.md — FinScope AI 开发协作指南
 
-## 工作身份与项目目标
+## 项目定位
 
-你是 FinScope AI 项目的资深全栈工程师。严格阅读 `docs/SPEC.md`（本包中的《FinScope_AI_完整详细设计规格书_V1.0.md》复制到该位置）和 `docs/TASKS.md`。本项目是可供本科毕业设计答辩的、可审计的金融投研辅助平台。**不能**以伪造行情、硬编码AI回复、空壳按钮冒充完成功能。
+FinScope AI 是面向本科毕业设计与投研复盘的可审计金融投研辅助平台：
+- **后端**：Python 3.12 + FastAPI + SQLAlchemy 2 + Pydantic v2 + PostgreSQL（pgvector）+ Alembic
+- **前端**：Vue 3 + TypeScript（`strict`）+ Vite + Pinia + Element Plus + ECharts
 
-## 每轮任务前
+## 工作方式（保持灵活）
 
-1. 执行 `git status`，读取 README、SPEC、任务清单、已存在目录结构与最新日志。
-2. 只选择一个**可垂直验证**的任务，不擅自扩展到下一阶段。
-3. 写出这轮将新增/修改的文件、数据库迁移、接口、页面和测试。已有结构必须优先兼容。
-4. 对外部 API 使用 adapter、时间/权限/缺失检查；不要直接向浏览器泄露密钥。
+- **按任务目标自主推进**：无论是端到端新特性，还是局部 Bug 修复、重构、性能优化或测试补全，均按实际需求拆解推进，不再强制每次只能改一个“迁移 → Repo → Service → API → View”垂直切片，也不强制动手前先输出固定格式清单。
+- **按需查阅文档**：避免每轮通读冗长的早期规格文档，按修改范围定向查阅即可：
+  - 总体设计与早期任务：`docs/SPEC.md`、`docs/TASKS.md`
+  - 接口契约：`docs/API.md`
+  - 界面规范：`docs/UI-设计规范.md`（改前端页面前必看，保持统一风格）
+  - 演进记录：`docs/IMPLEMENTATION_LOG.md`（了解近期上下文时看末尾最近几节即可）
+- **优先兼容与复用**：先了解受影响模块的现有抽象、工具与测试模式，优先兼容和复用已有实现。
 
-## 强制技术规范
+## 核心红线（必须守住）
 
-- TypeScript `strict`、Python 类型注解、Pydantic v2、SQLAlchemy 2、Alembic；PostgreSQL 作为真实持久化层。
-- 所有代码和数据库字段英语命名、UI与注释优先中文；api prefix `/api/v1`；时区UTC存储，浏览器带时区显示。
-- 任何计算都先校验数据来源、时间、单位和口径；财务金额使用 Decimal/NUMERIC 而非 float 原值。
-- 返回响应必须带 request_id；外部依赖错误要结构化；日志脱敏。
-- 数据源接口真实不可用或Token不足时标注 unavailable/stale；仅 `DATA_MODE=demo` 时使用合成 fixture，并显著标识。
-- LLM 禁止自由执行 SQL/Python、自由下载 URL或读取本地密钥；只有白名单工具。
-- 论文需要可复现实验：核心计算规则必须独立、无副作用、可离线测试。
-- 严禁 `git add .env`、真实 API key、数据库备份或用户上传真实资料。
+1. **数据真实与可审计**
+   - 不伪造行情、财务指标或硬编码 AI 结论充当已完成功能；数据源不可用或数据缺口时如实返回 `unavailable` / `stale` 或清晰原因。
+   - 仅在 `DATA_MODE=demo` 时允许使用合成样例数据，且需显式标识。
+2. **投研严谨与防未来函数**
+   - 时序与回测逻辑严格遵守数据可见性（如 `published_at <= as_of`），杜绝未来数据泄露。
+   - 不把财报累计值直接当单季值；涉及财务金额的核心计算优先使用 `Decimal` / `NUMERIC`。
+   - AI 助手输出的事实结论、数字与出处须经过核对链路（`Grounder` / `citations`）校验，未通过核对的内容不得标为“已核实”。
+3. **数据源密钥与敏感信息安全**
+   - 所有第三方取数密钥、会话 Cookie、大模型与搜索 Key（如扶摇、FRED、大模型、搜索、韭研等）**统一在网页「数据管理 → 密钥与数据源配置」填写加密存库**，不写死在服务端 `.env` 中。
+   - 新增或接入密钥时的固定约定：① 在 `backend/app/services/runtime_settings.py` 的 `MANAGED` 注册 `ManagedKey`；② 在 `backend/app/core/config.py` 加同名配置项（默认值留空）；③ 业务取数通过 `effective_settings(engine)` 读取。若需测试连接或页面配置，复用 `backend/app/services/integration_probe.py` 与 `frontend/src/components/ui/IntegrationsPanel.vue`。
+   - **严禁**提交 `.env`、真实 API 密钥、数据库备份或用户上传真实文件；密钥只放请求头或请求体，不进 URL、报错文案、日志或文档（测试只用明显假值）。
+4. **AI 与数据抓取安全边界**
+   - AI 助手工具调用与联网检索/抓取必须走白名单工具与适配器边界，禁止让模型自由拼接执行任意 SQL/系统命令或读取本地敏感配置。
+5. **UI 风格与设计体系一致（前端硬约束）**
+   - 保持现有「夜间交易台上的精密仪器」视觉风格与深浅双主题体系，以 `docs/UI-设计规范.md` 为准，**不另起一套配色、栅格或页面外壳**。
+   - 颜色、字号与布局统一使用 `frontend/src/styles/tokens.css` 中的 CSS 变量和 `frontend/src/styles/global.css` 的标准布局类（`.stack`、`.grid-*`、`.tabular`），避免硬编码脱离主题的颜色。
+   - 优先复用 `frontend/src/components/ui/` 既有组件（`PageHeader`、`PanelCard`、`StatCard`、`MetricTile`、`DeltaValue`、`StatusPill`、`SectionTabs`、`StateBlock`、`SourceFooter`、`IntegrationsPanel` 等）、Element Plus（`<el-table>`）和全局 `finscope` 主题的 `<VChart>`（`frontend/src/charts/index.ts`），不重复造同质化外壳组件。
+   - 金融展示保持一致：A 股红涨绿跌、涨跌幅带正负号、数字等宽对齐、中文友好文案（不向终端用户暴露原始英文枚举或 API 路径）；完善 `loading / empty / error / stale` 状态与桌面/移动端响应式。
+6. **不擅自变更既定技术底座**
+   - 未经明确要求，不更换核心框架与技术栈（如改用 Next.js、SpringBoot 或拆分微服务），不擅自引入付费依赖、订阅服务或实盘交易下单 API。
 
-## 数据源密钥与配置规则（强制）
+## 工程实践建议
 
-- **所有取数密钥 / Token / 会话（同花顺扶摇、TickFlow、通达信、Tiingo、FRED、韭研 SESSION、大模型、搜索等）一律在网页「数据管理 → 密钥与数据源配置」里由管理员填写**，加密存库、页面只显示末四位、几秒内对 api / worker / scheduler 生效。
-- 新增数据源密钥的做法固定三步：① `services/runtime_settings.py` 的 `MANAGED` 里加一项 `ManagedKey`（`group` 归到已有分组，如「A 股行情」，secret=True）；② `core/config.py` 加同名 Settings 字段（只作初始默认，默认值留空）；③ 取数代码通过 `effective_settings(engine)` 读取，不得直接 `get_settings()` 读密钥。能做连接测试的在 `services/integration_probe.py` 补 `probe` 分支。
-- **不得**把真实密钥写进服务器 `/opt/finscope/.env`、`docker-compose.yml`、`deploy/*.example`、代码、测试、文档、日志、提交说明或 `IMPLEMENTATION_LOG.md`；`.env.example` / `deploy/*.example` 里只写「去网页填」的说明，不再为这类密钥保留变量行。用户在聊天里发来的密钥只用于引导他在网页里填写，不要抄进仓库。
-- 密钥只能放在请求头或 body 里，不进 URL、不进报错文案、不回显给前端；测试里只用明显的假值。
-- 界面保持和其他板块一致：不另做一套配置页，复用 `components/ui/IntegrationsPanel.vue`（分组、状态胶囊、测试连接 / 保存 / 清除），样式用现有 CSS 变量。
-- 尚无取数代码使用的密钥可以先占位，但 `help` 必须如实写「已预留，目前未接入」，不得让用户误以为已经生效。
-
-## 每个任务的完成定义 DoD
-
-- 先给出验收点，然后实现一个端到端切片（迁移 → Repo → Service → API → View → Test）。
-- 至少1个正常和1个异常/缺数据的自动化测试；运行相应 lint、typecheck、tests。
-- 运行被改变模块的本地应用或容器启动验证；报告实际运行命令和结果。
-- 更新 `docs/IMPLEMENTATION_LOG.md`：变更文件、用例、迁移、测试结果、阻塞、下一项建议。
-- 对本轮任务无法完成或未具备有效数据源的部分，明确标记 `NOT_IMPLEMENTED` / `BLOCKED`，不得声称已完成。
-
-## 代码质量
-
-- 不在路由中放大段业务逻辑；使用 routes → services → repositories/providers → database 分层。
-- 财务公式封装 analytics，输入/输出都记录单位、来源与计算版本。
-- 数据抓取需速率限制、重试、timeout、幂等；禁止无限循环、反爬绕过。
-- PDF解析须校验格式、大小、页数；不得执行嵌入文件/宏/脚本。
-- 外部引用（财报页码、SEC accession、FRED序列）要存可追溯 ID；时间旅行检查 `published_at <= as_of`。
-- 视觉上保持深色金融终端感，但必须响应式、可访问，loading/empty/error/stale 四种状态齐全。
-
-## 提交说明模板
-
-```
-本轮任务：<TASK-ID>
-功能完成：...
-涉及路径：...
-新增/变更迁移：...
-验证命令与真实结果：...
-数据来源及权限：...
-已知局限/阻塞：...
-下一任务建议：...
-```
-
-## 禁止行为
-
-- 未经明确指令更改技术栈为 Next.js、SpringBoot、微服务等。
-- 未经允许添加付费依赖、云资源、订阅服务、真实交易API。
-- 把财报累计值直接当单季值、忽略公告发布时间、误把未来数据用于回测。
-- AI输出未经 citations 校验就被标记“已核实”。
-- 使用未经授权抓取或规避网站限制的方式接入数据。
+- **架构与编码习惯**：
+  - 后端常规业务推荐保持 `routes -> services -> repositories / providers -> database` 分层，金融公式与可复现计算抽离到独立服务/分析模块便于离线单测；接口前缀 `/api/v1`，时间按 UTC 存储、前端按本地时区展示。
+  - 代码、数据库字段英语命名；UI 文案与必要注释优先中文；外部抓取注意超时、重试、速率限制与幂等；文档解析校验文件格式、大小与页数；前端复用 `frontend/src/api/*` 与 Pinia store，不另造 HTTP 封装。
+- **测试与验证（按改动范围按需运行）**：
+  - 建议采用 TDD 或在修复 Bug / 新增功能时同步补充自动化测试（如 1 组正常路径 + 1 组异常/缺数据边界），不必对纯文案或微调强行套固定测试形式。
+  - 提交前请尽量运行受影响端的检查，并在回复中**如实报告**实际运行过的命令、范围与已知局限/未测部分（无需每次小改都重启全套 Docker 容器）：
+    - 一键全检：`powershell -ExecutionPolicy Bypass -File scripts/verify.ps1`
+    - 后端检查：`cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy app && uv run pytest tests/unit`（连库环境可跑全量 `uv run pytest`）
+    - 前端检查：`cd frontend && npm test && npm run typecheck`
+- **Git 提交与变更日志**：
+  - Commit 信息采用清晰简练的 **Conventional Commits**（如 `feat(assistant): ...`、`fix(market): ...`、`refactor(...): ...`），说明改了什么及原因即可，不再强制套用多行固定模板。
+  - 重要功能迭代、架构调整或关键 Bug 修复可在 `docs/IMPLEMENTATION_LOG.md` 末尾简要追加记录；日常小修、样式微调或纯重构可按需省略。
