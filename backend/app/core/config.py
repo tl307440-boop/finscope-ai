@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     scheduler_enable_board_market: bool = True
     scheduler_board_market_hour: int = 15
     scheduler_board_market_minute: int = 45
+    # 北证午盘成交额快照：上游只给「当日累计」，11:30 收盘后到 13:00 开盘前这个累计值
+    # 恒等于上午收盘成交额，所以在这个窗口抓一次；全市场午盘 = 沪 + 深 + 京 才凑得齐。
+    scheduler_enable_market_noon: bool = True
     # 自定义数据分析：期权 PCR、股债收益差、巴菲特指标、中位数 PB。
     # 中证指数收盘经常晚于 18:30 才发布。只跑这一次的话，任务会记成成功，
     # 页面要到下一个工作日 18:30 才看得到新交易日。所以 21:30 再补当天，

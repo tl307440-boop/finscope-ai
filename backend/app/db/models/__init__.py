@@ -20,6 +20,7 @@ from app.db.models.industry import (
 from app.db.models.macro import MacroObservation, MacroSeries
 from app.db.models.macro_regime import MacroRegimeSnapshot
 from app.db.models.market import Instrument, MarketBar, TradingCalendar
+from app.db.models.market_noon import MarketNoonAmount
 from app.db.models.news import NewsEvent
 from app.db.models.provider import DataProvider, SyncJob, SyncJobEvent
 from app.db.models.sec import CnStatementFact, Filing, SecFact
@@ -67,6 +68,7 @@ __all__ = [
     "MacroRegimeSnapshot",
     "MacroSeries",
     "MarketBar",
+    "MarketNoonAmount",
     "NewsEvent",
     "OptionDailyStat",
     "RefreshSession",

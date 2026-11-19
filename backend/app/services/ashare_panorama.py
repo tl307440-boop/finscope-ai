@@ -1033,7 +1033,9 @@ class ASharePanoramaService:
 
     # ───────────── 3. 成交量能与两融 ─────────────
 
-    async def volume_margin(self) -> VolumeMarginPayload:
+    async def volume_margin(
+        self, noon_snapshot: Mapping[str, float] | None = None
+    ) -> VolumeMarginPayload:
         acc = _Acc()
         day, session, days = await self._resolve(acc)
         acc.notes += [
@@ -1119,9 +1121,11 @@ class ASharePanoramaService:
         if fallback_used:
             acc.notes.append(
                 "东方财富日 K / 分时在本服务器连不上：历史日成交额取腾讯日 K，午盘累计与上一交易日"
-                "同一时点取腾讯 5 日分时；北证 50 的腾讯分时没有成交额，"
-                "其午盘对比与全市场午盘对比为空。"
+                "同一时点取腾讯 5 日分时；北证 50 的腾讯分时没有成交额，其午盘改由交易日 11:30 "
+                "落库的快照补（快照自上线日起累积），没有快照时该市场午盘为空。"
             )
+        if noon_snapshot is not None:
+            self._fill_noon_snapshot(noon_snapshot, days, day, noon_today, noon_prev, acc)
         volumes = self._volume_series(amounts, noon_today, noon_prev, days[-7:])
         margins = await self._margins(acc)
         return VolumeMarginPayload(
@@ -1214,6 +1218,42 @@ class ASharePanoramaService:
             build("star", "科创板", ("star",)),
         ]
         return [s for s in series if s is not None]
+
+    @staticmethod
+    def _fill_noon_snapshot(
+        snapshot: Mapping[str, float],
+        days: Sequence[str],
+        day: date | None,
+        noon_today: dict[str, float | None],
+        noon_prev: dict[str, float | None],
+        acc: _Acc,
+    ) -> None:
+        """北证午盘成交额：上游没有「11:30 那一刻」的历史接口，用当日快照补上。
+
+        快照由调度器在 11:30–13:00 之间抓取（`market_noon_amounts` 表），从上线日起累积；
+        当日还没有快照时保持为空，并在 notes 里说明，绝不拿别的时点顶替。
+        """
+
+        if noon_today.get("bj") is not None:
+            return
+        today_key = day.isoformat() if day is not None else (days[-1] if days else None)
+        if today_key is None:
+            return
+        value = snapshot.get(today_key)
+        if value is None:
+            acc.notes.append(
+                "北证午盘成交额按交易日 11:30 快照累积（自上线日起），当日还没有快照，"
+                "全市场午盘暂缺。"
+            )
+            return
+        noon_today["bj"] = value
+        previous_key = days[-2] if len(days) >= 2 else None
+        previous = snapshot.get(previous_key) if previous_key else None
+        if previous is not None:
+            noon_prev["bj"] = previous
+        acc.notes.append(
+            "北证午盘成交额取当日 11:30 的定时快照（上游只给当日累计，没有历史时点）。"
+        )
 
     async def _margins(self, acc: _Acc) -> list[MarginSeries]:
         doc = await self._doc(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Annotated, cast
 
@@ -15,6 +16,9 @@ from app.core.exceptions import AppError
 from app.providers.errors import ProviderError
 from app.services import fuyao_board_index, jygs
 from app.services.ashare_panorama import ASharePanoramaService, get_panorama_service
+from app.services.market_noon import noon_snapshot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["A股全景增强"])
 
@@ -82,8 +86,14 @@ async def read_sentiment(request: Request, service: Service) -> JSONResponse:
 
 @router.get("/ashare/volume-margin", summary="成交额（含 11:30 午盘）与两融余额拆解")
 async def read_volume_margin(request: Request, service: Service) -> JSONResponse:
+    # 北证没有「11:30 成交额」的历史接口，只有调度器落库的当日快照；读不到就按缺失处理。
     try:
-        return _ok(request, await service.volume_margin())
+        snapshot = noon_snapshot(cast(Engine, request.app.state.engine))
+    except Exception:  # noqa: BLE001 - 快照读失败不该拖垮行情主体
+        logger.warning("北证午盘快照读取失败，午盘按缺失处理", exc_info=True)
+        snapshot = {}
+    try:
+        return _ok(request, await service.volume_margin(noon_snapshot=snapshot))
     except ProviderError as error:
         raise _upstream(error) from error
 

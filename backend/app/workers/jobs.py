@@ -31,6 +31,7 @@ from app.services.fred_sync import fetch_from_fred, sync_fred_series
 from app.services.hotspot_sync import sync_hotspot_events
 from app.services.macro_regime import compute_macro_regime
 from app.services.market_cache import PacedGateway
+from app.services.market_noon import capture_noon_amounts
 from app.services.metrics_snapshot import snapshot_company_metrics
 from app.services.official_texts import sync_official
 from app.services.runtime_settings import effective_settings
@@ -81,6 +82,9 @@ def execute_job(engine: Engine, job: JobSnapshot) -> int:
         return asyncio.run(
             sync_board_market(BoardMarketRepository(engine), PacedGateway(), utc_now())
         )
+    if job.job_type == "market_noon_snapshot":
+        # 北证 11:30 成交额：上游只有当日累计，只能在收盘后、开盘前抓这一次。
+        return asyncio.run(capture_noon_amounts(engine, now=utc_now()))
     if job.job_type == "custom_analysis":
         return _custom_analysis(engine)
     if job.job_type == "financial_metrics":

@@ -352,6 +352,23 @@ def build_triggers(settings: Settings) -> list[TriggerRegistration]:
                 failure_policy="非交易日不写快照；连续 3 次上游失败即停，最多重试 3 次",
             )
         )
+    if settings.scheduler_enable_market_noon:
+        # 北证午盘成交额：上游只有「当日累计」，11:30 收盘后到 13:00 开盘前这个累计值
+        # 恒等于上午收盘成交额，所以 11:35 抓一次、12:05 再补一次（11:35 失败时的第二次机会）。
+        for hour, minute in ((11, 35), (12, 5)):
+            triggers.append(
+                TriggerRegistration(
+                    job_id=f"sync_market_noon_{hour:02d}{minute:02d}",
+                    task_name="sync_market_noon",
+                    trigger=CronTrigger(
+                        day_of_week="mon-fri", hour=hour, minute=minute, timezone=zone
+                    ),
+                    builder=build_market_noon_tasks,
+                    failure_policy=(
+                        "非交易日跳过；同一交易日同一市场只留一条快照，补跑覆盖首次抓取"
+                    ),
+                )
+            )
     if settings.scheduler_enable_custom_analysis:
         # 18:30 经常早于中证指数发布。同一天再补 21:30，次日 08:30 再补一次。
         # 幂等键带上时刻，成功的早场不会把当晚和次日早上的补跑挡掉。
@@ -1040,6 +1057,41 @@ def build_board_market_tasks(
             provider_id=provider_id,
             failure_policy="非交易日不写快照；连续 3 次上游失败即停",
             max_attempts=3,
+        )
+    ]
+
+
+def market_noon_dedupe_key(now: datetime) -> str:
+    """上海日期 + 触发时刻：11:35 与 12:05 是两次独立机会，前一次失败不会被后一次挡掉。"""
+
+    local = now.astimezone(SHANGHAI)
+    return f"noon_amount:{local.date().isoformat()}:{local.strftime('%H%M')}"
+
+
+def build_market_noon_tasks(
+    engine: Engine, settings: Settings, now: datetime
+) -> list[ScheduledTask]:
+    """北证市场 11:30 成交额快照：一次一条，执行器自己判断是不是交易日。"""
+
+    local = now.astimezone(SHANGHAI)
+    provider_id = SyncJobRepository(engine).ensure_provider(
+        code="tencent_quote",
+        name="腾讯财经（公开行情接口）",
+        enabled=True,
+        config_public={"upstream": "https://qt.gtimg.cn", "credential": "none"},
+    )
+    return [
+        ScheduledTask(
+            task_name="sync_market_noon",
+            job_type="market_noon_snapshot",
+            dedupe_key=market_noon_dedupe_key(now),
+            scope={
+                "display_symbol": "bj-market",
+                "observation_end": local.date().isoformat(),
+            },
+            provider_id=provider_id,
+            failure_policy="非交易日跳过；同一交易日同一市场只留一条快照",
+            max_attempts=2,
         )
     ]
 
