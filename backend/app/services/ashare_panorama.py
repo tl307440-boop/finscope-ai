@@ -150,6 +150,16 @@ class _Acc:
     sources: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     fetched: list[datetime] = field(default_factory=list)
+    # 命中旧缓存的取值项（label），用于兜底后判定是否可以清掉 stale 标记。
+    stale_labels: set[str] = field(default_factory=set)
+
+    def mark(self, label: str, stale: bool) -> None:
+        if stale:
+            self.stale_labels.add(label)
+            self.stale = True
+        else:
+            self.stale_labels.discard(label)
+            self.stale = bool(self.stale_labels)
 
     def source(self, name: str) -> None:
         if name not in self.sources:
@@ -160,7 +170,7 @@ class _Acc:
             tradeDate=day,
             session=session,
             fetchedAt=max(self.fetched) if self.fetched else None,
-            stale=self.stale,
+            stale=self.stale or bool(self.stale_labels),
             sources=self.sources,
             notes=self.notes,
             unavailable=self.unavailable,
@@ -236,7 +246,7 @@ class ASharePanoramaService:
             acc.unavailable[label] = error.message
             return None
         acc.fetched.append(cached.fetched_at)
-        acc.stale = acc.stale or cached.stale
+        acc.mark(label, cached.stale)
         if source:
             acc.source(source)
         return cached.value
@@ -397,7 +407,7 @@ class ASharePanoramaService:
             acc.unavailable[label] = error.message
             return None
         acc.fetched.append(cached.fetched_at)
-        acc.stale = acc.stale or cached.stale
+        acc.mark(label, cached.stale)
         acc.source(jygs.SOURCE_NAME)
         return cached.value
 
@@ -416,7 +426,7 @@ class ASharePanoramaService:
         except ProviderError:
             return None
         acc.fetched.append(cached.fetched_at)
-        acc.stale = acc.stale or cached.stale
+        acc.mark(f"腾讯:{label}", cached.stale)
         acc.source(source)
         return cached.value
 
@@ -459,14 +469,22 @@ class ASharePanoramaService:
                 ttl=ttl,
                 source="东方财富 行情",
             )
-            if doc is not None:
-                out.update(calc.parse_ulist(calc.as_doc(doc)))
+            rows = calc.parse_ulist(calc.as_doc(doc)) if doc is not None else {}
+            if rows and label not in acc.stale_labels:
+                out.update(rows)
                 continue
-            # 东财 push2 在部分机房连不上：改用腾讯报价；腾讯也取不到时保留东财的失败原因。
+            # 东财 push2 在部分机房连不上（此时返回的是旧缓存，并不抛错）：
+            # 命中旧缓存的也要改用腾讯报价；腾讯也取不到时才保留东财的旧值与失败原因。
             fallback = await self._tencent_quotes(acc, batch, ttl)
             if fallback:
+                merged = dict(rows)
+                merged.update(fallback)
+                out.update(merged)
                 acc.unavailable.pop(label, None)
-                out.update(fallback)
+                if all(secid in out for secid in batch):
+                    acc.mark(label, False)
+            else:
+                out.update(rows)
         return out
 
     # ───────────── 1. 全球核心指数 ─────────────
@@ -492,7 +510,7 @@ class ASharePanoramaService:
         fallback = await asyncio.gather(
             *(
                 _none()
-                if doc is not None
+                if doc is not None and f"分时 {row[3]}" not in acc.stale_labels
                 else self._sina_futures_minutes(
                     acc, _SINA_FUTURES[row[0]], _TTL_LIVE if self._index_live(row[0]) else _TTL_IDLE
                 )
@@ -508,7 +526,7 @@ class ASharePanoramaService:
             row = quotes.get(secid, {})
             spark: list[float] = []
             label = f"分时 {name}"
-            if trend_doc is not None:
+            if trend_doc is not None and label not in acc.stale_labels:
                 latest = calc.latest_day_rows(calc.parse_trends(calc.as_doc(trend_doc)))
                 spark = [round(p.price, 4) for p in latest]
                 spark = calc.downsample(spark, 40)
@@ -516,12 +534,22 @@ class ASharePanoramaService:
                 if isinstance(minutes, list) and minutes:
                     spark = calc.downsample([round(b.price, 4) for b in minutes], 40)
                     acc.unavailable.pop(label, None)
+                    acc.mark(label, False)
+                elif trend_doc is not None:
+                    latest = calc.latest_day_rows(calc.parse_trends(calc.as_doc(trend_doc)))
+                    spark = calc.downsample([round(p.price, 4) for p in latest], 40)
+                    acc.unavailable[label] = "东方财富分时已过期；新浪财经分时也取不到"
                 else:
                     reason = acc.unavailable.get(label) or "东方财富暂无分时数据"
                     acc.unavailable[label] = f"{reason}；新浪财经分时也取不到"
             elif isinstance(minutes, tq.Minutes) and minutes.bars:
                 spark = calc.downsample([round(b.price, 4) for b in minutes.bars], 40)
                 acc.unavailable.pop(label, None)
+                acc.mark(label, False)
+            elif trend_doc is not None:
+                latest = calc.latest_day_rows(calc.parse_trends(calc.as_doc(trend_doc)))
+                spark = calc.downsample([round(p.price, 4) for p in latest], 40)
+                acc.unavailable[label] = "东方财富分时已过期；腾讯财经分时也取不到"
             items.append(
                 GlobalQuote(
                     code=code,
@@ -837,6 +865,7 @@ class ASharePanoramaService:
         )
         if median is not None:
             acc.unavailable.pop("涨幅排名", None)
+            acc.mark("涨幅排名", False)
             acc.notes.append(
                 "东方财富涨幅排名在本服务器连不上：涨跌幅中位数取腾讯 A 股涨幅榜的中间名次，"
                 "样本范围可能与东财口径略有差异。"
@@ -853,7 +882,7 @@ class ASharePanoramaService:
                 src.EM_HEADERS,
                 source="东方财富 行情",
             )
-            if doc is None:
+            if doc is None or "涨幅排名" in acc.stale_labels:
                 return await self._median_tencent(acc)
             rows = calc.as_list(calc.as_doc(calc.as_doc(doc).get("data")).get("diff"))
             if index < len(rows):
@@ -888,6 +917,7 @@ class ASharePanoramaService:
         )
         if swings is not None:
             acc.unavailable.pop("振幅榜", None)
+            acc.mark("振幅榜", False)
             acc.notes.append(
                 "东方财富振幅榜在本服务器连不上：冲高回落 / 探底回升取腾讯振幅榜（振幅≥9%候选）"
                 "再按最高 / 最低 / 昨收重算；行业列由同花顺涨停原因补充，没有则为空。"
@@ -906,6 +936,11 @@ class ASharePanoramaService:
                 src.EM_HEADERS,
                 source="东方财富 行情",
             )
+            if doc is not None and "振幅榜" in acc.stale_labels and not rows:
+                # 命中旧缓存的振幅榜：先试腾讯振幅榜；腾讯也失败时才用旧值并保留 stale 标记。
+                fallback = await self._swings_tencent(acc, min_amplitude=min_amplitude)
+                if fallback is not None:
+                    return fallback
             if doc is None:
                 if not rows:
                     return await self._swings_tencent(acc, min_amplitude=min_amplitude)
@@ -1335,8 +1370,10 @@ class ASharePanoramaService:
             calc.text(calc.as_doc(r).get("f14")): calc.to_yi(calc.as_doc(r).get("f62"))
             for r in calc.as_list(calc.as_doc(calc.as_doc(flow_doc).get("data")).get("diff"))
         }
-        if flow_doc is None:
-            flows = await self._concept_flows_tencent(acc)
+        if flow_doc is None or "概念板块资金" in acc.stale_labels:
+            tencent_flows = await self._concept_flows_tencent(acc)
+            if tencent_flows:
+                flows = tencent_flows
         sectors: list[LeadingSector] = []
         if blocks_doc is not None:
             blocks = calc.parse_ths_blocks(calc.as_doc(blocks_doc))
@@ -1395,6 +1432,7 @@ class ASharePanoramaService:
         if not flows:
             return {}
         acc.unavailable.pop("概念板块资金", None)
+        acc.mark("概念板块资金", False)
         acc.notes.append(
             "东方财富概念板块资金在本服务器连不上：主力净流入取腾讯概念板块榜（万元换算为亿元），"
             "按板块名称对应，名称对不上的板块留空。"
@@ -1916,7 +1954,8 @@ class ASharePanoramaService:
             probe = _Acc()
             doc = await self._doc(probe, label, url, headers, ttl=_TTL_BOARDS)
             acc.fetched.extend(probe.fetched)
-            acc.stale = acc.stale or probe.stale
+            if probe.stale:
+                acc.mark(label, True)
             if doc is None:
                 reasons.append(f"{label}：{probe.unavailable.get(label, '该来源暂不可用')}")
                 return
