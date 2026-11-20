@@ -16,6 +16,7 @@ from app.core.exceptions import AppError
 from app.providers.errors import ProviderError
 from app.services import fuyao_board_index, jygs
 from app.services.ashare_panorama import ASharePanoramaService, get_panorama_service
+from app.services.market_breadth import breadth_counts
 from app.services.market_noon import noon_snapshot
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,12 @@ async def read_index_detail(
 )
 async def read_sentiment(request: Request, service: Service) -> JSONResponse:
     try:
-        return _ok(request, await service.sentiment())
+        try:
+            counts = await breadth_counts(cast(Engine, request.app.state.engine))
+        except Exception as error:  # 统计失败时回落到东财涨跌分布直方图，不影响接口
+            logger.warning("全市场涨跌家数统计失败，回落到东财涨跌分布：%s", error)
+            counts = None
+        return _ok(request, await service.sentiment(counts))
     except ProviderError as error:
         raise _upstream(error) from error
 

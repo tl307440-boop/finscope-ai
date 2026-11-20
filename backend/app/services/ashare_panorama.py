@@ -71,6 +71,7 @@ from app.services import ashare_calc as calc
 from app.services import jygs
 from app.services.fuyao_board_index import FuyaoBoardIndex
 from app.services.industry_market import Gateway
+from app.services.market_breadth import BreadthCounts
 from app.services.market_cache import Cached, TtlCache, market_cache, shared_gateway
 from app.utils.market_time import SHANGHAI
 from app.utils.time import utc_now
@@ -766,7 +767,7 @@ class ASharePanoramaService:
 
     # ───────────── 2. 短线情绪 ─────────────
 
-    async def sentiment(self) -> SentimentPayload:
+    async def sentiment(self, counts: BreadthCounts | None = None) -> SentimentPayload:
         acc = _Acc()
         day, session, days = await self._resolve(acc)
         if day is None:
@@ -797,7 +798,12 @@ class ASharePanoramaService:
         )
         breadth: calc.Breadth | None = None
         median: float | None = None
-        if fenbu_doc is not None:
+        if counts is not None:
+            breadth = calc.Breadth(up=counts.up, down=counts.down, flat=counts.flat)
+            acc.source(counts.source)
+            acc.notes.append(counts.note())
+            median = await self._median(acc, breadth.up + breadth.down + breadth.flat)
+        elif fenbu_doc is not None:
             buckets = es.parse_fenbu(_to_bytes(fenbu_doc)).buckets
             breadth = calc.breadth_from_buckets(buckets)
             median = await self._median(acc, breadth.up + breadth.down + breadth.flat)
