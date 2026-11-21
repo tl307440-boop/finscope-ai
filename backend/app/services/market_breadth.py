@@ -25,6 +25,8 @@ from app.db.models.market import Instrument
 from app.providers import tencent_quote as tq
 
 BSE_LIST_URL = "http://www.cninfo.com.cn/new/data/szse_stock.json"
+FUYAO_SNAPSHOT_URL = "https://fuyao.aicubes.cn/api/a-share/prices/snapshot"
+_FUYAO_PAGE = 6000
 BSE_PREFIXES = ("43", "83", "87", "88", "920")
 _SIX_DIGITS = re.compile(r"\d{6}")
 _LOCAL_CODE = re.compile(r"(?:sh|sz|bj)\d{6}")
@@ -48,9 +50,39 @@ class BreadthCounts:
 
     def note(self) -> str:
         return (
-            f"涨跌家数按沪深京全市场逐只统计（{self.total} 只，成交额为 0 的停牌股不计入），"
+            f"涨跌家数来自{self.source}（{self.total} 只，停牌/无成交不计入），"
             "与东财涨跌分布直方图口径不同。"
         )
+
+
+def parse_fuyao_snapshot(doc: Any) -> BreadthCounts | None:
+    """扶摇全市场快照 → 涨跌家数；涨跌幅为空（未成交）的个股不计入。"""
+
+    if not isinstance(doc, dict) or doc.get("code") not in (0, "0"):
+        return None
+    data = doc.get("data")
+    items = data.get("item") if isinstance(data, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    up = down = flat = 0
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        ratio = row.get("price_change_ratio_pct")
+        if not isinstance(ratio, (int, float)):
+            continue
+        if ratio > 0:
+            up += 1
+        elif ratio < 0:
+            down += 1
+        else:
+            flat += 1
+    total = up + down + flat
+    if total == 0:
+        return None
+    return BreadthCounts(
+        up=up, down=down, flat=flat, total=total, source="同花顺扶摇 全市场快照（沪深京）"
+    )
 
 
 def bse_codes(payload: bytes) -> list[str]:
@@ -174,25 +206,60 @@ def invalidate() -> None:
     _UNIVERSE_CACHE.clear()
 
 
+async def _fuyao_counts(engine: Engine) -> BreadthCounts | None:
+    """同花顺扶摇全市场快照：一次请求拿到沪深京全部个股，比逐只打腾讯省 90 多个请求。"""
+
+    from app.services.runtime_settings import effective_settings
+
+    try:
+        key = await asyncio.to_thread(lambda: effective_settings(engine).fuyao_api_key)
+    except Exception:  # noqa: BLE001 - 配置读不出来就走兜底
+        return None
+    key = (key or "").strip()
+    if not key:
+        return None
+    headers = {
+        "X-api-key": key,
+        "User-Agent": "Mozilla/5.0 (compatible; FinScope research)",
+        "accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                FUYAO_SNAPSHOT_URL,
+                params={"limit": _FUYAO_PAGE, "offset": 0},
+                headers=headers,
+            )
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    try:
+        return parse_fuyao_snapshot(response.json())
+    except ValueError:
+        return None
+
+
 async def breadth_counts(engine: Engine) -> BreadthCounts | None:
-    """全市场涨跌家数；拿不到任何报价时返回 None（调用方回落到东财直方图）。"""
+    """全市场涨跌家数；扶摇快照优先，失败退回腾讯逐只，仍无数据返回 None。"""
 
     stamp = time.monotonic()
     cached = _BREADTH_CACHE.get("all")
     if cached is not None and stamp - cached[0] < _cache_ttl():
         return cached[1]
 
-    universe = _UNIVERSE_CACHE.get("all")
-    if universe is None or stamp - universe[0] > 6 * 3600:
-        codes = await asyncio.to_thread(universe_codes, engine)
-        _UNIVERSE_CACHE["all"] = (stamp, codes)
-    else:
-        codes = universe[1]
-
-    if not codes:
-        return None
-    counts = count_breadth((await _fetch_quotes(codes)).values())
-    if counts.total == 0:
+    counts = await _fuyao_counts(engine)
+    if counts is None:
+        universe = _UNIVERSE_CACHE.get("all")
+        if universe is None or stamp - universe[0] > 6 * 3600:
+            codes = await asyncio.to_thread(universe_codes, engine)
+            _UNIVERSE_CACHE["all"] = (stamp, codes)
+        else:
+            codes = universe[1]
+        if not codes:
+            return None
+        counts = count_breadth((await _fetch_quotes(codes)).values())
+    if counts is None or counts.total == 0:
         return None
     _BREADTH_CACHE["all"] = (stamp, counts)
     return counts

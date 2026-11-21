@@ -774,7 +774,7 @@ class ASharePanoramaService:
             return SentimentPayload(meta=acc.meta(None, "unknown"))
         previous = date.fromisoformat(days[-2]) if len(days) >= 2 else None
         acc.notes += [
-            "涨跌家数来自东财涨跌分布；涨跌幅中位数按全市场涨幅排名取中间值（偶数只取中间两只均值）。",
+            "涨跌幅中位数按全市场涨幅排名取中间值（偶数只取中间两只均值）。",
             "自然涨停/跌停：剔除 ST 与带 N/C 前缀的新股；炸板率 = 炸板 /（涨停 + 炸板）。",
             "晋级率 = 昨日涨停今日继续涨停 / 昨日涨停；"
             "溢价率 = 昨日涨停（连板、炸板）股今日平均涨跌幅。",
@@ -806,6 +806,11 @@ class ASharePanoramaService:
         elif fenbu_doc is not None:
             buckets = es.parse_fenbu(_to_bytes(fenbu_doc)).buckets
             breadth = calc.breadth_from_buckets(buckets)
+            acc.source("东方财富 涨跌分布")
+            acc.notes.append(
+                "涨跌家数退回到东财涨跌分布直方图：档位只覆盖 -11% ~ +11%，"
+                "涨跌幅超出该区间的个股（创业板/科创板 ±20%、北证 ±30%）不计入。"
+            )
             median = await self._median(acc, breadth.up + breadth.down + breadth.flat)
         zt_rows = zt or []
         zb_count = None if zb is None else len(zb)

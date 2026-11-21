@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from app.providers.tencent_quote import Quote
-from app.services.market_breadth import bse_codes, count_breadth
+from app.services.market_breadth import bse_codes, count_breadth, parse_fuyao_snapshot
 
 
 def _quote(price: float | None, prev: float | None, amount: float | None) -> Quote:
@@ -62,3 +62,36 @@ def test_count_breadth_skips_halted_and_invalid() -> None:
     assert (counts.up, counts.down, counts.flat, counts.total) == (1, 1, 1, 3)
     assert "沪深京" in counts.source
     assert "停牌" in counts.note()
+
+
+def test_parse_fuyao_snapshot_counts_ratio_and_skips_null() -> None:
+    doc = {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "total": 5,
+            "item": [
+                {"thscode": "000001.SZ", "price_change_ratio_pct": 1.495, "volume": 213498890},
+                {"thscode": "600185.SH", "price_change_ratio_pct": -3.2, "volume": 8e7},
+                {"thscode": "002122.SZ", "price_change_ratio_pct": 0.0, "volume": 1e6},
+                {"thscode": "301661.SZ", "price_change_ratio_pct": None, "volume": 0},
+                {"thscode": "920305.BJ", "price_change_ratio_pct": "-2.5", "volume": 0},
+            ],
+        },
+    }
+
+    counts = parse_fuyao_snapshot(doc)
+
+    assert counts is not None
+    assert (counts.up, counts.down, counts.flat, counts.total) == (1, 1, 1, 3)
+    assert "扶摇" in counts.source
+
+
+def test_parse_fuyao_snapshot_rejects_bad_envelope() -> None:
+    assert parse_fuyao_snapshot({"code": 2003, "message": "Invalid or revoked API key"}) is None
+    assert parse_fuyao_snapshot({"code": 0, "data": {"item": []}}) is None
+    assert (
+        parse_fuyao_snapshot({"code": 0, "data": {"item": [{"price_change_ratio_pct": None}]}})
+        is None
+    )
+    assert parse_fuyao_snapshot("oops") is None

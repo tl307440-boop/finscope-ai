@@ -68,6 +68,10 @@ def probe(
             return _jygs(value)
         if key == "FUYAO_API_KEY":
             return _fuyao(value)
+        if key == "TICKFLOW_API_KEY":
+            return _tickflow(value)
+        if key == "TDX_API_KEY":
+            return _tdx(value)
     except httpx.TimeoutException:
         return ProbeResult(False, "连接超时，请检查网络或稍后再试")
     except httpx.HTTPError:
@@ -260,6 +264,66 @@ def _fuyao(api_key: str) -> ProbeResult:
     if count:
         return ProbeResult(True, f"扶摇接受了这个密钥，行业板块目录返回 {count} 个板块")
     return ProbeResult(False, "密钥被接受，但板块目录是空的，请确认账号有该接口的权限")
+
+
+def _tickflow(api_key: str) -> ProbeResult:
+    """按代码查两只指数的报价：能返回数据说明密钥有效（按标的池查询是另一档权限）。"""
+
+    response = httpx.get(
+        "https://api.tickflow.org/v1/quotes",
+        params={"symbols": "000001.SZ,600519.SH"},
+        headers={"x-api-key": api_key.strip(), "accept": "application/json"},
+        timeout=TIMEOUT,
+    )
+    if response.status_code in {401, 403}:
+        return ProbeResult(False, "TickFlow 拒绝了这个密钥，请核对是否复制完整")
+    if response.status_code != 200:
+        return ProbeResult(False, f"TickFlow 返回 HTTP {response.status_code}")
+    try:
+        doc = response.json()
+    except ValueError:
+        return ProbeResult(False, "TickFlow 返回了无法解析的内容")
+    rows = doc.get("data") if isinstance(doc, dict) else None
+    if isinstance(rows, list) and rows:
+        return ProbeResult(True, f"TickFlow 接受了这个密钥，示例报价返回 {len(rows)} 条")
+    message = doc.get("message") if isinstance(doc, dict) else None
+    detail = f"（{message}）" if isinstance(message, str) and message else ""
+    return ProbeResult(False, f"密钥被接受，但没拿到报价{detail}")
+
+
+def _tdx(api_key: str) -> ProbeResult:
+    """走问小达 MCP 握手：initialize 返回 serverInfo 即说明密钥有效。"""
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "finscope-probe", "version": "0.1"},
+        },
+    }
+    response = httpx.post(
+        "https://mcp.tdx.com.cn:3001/mcp",
+        json=payload,
+        headers={
+            "tdx-api-key": api_key.strip(),
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+        },
+        timeout=TIMEOUT,
+    )
+    if response.status_code in {401, 403}:
+        return ProbeResult(False, "通达信拒绝了这个密钥，请核对是否复制完整")
+    if response.status_code != 200:
+        return ProbeResult(False, f"通达信返回 HTTP {response.status_code}")
+    text = response.text
+    if '"serverInfo"' in text and "wenda" in text:
+        return ProbeResult(True, "通达信接受了这个密钥，问小达 MCP 已握手")
+    if '"error"' in text:
+        return ProbeResult(False, "通达信握手失败，请核对密钥是否有效")
+    return ProbeResult(False, "通达信没有返回握手信息，请稍后再试")
 
 
 def _jygs(session: str) -> ProbeResult:
