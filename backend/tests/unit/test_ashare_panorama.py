@@ -12,6 +12,7 @@ import pytest
 from app.providers import ashare_panorama as src
 from app.providers.errors import ProviderError
 from app.services import ashare_calc as calc
+from app.services import ashare_panorama as panorama
 from app.services.ashare_panorama import ASharePanoramaService
 from app.services.market_cache import TtlCache
 from app.utils.market_time import SHANGHAI
@@ -341,3 +342,20 @@ def test_intraday_pullbacks_uses_eastmoney_or_falls_back_to_tencent() -> None:
     assert str(res.trade_date) == "2026-11-06"
     assert [s.name for s in res.hits] == ["国光电器"]
     assert res.error is None
+
+
+def test_usable_treats_cached_stale_doc_as_missing() -> None:
+    """东财命中旧缓存时要当作取不到，交给腾讯兜底；兜底成功后可清掉 stale 标记。"""
+
+    acc = panorama._Acc()  # noqa: SLF001
+    cached = {"data": {"trends": []}}
+    acc.mark("指数分时", True)
+
+    assert acc.usable("指数分时", cached) is None
+    assert acc.usable("指数行情", cached) is cached
+    assert acc.meta("2026-11-25", "close").stale is True
+
+    acc.mark("指数分时", False)
+
+    assert acc.usable("指数分时", cached) is cached
+    assert acc.meta("2026-11-27", "close").stale is False

@@ -162,6 +162,13 @@ class _Acc:
             self.stale_labels.discard(label)
             self.stale = bool(self.stale_labels)
 
+    def usable(self, label: str, doc: Any | None) -> Any | None:
+        """命中旧缓存的文档当作取不到，交给调用方换源；换源成功后用 `mark(label, False)` 清标记。"""
+
+        if doc is None or label in self.stale_labels:
+            return None
+        return doc
+
     def source(self, name: str) -> None:
         if name not in self.sources:
             self.sources.append(name)
@@ -634,6 +641,10 @@ class ASharePanoramaService:
                 source="东方财富 日K",
             ),
         )
+        # 东财分时 / 日 K 命中旧缓存时（本机房 push2his 被切断，缓存里只剩上一交易日的快照）
+        # 当作取不到，交给下面的腾讯 / 新浪兜底；否则详情卡停在旧交易日、还挂着「展示的是缓存」。
+        trend_doc = acc.usable("指数分时", trend_doc)
+        kline_doc = acc.usable("指数日K", kline_doc)
         quote = quotes.get(secid, {})
         price = calc.num(quote.get("f2"))
         if price is None:
@@ -651,6 +662,7 @@ class ASharePanoramaService:
                     minute_day = bars[-1].day
                     sina_minutes = True
                     acc.unavailable.pop("指数分时", None)
+                    acc.mark("指数分时", False)
                     acc.notes.append(
                         "黄金 / 原油分时来自新浪财经，时间为北京时间（跨自然日按上游顺序排列）；"
                         "新浪期货分时成交量上游恒为 0，故不画量柱。"
@@ -663,6 +675,7 @@ class ASharePanoramaService:
                 minute_day = minutes.day if minutes and intraday else None
                 if intraday:
                     acc.unavailable.pop("指数分时", None)
+                    acc.mark("指数分时", False)
                 else:
                     acc.unavailable["指数分时"] = f"{reason}；腾讯财经分时也取不到"
 
@@ -677,6 +690,7 @@ class ASharePanoramaService:
                 daily = await self._tencent_index_daily(acc, tq.tencent_code(secid))
             if daily:
                 acc.unavailable.pop("指数日K", None)
+                acc.mark("指数日K", False)
             else:
                 tail = "新浪财经" if commodity else "腾讯财经"
                 acc.unavailable["指数日K"] = f"{reason}；{tail}日K也取不到"
@@ -1082,7 +1096,11 @@ class ASharePanoramaService:
         amounts: dict[str, dict[str, float]] = {}
         noon_today: dict[str, float | None] = {}
         noon_prev: dict[str, float | None] = {}
-        for (key, _, _), k_doc, t_doc in zip(_VOLUME_INDEXES, klines, trends, strict=True):
+        for (key, name, _), k_doc, t_doc in zip(_VOLUME_INDEXES, klines, trends, strict=True):
+            # 东财日 K / 分时命中旧缓存时当作取不到，交给下面的腾讯兜底；
+            # 否则成交额会一直停在缓存里那一天，页面上还挂着「展示的是缓存」。
+            k_doc = acc.usable(f"日K {name}", k_doc)
+            t_doc = acc.usable(f"分时 {name}", t_doc)
             if k_doc is not None:
                 amounts[key] = {b.day: b.amount for b in calc.parse_klines(calc.as_doc(k_doc))}
             if t_doc is not None:
@@ -1129,6 +1147,8 @@ class ASharePanoramaService:
             fallback_used = True
             acc.unavailable.pop(f"日K {name}", None)
             acc.unavailable.pop(f"分时 {name}", None)
+            acc.mark(f"日K {name}", False)
+            acc.mark(f"分时 {name}", False)
         if fallback_used:
             acc.notes.append(
                 "东方财富日 K / 分时在本服务器连不上：历史日成交额取腾讯日 K，午盘累计与上一交易日"
